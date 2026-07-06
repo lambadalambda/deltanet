@@ -62,3 +62,31 @@ crept back in.
 - Unit tests: marker round-trip, both-copies-one-uuid, postKey keyspace,
   uuid-first resolution preferring feed copy, mixed legacy refs,
   schema v4 migration.
+
+## Current Status (2026-07-06)
+
+IMPLEMENTED. Wire convention v1 shipped end-to-end.
+
+- Marker glyph `⚑ <uuidv4>` (final line, tolerant parse); DM copy of a reply
+  is now byte-identical to the feed copy (same shared uuid, no more `⚓` — kept
+  parse-only for legacy data).
+- Ref-token discrimination: `u:<uuid>` for uuid refs, bare mid otherwise
+  (`buildRefToken`/`parseRefToken`, `RefToken` union). Reaction control DMs
+  carry the same tokens.
+- Store post-key keyspace (`postKey = parsed uuid ?? canonicalize(mid)`):
+  replyChildren keys+values, boostsByMid, ownBoosts, ownMids, reactions,
+  notification dedupe/status all swept. `resolveKey` prefers the FEED copy of a
+  uuid (recorded via `isFeedMessage` on ingest → `uuidFeedMsgId`). `msgIdToKey`
+  makes `midForMsgId` return the post key so the mapper's count lookups hit
+  uuid-keyed edges.
+- `messageToStatus` parentId fallback removed (regression unit test added).
+- `STORE_SCHEMA_VERSION = 4`; migrate drops the new uuid indices; dedupe safety
+  proven by a v3→v4 no-double-notify unit test (legacy events fall back to
+  mid-based post keys, matching preserved dedupe keys).
+- Integration test `tests/integration/post-uuids.test.ts` (C follows A+B; B
+  follows A; A doesn't follow B) is GREEN on real chatmail — A's reply-to-reply
+  (minted while holding only B's DM copy) resolves to B's FEED reply on C via
+  uuid, the case mid refs could not solve.
+- `pnpm test` (573) + `pnpm check` + `pnpm test:integration` (7) all green.
+
+Not archived. See DEVLOG "wire convention v1 / post UUIDs" for the design writeup.

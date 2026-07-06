@@ -13,12 +13,21 @@ import {
   parseInviteRequest,
   parseMarkers,
   parseReaction,
+  type RefToken,
 } from './protocol.js';
 import type { Notification, Store } from './store.js';
 import type { Transport } from './transport/types.js';
 
 const DC_CONTACT_ID_SELF = 1;
 const FAVOURITE_EMOJI = '❤';
+
+/**
+ * The POST KEY a wire ref token targets: a uuid ref targets the uuid directly;
+ * a mid ref canonicalizes via the store (legacy targets / aliased DM copies).
+ * This is the single place ref tokens become store post keys in the derive path.
+ */
+const refKey = (store: Store, ref: RefToken): string =>
+  ref.kind === 'uuid' ? ref.uuid : store.canonicalize(ref.mid);
 
 /**
  * Given a message that has just been ingested into the mid/msgId index
@@ -70,9 +79,9 @@ export const deriveOnIngest = (
     if (ownAddr) {
       const reaction = parseReaction(msg.text);
       if (reaction) {
-        const targetMid = store.canonicalize(reaction.mid);
-        if (reaction.kind === 'react') store.applyReaction(targetMid, ownAddr, reaction.emoji);
-        else store.retractReaction(targetMid, ownAddr, reaction.emoji);
+        const targetKey = refKey(store, reaction.ref);
+        if (reaction.kind === 'react') store.applyReaction(targetKey, ownAddr, reaction.emoji);
+        else store.retractReaction(targetKey, ownAddr, reaction.emoji);
       }
     }
     return [];
@@ -84,19 +93,19 @@ export const deriveOnIngest = (
 
   const reaction = parseReaction(msg.text);
   if (reaction) {
-    // Canonicalize the target mid so an interaction referencing a DM copy's mid
-    // applies to (and notifies about) the feed copy — the post's identity. The
-    // store also canonicalizes internally, but doing it here keeps the dedupe
-    // key + notification statusMsgId consistent with the feed copy too.
-    const targetMid = store.canonicalize(reaction.mid);
+    // Resolve the target to its POST KEY (uuid, or the canonical mid for a mid
+    // ref) so an interaction referencing a DM copy applies to (and notifies
+    // about) the one logical post. Keeping the key consistent here keeps the
+    // dedupe key + notification statusMsgId consistent with the feed copy too.
+    const targetKey = refKey(store, reaction.ref);
     if (reaction.kind === 'react') {
-      store.applyReaction(targetMid, accountAddr, reaction.emoji);
+      store.applyReaction(targetKey, accountAddr, reaction.emoji);
     } else {
-      store.retractReaction(targetMid, accountAddr, reaction.emoji);
+      store.retractReaction(targetKey, accountAddr, reaction.emoji);
     }
 
-    if (reaction.kind === 'react' && store.isOwnMid(targetMid)) {
-      const statusMsgId = store.resolveMid(targetMid) ?? undefined;
+    if (reaction.kind === 'react' && store.isOwnMid(targetKey)) {
+      const statusMsgId = store.resolveKey(targetKey) ?? undefined;
       const isFavourite = reaction.emoji === FAVOURITE_EMOJI;
       const notification = store.addNotification({
         type: isFavourite ? 'favourite' : 'pleroma:emoji_reaction',
@@ -104,10 +113,10 @@ export const deriveOnIngest = (
         accountContactId,
         ...(isFavourite ? {} : { emoji: reaction.emoji }),
         ...(statusMsgId !== undefined ? { statusMsgId } : {}),
-        dedupeMid: targetMid,
+        dedupeMid: targetKey,
         // Fold the emoji into the dedupe key even for favourites (whose
         // stored notification has no `emoji` field) so a ❤ and a distinct
-        // emoji reaction from the same reactor on the same mid never
+        // emoji reaction from the same reactor on the same post never
         // dedupe against each other.
         dedupeEmoji: reaction.emoji,
       });
@@ -119,28 +128,28 @@ export const deriveOnIngest = (
   const parsed = parseMarkers(msg.text);
 
   if (parsed.reply) {
-    const parentMid = store.canonicalize(parsed.reply.mid);
-    if (store.isOwnMid(parentMid)) {
+    const parentKey = refKey(store, parsed.reply.key);
+    if (store.isOwnMid(parentKey)) {
       const notification = store.addNotification({
         type: 'mention',
         accountAddr,
         accountContactId,
         statusMsgId: msg.id,
-        dedupeMid: parentMid,
+        dedupeMid: parentKey,
       });
       if (notification) created.push(notification);
     }
   }
 
   if (parsed.boost) {
-    const boostedMid = store.canonicalize(parsed.boost.mid);
-    if (store.isOwnMid(boostedMid)) {
+    const boostedKey = refKey(store, parsed.boost.key);
+    if (store.isOwnMid(boostedKey)) {
       const notification = store.addNotification({
         type: 'reblog',
         accountAddr,
         accountContactId,
         statusMsgId: msg.id,
-        dedupeMid: boostedMid,
+        dedupeMid: boostedKey,
       });
       if (notification) created.push(notification);
     }

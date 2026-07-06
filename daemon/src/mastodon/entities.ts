@@ -181,6 +181,7 @@ const mediaAttachments = (msg: T.Message, baseUrl: string, description: string |
  * about threading/boosts) keep working unchanged.
  */
 export type StatusResolver = {
+  /** Resolve a POST KEY (a logical-post uuid or a canonical mid) to a locally-held msgId, or null. */
   resolveMid(mid: string): number | null;
   childrenCount(mid: string): number;
   boostCount(mid: string): number;
@@ -238,9 +239,9 @@ export const synthesizeAccount = (authorName: string | null, addr: string, baseU
 const synthesizeStatus = (ref: MsgRef, quotedText: string | undefined, baseUrl: string): MastodonStatus => {
   const { authorName, text } = parseQuotedAuthor(quotedText ?? '');
   return {
-    id: `synthetic:${ref.mid}`,
-    uri: `${baseUrl}/deltanet/synthetic/${encodeURIComponent(ref.mid)}`,
-    url: `${baseUrl}/deltanet/synthetic/${encodeURIComponent(ref.mid)}`,
+    id: `synthetic:${ref.keyString}`,
+    uri: `${baseUrl}/deltanet/synthetic/${encodeURIComponent(ref.keyString)}`,
+    url: `${baseUrl}/deltanet/synthetic/${encodeURIComponent(ref.keyString)}`,
     content: textToHtml(text),
     created_at: new Date(0).toISOString(),
     account: synthesizeAccount(authorName, ref.addr, baseUrl),
@@ -296,11 +297,18 @@ export const messageToStatus = (
   resolveMessage: (msgId: number) => T.Message | null = () => null,
 ): MastodonStatus => {
   const parsed = parseMarkers(msg.text);
-  const bodyText = parsed.reply || parsed.boost ? parsed.body : msg.text;
+  // `parsed.body` has any marker line(s) stripped — the reply/boost marker AND
+  // the trailing `⚑ <uuid>` line every v1 message carries — so a plain v1 post
+  // never renders its uuid marker in content.
+  const bodyText = parsed.body;
 
-  const replyToMsgId = parsed.reply ? resolver.resolveMid(parsed.reply.mid) : null;
-  const inReplyToId =
-    replyToMsgId !== null ? String(replyToMsgId) : msg.parentId !== null ? String(msg.parentId) : null;
+  // in_reply_to_id comes ONLY from a resolved reply-marker/uuid ref. We do NOT
+  // fall back to `msg.parentId`: Delta Chat sets parentId from email References
+  // to the PREVIOUS MESSAGE IN THE SAME CHAT, which is not authorship-level
+  // reply intent (it made replies render as replying to unrelated posts). An
+  // unresolvable ref yields null, consistently with an empty context.
+  const replyToMsgId = parsed.reply ? resolver.resolveMid(parsed.reply.keyString) : null;
+  const inReplyToId = replyToMsgId !== null ? String(replyToMsgId) : null;
 
   // Parent lookup for `in_reply_to_account_id`/`mentions` (at most one extra
   // `resolveMessage` call per status). Self-replies are *not* excluded: we
@@ -314,7 +322,7 @@ export const messageToStatus = (
 
   let reblog = null;
   if (parsed.boost) {
-    const boostedMsgId = resolver.resolveMid(parsed.boost.mid);
+    const boostedMsgId = resolver.resolveMid(parsed.boost.keyString);
     const boostedMsg = boostedMsgId !== null ? resolveMessage(boostedMsgId) : null;
     reblog = boostedMsg
       ? messageToStatus(boostedMsg, baseUrl, null, resolver, resolveMessage)

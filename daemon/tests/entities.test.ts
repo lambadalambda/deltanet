@@ -11,9 +11,10 @@ import {
   noopResolver,
   type StatusResolver,
 } from '../src/mastodon/entities.js';
-import { buildBoostText, buildQuotedText, buildReplyText } from '../src/protocol.js';
+import { buildBoostText, buildQuotedText, buildReplyText, refFromToken } from '../src/protocol.js';
 
 const BASE = 'http://localhost:4030';
+const UUID = '11111111-2222-4333-8444-555555555555';
 
 export const makeContact = (over: Partial<T.Contact> = {}): T.Contact =>
   ({
@@ -168,9 +169,13 @@ describe('messageToStatus', () => {
     expect(messageToStatus(msg, BASE).pleroma.local).toBe(false);
   });
 
-  it('maps replies via parentId', () => {
+  it('never derives in_reply_to_id from parentId (parentId fallback removed)', () => {
+    // Delta Chat sets parentId from email References to the previous message in
+    // the same chat — NOT authorship-level reply intent. A message with only a
+    // parentId (no reply marker) is not a reply as far as the wire convention is
+    // concerned, so in_reply_to_id is null.
     const msg = makeMessage({ parentId: 40 });
-    expect(messageToStatus(msg, BASE).in_reply_to_id).toBe('40');
+    expect(messageToStatus(msg, BASE).in_reply_to_id).toBeNull();
   });
 
   it('exposes an image file as a media attachment', () => {
@@ -200,20 +205,31 @@ describe('messageToStatus', () => {
 });
 
 describe('messageToStatus: reply markers', () => {
-  const parentRef = { mid: 'parent-mid@example.org', addr: 'author@example.org' };
+  const parentRef = refFromToken({ kind: 'mid', mid: 'parent-mid@example.org' }, 'author@example.org');
 
   it('strips the marker from content and leaves in_reply_to_id null when unresolvable', () => {
-    const msg = makeMessage({ text: buildReplyText('hi there', parentRef) });
+    const msg = makeMessage({ text: buildReplyText('hi there', parentRef, UUID) });
     const status = messageToStatus(msg, BASE);
     expect(status.content).toBe('<p>hi there</p>');
     expect(status.in_reply_to_id).toBeNull();
   });
 
-  it('resolves in_reply_to_id via the resolver when the mid is known', () => {
-    const msg = makeMessage({ text: buildReplyText('hi there', parentRef) });
+  it('leaves in_reply_to_id null on an unresolvable ref EVEN when parentId is set (no parentId fallback)', () => {
+    // Regression for the parentId fallback bug: a reply whose marker ref can't
+    // be resolved must render in_reply_to_id null, never fall back to the DC
+    // parentId (which points at an unrelated same-chat message).
+    const msg = makeMessage({ parentId: 99, text: buildReplyText('hi there', parentRef, UUID) });
+    const status = messageToStatus(msg, BASE);
+    expect(status.in_reply_to_id).toBeNull();
+    expect(status.in_reply_to_account_id).toBeNull();
+    expect(status.mentions).toEqual([]);
+  });
+
+  it('resolves in_reply_to_id via the resolver when the ref key is known', () => {
+    const msg = makeMessage({ text: buildReplyText('hi there', parentRef, UUID) });
     const resolver: StatusResolver = {
       ...noopResolver,
-      resolveMid: (mid) => (mid === parentRef.mid ? 40 : null),
+      resolveMid: (key) => (key === parentRef.keyString ? 40 : null),
     };
     const status = messageToStatus(msg, BASE, null, resolver);
     expect(status.in_reply_to_id).toBe('40');
@@ -232,12 +248,12 @@ describe('messageToStatus: reply markers', () => {
   });
 
   it('fills in_reply_to_account_id and mentions when the parent mid resolves and the parent message loads', () => {
-    const msg = makeMessage({ text: buildReplyText('hi there', parentRef) });
+    const msg = makeMessage({ text: buildReplyText('hi there', parentRef, UUID) });
     const parentAuthor = makeContact({ id: 21, address: 'parentauthor@example.org', displayName: 'parent author' });
     const parent = makeMessage({ id: 40, sender: parentAuthor, text: 'the original post' });
     const resolver: StatusResolver = {
       ...noopResolver,
-      resolveMid: (mid) => (mid === parentRef.mid ? 40 : null),
+      resolveMid: (key) => (key === parentRef.keyString ? 40 : null),
     };
     const status = messageToStatus(msg, BASE, null, resolver, (id) => (id === 40 ? parent : null));
     expect(status.in_reply_to_id).toBe('40');
@@ -253,10 +269,10 @@ describe('messageToStatus: reply markers', () => {
   });
 
   it('leaves in_reply_to_account_id null and mentions empty when the mid resolves but the parent message does not load', () => {
-    const msg = makeMessage({ text: buildReplyText('hi there', parentRef) });
+    const msg = makeMessage({ text: buildReplyText('hi there', parentRef, UUID) });
     const resolver: StatusResolver = {
       ...noopResolver,
-      resolveMid: (mid) => (mid === parentRef.mid ? 40 : null),
+      resolveMid: (key) => (key === parentRef.keyString ? 40 : null),
     };
     const status = messageToStatus(msg, BASE, null, resolver, () => null);
     expect(status.in_reply_to_id).toBe('40');
@@ -265,7 +281,7 @@ describe('messageToStatus: reply markers', () => {
   });
 
   it('leaves in_reply_to_account_id null and mentions empty when the mid does not resolve at all', () => {
-    const msg = makeMessage({ text: buildReplyText('hi there', parentRef) });
+    const msg = makeMessage({ text: buildReplyText('hi there', parentRef, UUID) });
     const status = messageToStatus(msg, BASE, null, noopResolver, () => {
       throw new Error('resolveMessage should not be called when the mid does not resolve');
     });
@@ -275,11 +291,11 @@ describe('messageToStatus: reply markers', () => {
   });
 
   it('includes the mention even when replying to your own message (self-reply)', () => {
-    const msg = makeMessage({ text: buildReplyText('hi there', parentRef) });
+    const msg = makeMessage({ text: buildReplyText('hi there', parentRef, UUID) });
     const parent = makeMessage({ id: 40, sender: makeContact(), text: 'my own earlier post' });
     const resolver: StatusResolver = {
       ...noopResolver,
-      resolveMid: (mid) => (mid === parentRef.mid ? 40 : null),
+      resolveMid: (key) => (key === parentRef.keyString ? 40 : null),
     };
     const status = messageToStatus(msg, BASE, null, resolver, (id) => (id === 40 ? parent : null));
     expect(status.in_reply_to_account_id).toBe('1');
@@ -295,7 +311,7 @@ describe('messageToStatus: reply markers', () => {
 });
 
 describe('messageToStatus: boost markers', () => {
-  const originalRef = { mid: 'original-mid@example.org', addr: 'author@example.org' };
+  const originalRef = refFromToken({ kind: 'mid', mid: 'original-mid@example.org' }, 'author@example.org');
 
   it('embeds the real message as reblog when the mid resolves', () => {
     const original = makeMessage({
@@ -303,10 +319,10 @@ describe('messageToStatus: boost markers', () => {
       text: 'the original post',
       sender: makeContact({ id: 11, displayName: 'orig author' }),
     });
-    const boostMsg = makeMessage({ id: 8, text: buildBoostText(originalRef) });
+    const boostMsg = makeMessage({ id: 8, text: buildBoostText(originalRef, UUID) });
     const resolver: StatusResolver = {
       ...noopResolver,
-      resolveMid: (mid) => (mid === originalRef.mid ? 7 : null),
+      resolveMid: (key) => (key === originalRef.keyString ? 7 : null),
     };
     const status = messageToStatus(boostMsg, BASE, null, resolver, (id) => (id === 7 ? original : null));
     expect(status.reblog).not.toBeNull();
@@ -319,7 +335,7 @@ describe('messageToStatus: boost markers', () => {
     const quotedText = buildQuotedText('remote author', 'something interesting', 500);
     const boostMsg = makeMessage({
       id: 9,
-      text: buildBoostText(originalRef),
+      text: buildBoostText(originalRef, UUID),
       quote: { kind: 'JustText', text: quotedText },
     });
     const status = messageToStatus(boostMsg, BASE, null, noopResolver, () => null);
@@ -330,7 +346,7 @@ describe('messageToStatus: boost markers', () => {
   });
 
   it('strips the boost marker itself from the outer status content', () => {
-    const boostMsg = makeMessage({ id: 9, text: buildBoostText(originalRef) });
+    const boostMsg = makeMessage({ id: 9, text: buildBoostText(originalRef, UUID) });
     const status = messageToStatus(boostMsg, BASE);
     expect(status.content).toBe('<p></p>');
   });

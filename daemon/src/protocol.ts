@@ -6,14 +6,75 @@
  * pure functions: no transport, no store, just text in/text out.
  */
 
-/** Opaque email Message-ID + the address of the message's author. */
-export type MsgRef = { mid: string; addr: string };
+import { randomUUID } from 'node:crypto';
+
+/**
+ * A reference to a logical post + the address of the post's author.
+ *
+ * `key` is the wire ref token, discriminated: a `{ kind: 'uuid' }` targets the
+ * author-minted logical-post UUID (wire convention v1), a `{ kind: 'mid' }`
+ * targets a canonical rfc724 Message-ID (legacy targets that never minted a
+ * uuid). `keyString` is that token's opaque post-key value (the uuid, or the
+ * mid) — this is what the store's post-key index (see ../store.ts `postKey`/
+ * `resolveKey`) is keyed by, so callers pass `ref.keyString` straight through.
+ */
+export type MsgRef = { key: RefToken; keyString: string; addr: string };
+
+/** Build a `MsgRef` from a post-key token + author address. */
+export const refFromToken = (token: RefToken, addr: string): MsgRef => ({
+  key: token,
+  keyString: token.kind === 'uuid' ? token.uuid : token.mid,
+  addr,
+});
+
+/**
+ * A ref token targets a logical post either by its author-minted UUID (wire
+ * convention v1 — see ../DEVLOG.md) or, for legacy targets that never carried a
+ * uuid, by its canonical rfc724 Message-ID. Both are self-describing on the
+ * wire: uuid refs carry a `u:` prefix, mid refs are bare. The `u:` prefix is
+ * belt-and-braces — a uuidv4 has no `@` and a mid in this deployment always
+ * does, so shape alone would suffice — but an explicit tag means a parser never
+ * has to guess and stays robust to future mid shapes.
+ */
+export type RefToken =
+  | { kind: 'uuid'; uuid: string }
+  | { kind: 'mid'; mid: string };
+
+const UUID_REF_PREFIX = 'u:';
+
+/** Serialize a ref token to its wire form: `u:<uuid>` for uuids, bare mid otherwise. */
+export const buildRefToken = (ref: RefToken): string =>
+  ref.kind === 'uuid' ? `${UUID_REF_PREFIX}${ref.uuid}` : ref.mid;
+
+/** Parse a wire ref token back into its discriminated form. A `u:`-prefixed token is a uuid ref; anything else is a mid. */
+export const parseRefToken = (token: string): RefToken =>
+  token.startsWith(UUID_REF_PREFIX)
+    ? { kind: 'uuid', uuid: token.slice(UUID_REF_PREFIX.length) }
+    : { kind: 'mid', mid: token };
+
+/**
+ * Post-uuid marker (wire convention v1, ../DEVLOG.md). Every outgoing status
+ * message — feed post, reply, boost, and the DM copy of a reply — carries a
+ * final `⚑ <uuid>` line minting an author-assigned logical-post UUIDv4; BOTH
+ * copies of one logical reply share ONE uuid, so a node holding either copy (or
+ * neither, only a ref) can unify the logical post. `⚑` (pennant) reads sensibly
+ * in vanilla Delta Chat and doesn't collide with the other single-glyph markers
+ * (`⚓` canonical, `♻` boost, `↳` reply/react, `⇋` invite). This supersedes the
+ * `⚓` canonical-mid marker for NEW messages: we stop emitting `⚓` but keep
+ * parsing it for legacy data.
+ */
+const UUID_PREFIX = '⚑ ';
+
+/** Mint a fresh logical-post UUIDv4 (author-side). */
+export const mintPostUuid = (): string => randomUUID();
 
 export type ParsedMarkers = {
-  /** Body text with the marker line stripped (empty string if the whole text was a boost marker). */
+  /** Body text with the marker line(s) stripped (empty string if the whole text was a boost marker). */
   body: string;
   reply?: MsgRef;
   boost?: MsgRef;
+  /** This message's own logical-post UUID, if it carried a `⚑` marker (v1 messages). */
+  uuid?: string;
 };
 
 const REPLY_PREFIX = '↳re ';
@@ -31,73 +92,105 @@ const UNREACT_PREFIX = '✖ ↳ ';
 const CANONICAL_PREFIX = '⚓ ';
 
 export type ParsedReaction =
-  | { kind: 'react'; emoji: string; mid: string }
-  | { kind: 'unreact'; emoji: string; mid: string };
+  | { kind: 'react'; emoji: string; ref: RefToken }
+  | { kind: 'unreact'; emoji: string; ref: RefToken };
 
-/** A mid has no whitespace (it's an opaque Message-ID); addr is the trailing token. */
+/** A ref token has no whitespace (opaque mid or `u:<uuid>`); addr is the trailing token. */
 const MARKER_LINE_RE = /^(\S+) (\S+)$/;
 
-export const buildReplyText = (body: string, ref: MsgRef): string =>
-  `${body}\n\n${REPLY_PREFIX}${ref.mid} ${ref.addr}`;
+/** The trailing `⚑ <uuid>` line every v1 message carries. */
+const uuidLine = (uuid: string): string => `${UUID_PREFIX}${uuid}`;
 
 /**
- * A reply text with a trailing canonical-mid marker line, for the DM copy of a
- * reply. `canonicalMid` is the feed broadcast copy's mid (the post's canonical
- * identity). Only DM copies carry this — the feed copy keeps `buildReplyText`'s
- * exact format, which is its identity for historical text-matching.
+ * A reply message text: body, blank line, reply marker (targeting the parent's
+ * post-key ref token), then the `⚑ <uuid>` line minting THIS reply's own logical
+ * UUID. Both copies of one logical reply (feed broadcast + DM) are built with the
+ * SAME `uuid`, so a node holding either copy resolves the same logical post. The
+ * DM copy no longer carries a `⚓` canonical marker — the uuid subsumes it.
  */
-export const buildReplyTextWithCanonical = (
-  body: string,
-  ref: MsgRef,
-  canonicalMid: string,
-): string => `${buildReplyText(body, ref)}\n${CANONICAL_PREFIX}${canonicalMid}`;
+export const buildReplyText = (body: string, ref: MsgRef, uuid: string): string =>
+  `${body}\n\n${REPLY_PREFIX}${buildRefToken(ref.key)} ${ref.addr}\n${uuidLine(uuid)}`;
 
-export const buildBoostText = (ref: MsgRef): string => `${BOOST_PREFIX}${ref.mid} ${ref.addr}`;
+/** A boost message text: the boost marker (targeting the boosted post's ref token) then the `⚑ <uuid>` line. */
+export const buildBoostText = (ref: MsgRef, uuid: string): string =>
+  `${BOOST_PREFIX}${buildRefToken(ref.key)} ${ref.addr}\n${uuidLine(uuid)}`;
+
+/** A plain post's text: the body then the `⚑ <uuid>` line minting its logical UUID. */
+export const buildPostText = (body: string, uuid: string): string =>
+  body === '' ? uuidLine(uuid) : `${body}\n${uuidLine(uuid)}`;
 
 const parseMarkerLine = (line: string): MsgRef | null => {
   const match = MARKER_LINE_RE.exec(line);
   if (!match) return null;
-  const [, mid, addr] = match;
-  if (!mid || !addr) return null;
-  return { mid, addr };
+  const [, token, addr] = match;
+  if (!token || !addr) return null;
+  return refFromToken(parseRefToken(token), addr);
+};
+
+/** Parse a `⚑ <uuid>` line into its uuid, or null if malformed / not a uuid line. */
+const parseUuidLine = (line: string): string | null => {
+  if (!line.startsWith(UUID_PREFIX)) return null;
+  const uuid = line.slice(UUID_PREFIX.length);
+  if (!uuid || /\s/.test(uuid)) return null;
+  return uuid;
 };
 
 /**
- * Tolerant parse: a reply marker must be the *final* line, preceded by a
- * blank line (as `buildReplyText` produces); a boost marker must be the
- * *entire* text. Anything else (marker-shaped text embedded elsewhere, or
- * malformed marker lines) is treated as plain body — we never misfire on
+ * Recover THIS message's own logical-post UUID from its trailing `⚑ <uuid>`
+ * marker, or null (legacy messages, vanilla-DC posts). Tolerant: the marker
+ * must be the *final* line, so marker-shaped text elsewhere never misfires.
+ */
+export const parsePostUuid = (text: string): string | null => {
+  const lines = text.split('\n');
+  return parseUuidLine(lines[lines.length - 1] ?? '');
+};
+
+/**
+ * Tolerant parse: a reply marker must be the *final* line (after peeling any
+ * trailing `⚑`/`⚓` marker lines), preceded by a blank line (as `buildReplyText`
+ * produces); a boost marker must be the *first* line (with only marker lines
+ * after it). Anything else is treated as plain body — we never misfire on
  * ordinary vanilla-DC messages that happen to contain similar glyphs.
  */
 export const parseMarkers = (text: string): ParsedMarkers => {
-  if (text.startsWith(BOOST_PREFIX)) {
-    const rest = text.slice(BOOST_PREFIX.length);
-    // Must be the whole text: no trailing newline/content after the marker.
-    if (!rest.includes('\n')) {
-      const boost = parseMarkerLine(rest);
-      if (boost) return { body: '', boost };
+  const rawLines = text.split('\n');
+
+  // Peel a trailing `⚑ <uuid>` line (v1 messages) — every copy carries one — so
+  // the reply/boost marker is again the effective final/first line below.
+  const uuid = parseUuidLine(rawLines[rawLines.length - 1] ?? '') ?? undefined;
+  const afterUuid = uuid !== undefined ? rawLines.slice(0, rawLines.length - 1) : rawLines;
+
+  // Boost: the marker is the FIRST line, and everything after it is marker
+  // lines only (the `⚑` uuid line for v1, nothing for legacy). This keeps the
+  // "boost marker is the whole logical content" invariant while allowing the
+  // trailing uuid line.
+  const firstLine = afterUuid[0] ?? '';
+  if (firstLine.startsWith(BOOST_PREFIX)) {
+    const boost = parseMarkerLine(firstLine.slice(BOOST_PREFIX.length));
+    if (boost && afterUuid.length === 1) {
+      return { body: '', boost, ...(uuid !== undefined ? { uuid } : {}) };
     }
-    return { body: text };
+    return { body: text, ...(uuid !== undefined ? { uuid } : {}) };
   }
 
-  const lines = text.split('\n');
-  // A DM copy appends a trailing canonical-mid marker after the reply marker
-  // (see buildReplyTextWithCanonical). Peel it off first so the reply marker is
-  // once again the effective final line for the parse below.
+  // A legacy DM copy appends a trailing `⚓` canonical marker after the reply
+  // marker; peel it too so the reply marker is again the effective final line.
   const hasCanonical =
-    lines.length >= 2 && parseCanonicalLine(lines[lines.length - 1] ?? '') !== null;
-  const effectiveLines = hasCanonical ? lines.slice(0, lines.length - 1) : lines;
+    afterUuid.length >= 2 && parseCanonicalLine(afterUuid[afterUuid.length - 1] ?? '') !== null;
+  const effectiveLines = hasCanonical ? afterUuid.slice(0, afterUuid.length - 1) : afterUuid;
   const lastLine = effectiveLines[effectiveLines.length - 1] ?? '';
   if (lastLine.startsWith(REPLY_PREFIX)) {
     const reply = parseMarkerLine(lastLine.slice(REPLY_PREFIX.length));
     const precedingBlank = effectiveLines[effectiveLines.length - 2] === '';
     if (reply && precedingBlank) {
       const body = effectiveLines.slice(0, effectiveLines.length - 2).join('\n');
-      return { body, reply };
+      return { body, reply, ...(uuid !== undefined ? { uuid } : {}) };
     }
   }
 
-  return { body: text };
+  // No reply/boost marker: the body is the text with any trailing `⚑` uuid line
+  // peeled (a plain v1 post), else the whole text.
+  return { body: afterUuid.join('\n'), ...(uuid !== undefined ? { uuid } : {}) };
 };
 
 /** Parse a `⚓ <mid>` line into its mid, or null if malformed / not a canonical line. */
@@ -110,9 +203,10 @@ const parseCanonicalLine = (line: string): string | null => {
 };
 
 /**
- * Recover the canonical (feed-copy) mid declared by a DM reply copy's trailing
- * `⚓ <mid>` marker, or null. Tolerant: the marker must be the *final* line, so
- * marker-shaped text elsewhere never misfires (mirrors the other parsers).
+ * Recover the canonical (feed-copy) mid declared by a LEGACY DM reply copy's
+ * trailing `⚓ <mid>` marker, or null. New DM copies no longer emit this (they
+ * carry the shared `⚑` uuid instead); kept for parsing pre-v1 data. Tolerant:
+ * the marker must be the *final* line.
  */
 export const parseCanonicalMid = (text: string): string | null => {
   const lines = text.split('\n');
@@ -120,13 +214,13 @@ export const parseCanonicalMid = (text: string): string | null => {
   return parseCanonicalLine(lines[lines.length - 1] ?? '');
 };
 
-/** Reaction (like/emoji-react) control-DM text: `"<emoji> ↳ <mid>"`. */
-export const buildReactionText = (emoji: string, mid: string): string =>
-  `${emoji}${REACT_INFIX}${mid}`;
+/** Reaction (like/emoji-react) control-DM text: `"<emoji> ↳ <keyToken>"` (keyToken = `u:<uuid>` or bare mid). */
+export const buildReactionText = (emoji: string, ref: RefToken): string =>
+  `${emoji}${REACT_INFIX}${buildRefToken(ref)}`;
 
-/** Retraction control-DM text: `"✖ ↳ <mid> <emoji>"`. */
-export const buildUnreactionText = (emoji: string, mid: string): string =>
-  `${UNREACT_PREFIX}${mid} ${emoji}`;
+/** Retraction control-DM text: `"✖ ↳ <keyToken> <emoji>"`. */
+export const buildUnreactionText = (emoji: string, ref: RefToken): string =>
+  `${UNREACT_PREFIX}${buildRefToken(ref)} ${emoji}`;
 
 /**
  * Recognizes reaction/unreaction control-DM texts — single-line only,
@@ -141,18 +235,18 @@ export const parseReaction = (text: string): ParsedReaction | null => {
     const rest = text.slice(UNREACT_PREFIX.length);
     const lastSpace = rest.lastIndexOf(' ');
     if (lastSpace === -1) return null;
-    const mid = rest.slice(0, lastSpace);
+    const token = rest.slice(0, lastSpace);
     const emoji = rest.slice(lastSpace + 1);
-    if (!mid || !emoji) return null;
-    return { kind: 'unreact', emoji, mid };
+    if (!token || !emoji) return null;
+    return { kind: 'unreact', emoji, ref: parseRefToken(token) };
   }
 
   const infixIndex = text.indexOf(REACT_INFIX);
   if (infixIndex === -1) return null;
   const emoji = text.slice(0, infixIndex);
-  const mid = text.slice(infixIndex + REACT_INFIX.length);
-  if (!emoji || !mid) return null;
-  return { kind: 'react', emoji, mid };
+  const token = text.slice(infixIndex + REACT_INFIX.length);
+  if (!emoji || !token) return null;
+  return { kind: 'react', emoji, ref: parseRefToken(token) };
 };
 
 /**

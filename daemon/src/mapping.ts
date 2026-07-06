@@ -71,11 +71,11 @@ export const createStatusMapper = (store: Store, baseUrl: string): StatusMapper 
       return resolvedById.get(msgId) ?? null;
     };
     if (parsed.boost) {
-      const boostedMsgId = store.resolveMid(parsed.boost.mid);
+      const boostedMsgId = store.resolveKey(parsed.boost.keyString);
       if (boostedMsgId !== null) await fetchOnce(boostedMsgId);
     }
     if (parsed.reply) {
-      const replyToMsgId = store.resolveMid(parsed.reply.mid);
+      const replyToMsgId = store.resolveKey(parsed.reply.keyString);
       if (replyToMsgId !== null) await fetchOnce(replyToMsgId);
     }
     return messageToStatus(msg, baseUrl, description, resolver, (msgId) => resolvedById.get(msgId) ?? null);

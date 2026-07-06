@@ -5,7 +5,13 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { T } from '@deltachat/jsonrpc-client';
 import { writeFileSync } from 'node:fs';
 import { createStore, STORE_SCHEMA_VERSION } from '../src/store.js';
-import { buildBoostText, buildReplyText, buildReplyTextWithCanonical } from '../src/protocol.js';
+import {
+  buildBoostText,
+  buildReplyText,
+  mintPostUuid,
+  refFromToken,
+  type RefToken,
+} from '../src/protocol.js';
 import { makeMessage } from './entities.test.js';
 
 let dir: string;
@@ -19,6 +25,17 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
+
+/** A mid-targeting MsgRef (legacy targets keyed by mid). */
+const midRef = (mid: string, addr = 'author@example.org') => refFromToken({ kind: 'mid', mid }, addr);
+/**
+ * A LEGACY reply text: pre-v1 format with NO `⚑` uuid marker, so its post key
+ * is the canonical mid. Used by the canonical-mid alias tests, whose behavior
+ * (aliasMid re-key, reverse-alias resolution) only applies to legacy mid-keyed
+ * posts (v1 posts unify via their shared uuid instead).
+ */
+const legacyReply = (body: string, mid: string, addr = 'author@example.org') =>
+  `${body}\n\n↳re ${mid} ${addr}`;
 
 describe('createStore: mid <-> msgId index', () => {
   it('records a plain message with no markers', () => {
@@ -44,21 +61,21 @@ describe('createStore: mid <-> msgId index', () => {
 describe('createStore: reply edges', () => {
   it('records a reply child under the parent mid (feed message, default)', () => {
     const store = createStore(filePath);
-    const parentRef = { mid: 'parent-mid@example.org', addr: 'author@example.org' };
-    const replyMsg = makeMessage({ id: 20, text: buildReplyText('a reply', parentRef) });
+    const parentRef = midRef('parent-mid@example.org');
+    const replyMsg = makeMessage({ id: 20, text: buildReplyText('a reply', parentRef, mintPostUuid()) });
     store.ingestMessage(replyMsg, 'child-mid@example.org', true);
 
-    expect(store.replyChildren(parentRef.mid)).toEqual([20]);
-    expect(store.childrenCount(parentRef.mid)).toBe(1);
+    expect(store.replyChildren(parentRef.keyString)).toEqual([20]);
+    expect(store.childrenCount(parentRef.keyString)).toBe(1);
   });
 
   it('accumulates multiple children in order ingested', () => {
     const store = createStore(filePath);
-    const parentRef = { mid: 'parent-mid@example.org', addr: 'author@example.org' };
-    store.ingestMessage(makeMessage({ id: 21, text: buildReplyText('r1', parentRef) }), 'c1@example.org', true);
-    store.ingestMessage(makeMessage({ id: 22, text: buildReplyText('r2', parentRef) }), 'c2@example.org', true);
+    const parentRef = midRef('parent-mid@example.org');
+    store.ingestMessage(makeMessage({ id: 21, text: buildReplyText('r1', parentRef, mintPostUuid()) }), 'c1@example.org', true);
+    store.ingestMessage(makeMessage({ id: 22, text: buildReplyText('r2', parentRef, mintPostUuid()) }), 'c2@example.org', true);
 
-    expect(store.replyChildren(parentRef.mid)).toEqual([21, 22]);
+    expect(store.replyChildren(parentRef.keyString)).toEqual([21, 22]);
   });
 
   it('returns an empty array for a mid with no children', () => {
@@ -78,58 +95,58 @@ describe('createStore: reply edges', () => {
     // edge (its child mid), so a non-follower who only holds the DM copy still
     // sees the reply in the thread. Boosts stay feed-only (see boost tests).
     const store = createStore(filePath);
-    const parentRef = { mid: 'parent-mid@example.org', addr: 'author@example.org' };
-    const replyMsg = makeMessage({ id: 23, text: buildReplyText('a DM copy of a reply', parentRef) });
+    const parentRef = midRef('parent-mid@example.org');
+    const replyMsg = makeMessage({ id: 23, text: buildReplyText('a DM copy of a reply', parentRef, mintPostUuid()) });
     store.ingestMessage(replyMsg, 'dm-child-mid@example.org', false);
 
     // The child renders (resolves to its DM msgId).
-    expect(store.replyChildren(parentRef.mid)).toEqual([23]);
-    expect(store.childrenCount(parentRef.mid)).toBe(1);
-    expect(store.replyChildMids(parentRef.mid)).toEqual(['dm-child-mid@example.org']);
+    expect(store.replyChildren(parentRef.keyString)).toEqual([23]);
+    expect(store.childrenCount(parentRef.keyString)).toBe(1);
     // And the mid <-> msgId mapping is recorded for all messages.
     expect(store.resolveMid('dm-child-mid@example.org')).toBe(23);
   });
 
   it('defaults isFeedMessage to true when the third argument is omitted (backward compatible)', () => {
     const store = createStore(filePath);
-    const parentRef = { mid: 'parent-mid@example.org', addr: 'author@example.org' };
-    const replyMsg = makeMessage({ id: 24, text: buildReplyText('a reply', parentRef) });
+    const parentRef = midRef('parent-mid@example.org');
+    const replyMsg = makeMessage({ id: 24, text: buildReplyText('a reply', parentRef, mintPostUuid()) });
     store.ingestMessage(replyMsg, 'default-child-mid@example.org');
 
-    expect(store.replyChildren(parentRef.mid)).toEqual([24]);
+    expect(store.replyChildren(parentRef.keyString)).toEqual([24]);
   });
 
   it('a feed reply and its DM copy together register only one child (the fix for the double-count bug)', () => {
     const store = createStore(filePath);
-    const parentRef = { mid: 'parent-mid@example.org', addr: 'author@example.org' };
-    const replyText = buildReplyText('a reply', parentRef);
+    const parentRef = midRef('parent-mid@example.org');
+    const uuid = mintPostUuid();
+    const replyText = buildReplyText('a reply', parentRef, uuid);
     // Same logical reply, delivered twice: once via feed broadcast, once as a DM copy — different rfc724Mids.
     store.ingestMessage(makeMessage({ id: 29, text: replyText }), 'feed-copy-mid@example.org', true);
     store.ingestMessage(makeMessage({ id: 30, text: replyText }), 'dm-copy-mid@example.org', false);
 
-    expect(store.replyChildren(parentRef.mid)).toEqual([29]);
-    expect(store.childrenCount(parentRef.mid)).toBe(1);
+    expect(store.replyChildren(parentRef.keyString)).toEqual([29]);
+    expect(store.childrenCount(parentRef.keyString)).toBe(1);
   });
 });
 
 describe('createStore: boost edges', () => {
   it('records a booster msgId under the boosted mid', () => {
     const store = createStore(filePath);
-    const ref = { mid: 'orig-mid@example.org', addr: 'author@example.org' };
-    const boostMsg = makeMessage({ id: 40, text: buildBoostText(ref) });
+    const ref = midRef('orig-mid@example.org');
+    const boostMsg = makeMessage({ id: 40, text: buildBoostText(ref, mintPostUuid()) });
     store.ingestMessage(boostMsg, 'boost-mid@example.org', true);
 
-    expect(store.boostsByMid(ref.mid)).toEqual([40]);
-    expect(store.boostCount(ref.mid)).toBe(1);
+    expect(store.boostsByMid(ref.keyString)).toEqual([40]);
+    expect(store.boostCount(ref.keyString)).toBe(1);
   });
 
   it('reports isOwnBoost for a boost message sent from our own account (fromId 1)', () => {
     const store = createStore(filePath);
-    const ref = { mid: 'orig-mid@example.org', addr: 'author@example.org' };
-    const boostMsg = makeMessage({ id: 41, text: buildBoostText(ref), fromId: 1 });
+    const ref = midRef('orig-mid@example.org');
+    const boostMsg = makeMessage({ id: 41, text: buildBoostText(ref, mintPostUuid()), fromId: 1 });
     store.ingestMessage(boostMsg, 'boost-mid-2@example.org', true);
 
-    expect(store.isOwnBoost(ref.mid)).toBe(true);
+    expect(store.isOwnBoost(ref.keyString)).toBe(true);
   });
 
   it('reports isOwnBoost false when no boost from self is known', () => {
@@ -139,9 +156,9 @@ describe('createStore: boost edges', () => {
 
   it('finds our own boost msgId for a given mid (for unreblog)', () => {
     const store = createStore(filePath);
-    const ref = { mid: 'orig-mid@example.org', addr: 'author@example.org' };
-    store.ingestMessage(makeMessage({ id: 42, text: buildBoostText(ref), fromId: 1 }), 'b@example.org', true);
-    expect(store.ownBoostMsgId(ref.mid)).toBe(42);
+    const ref = midRef('orig-mid@example.org');
+    store.ingestMessage(makeMessage({ id: 42, text: buildBoostText(ref, mintPostUuid()), fromId: 1 }), 'b@example.org', true);
+    expect(store.ownBoostMsgId(ref.keyString)).toBe(42);
   });
 
   it('ownBoostMsgId is null when we have not boosted', () => {
@@ -151,44 +168,44 @@ describe('createStore: boost edges', () => {
 
   it('does not record a boost edge when isFeedMessage is false (DM boost-notify copy)', () => {
     const store = createStore(filePath);
-    const ref = { mid: 'orig-mid@example.org', addr: 'author@example.org' };
-    const boostMsg = makeMessage({ id: 43, text: buildBoostText(ref) });
+    const ref = midRef('orig-mid@example.org');
+    const boostMsg = makeMessage({ id: 43, text: buildBoostText(ref, mintPostUuid()) });
     store.ingestMessage(boostMsg, 'dm-boost-mid@example.org', false);
 
-    expect(store.boostsByMid(ref.mid)).toEqual([]);
-    expect(store.boostCount(ref.mid)).toBe(0);
+    expect(store.boostsByMid(ref.keyString)).toEqual([]);
+    expect(store.boostCount(ref.keyString)).toBe(0);
   });
 
   it('does not record ownBoosts when isFeedMessage is false, even from self', () => {
     const store = createStore(filePath);
-    const ref = { mid: 'orig-mid@example.org', addr: 'author@example.org' };
-    const boostMsg = makeMessage({ id: 44, text: buildBoostText(ref), fromId: 1 });
+    const ref = midRef('orig-mid@example.org');
+    const boostMsg = makeMessage({ id: 44, text: buildBoostText(ref, mintPostUuid()), fromId: 1 });
     store.ingestMessage(boostMsg, 'dm-own-boost-mid@example.org', false);
 
-    expect(store.isOwnBoost(ref.mid)).toBe(false);
-    expect(store.ownBoostMsgId(ref.mid)).toBeNull();
+    expect(store.isOwnBoost(ref.keyString)).toBe(false);
+    expect(store.ownBoostMsgId(ref.keyString)).toBeNull();
   });
 });
 
 describe('createStore: idempotent ingest', () => {
   it('ingesting the same msgId twice does not duplicate reply/boost edges', () => {
     const store = createStore(filePath);
-    const parentRef = { mid: 'parent-mid@example.org', addr: 'author@example.org' };
-    const replyMsg = makeMessage({ id: 50, text: buildReplyText('a reply', parentRef) });
+    const parentRef = midRef('parent-mid@example.org');
+    const replyMsg = makeMessage({ id: 50, text: buildReplyText('a reply', parentRef, mintPostUuid()) });
     store.ingestMessage(replyMsg, 'child-mid@example.org');
     store.ingestMessage(replyMsg, 'child-mid@example.org');
 
-    expect(store.replyChildren(parentRef.mid)).toEqual([50]);
+    expect(store.replyChildren(parentRef.keyString)).toEqual([50]);
   });
 
   it('ingesting the same boost msgId twice does not duplicate boost edges', () => {
     const store = createStore(filePath);
-    const ref = { mid: 'orig-mid@example.org', addr: 'author@example.org' };
-    const boostMsg = makeMessage({ id: 60, text: buildBoostText(ref) });
+    const ref = midRef('orig-mid@example.org');
+    const boostMsg = makeMessage({ id: 60, text: buildBoostText(ref, mintPostUuid()) });
     store.ingestMessage(boostMsg, 'boost-mid@example.org');
     store.ingestMessage(boostMsg, 'boost-mid@example.org');
 
-    expect(store.boostsByMid(ref.mid)).toEqual([60]);
+    expect(store.boostsByMid(ref.keyString)).toEqual([60]);
   });
 
   it('reports freshness: true on first ingest of a msgId, false on re-ingest', () => {
@@ -206,15 +223,15 @@ describe('createStore: idempotent ingest', () => {
 describe('createStore: persistence', () => {
   it('persists ingested state to the json file and reloads it in a new store instance', () => {
     const store = createStore(filePath);
-    const parentRef = { mid: 'parent-mid@example.org', addr: 'author@example.org' };
-    store.ingestMessage(makeMessage({ id: 70, text: buildReplyText('hi', parentRef) }), 'child-mid@example.org');
+    const parentRef = midRef('parent-mid@example.org');
+    store.ingestMessage(makeMessage({ id: 70, text: buildReplyText('hi', parentRef, mintPostUuid()) }), 'child-mid@example.org');
 
     const raw = readFileSync(filePath, 'utf8');
     expect(JSON.parse(raw)).toBeTruthy();
 
     const reloaded = createStore(filePath);
     expect(reloaded.resolveMid('child-mid@example.org')).toBe(70);
-    expect(reloaded.replyChildren(parentRef.mid)).toEqual([70]);
+    expect(reloaded.replyChildren(parentRef.keyString)).toEqual([70]);
   });
 
   it('lazily loads: creating a store for a nonexistent file does not throw and starts empty', () => {
@@ -226,11 +243,11 @@ describe('createStore: persistence', () => {
 describe('createStore: resolver shape used by entities mapping', () => {
   it('exposes resolveMid, childrenCount, boostCount, isOwnBoost together', () => {
     const store = createStore(filePath);
-    const parentRef = { mid: 'parent-mid@example.org', addr: 'author@example.org' };
-    store.ingestMessage(makeMessage({ id: 80, text: buildReplyText('hi', parentRef) }), 'child-mid@example.org');
+    const parentRef = midRef('parent-mid@example.org');
+    store.ingestMessage(makeMessage({ id: 80, text: buildReplyText('hi', parentRef, mintPostUuid()) }), 'child-mid@example.org');
 
     expect(store.resolveMid('child-mid@example.org')).toBe(80);
-    expect(store.childrenCount(parentRef.mid)).toBe(1);
+    expect(store.childrenCount(parentRef.keyString)).toBe(1);
     expect(store.childrenCount('child-mid@example.org')).toBe(0);
     expect(store.boostCount('child-mid@example.org')).toBe(0);
     expect(store.isOwnBoost('child-mid@example.org')).toBe(false);
@@ -458,9 +475,9 @@ describe('createStore: canonical-mid aliasing', () => {
 
   it('reply edges registered against a dm-mid resolve under the feed-mid once aliased (re-key on alias insertion)', () => {
     const store = createStore(filePath);
-    const ref = { mid: DM, addr: 'author@example.org' };
+    const ref = midRef(DM);
     // A child reply arrives referencing the DM copy's mid, before we learn the alias.
-    store.ingestMessage(makeMessage({ id: 10, text: buildReplyText('child', ref) }), 'child@example.org', true);
+    store.ingestMessage(makeMessage({ id: 10, text: legacyReply('child', ref.keyString, ref.addr) }), 'child@example.org', true);
     expect(store.childrenCount(DM)).toBe(1);
 
     // Now the alias is learned (e.g. an ingested canonical marker). The edge
@@ -473,8 +490,8 @@ describe('createStore: canonical-mid aliasing', () => {
   it('reply edges registered against a dm-mid AFTER the alias is known land on the feed-mid (write-time canonicalize)', () => {
     const store = createStore(filePath);
     store.aliasMid(DM, FEED);
-    const ref = { mid: DM, addr: 'author@example.org' };
-    store.ingestMessage(makeMessage({ id: 11, text: buildReplyText('child', ref) }), 'child2@example.org', true);
+    const ref = midRef(DM);
+    store.ingestMessage(makeMessage({ id: 11, text: legacyReply('child', ref.keyString, ref.addr) }), 'child2@example.org', true);
     expect(store.childrenCount(FEED)).toBe(1);
     expect(store.childrenCount(DM)).toBe(1); // read-time union covers the dm-mid too
   });
@@ -568,10 +585,10 @@ describe('createStore: non-follower thread edges (canonical-mid reply children)'
 
   it('registers a child edge from a DM-only reply (non-follower parent holds only the DM copy)', () => {
     const store = createStore(filePath);
-    const ref = { mid: PARENT_FEED, addr: 'author@example.org' };
+    const ref = midRef(PARENT_FEED);
     // A non-follower node received the reply only as a DM copy carrying the
     // parent's feed mid via its `⚓` marker (parsed into the reply ref here).
-    store.ingestMessage(makeMessage({ id: 10, fromId: 11, text: buildReplyText('hi', ref) }), CHILD_DM, false);
+    store.ingestMessage(makeMessage({ id: 10, fromId: 11, text: legacyReply('hi', ref.keyString, ref.addr) }), CHILD_DM, false);
     expect(store.childrenCount(PARENT_FEED)).toBe(1);
     expect(store.replyChildMids(PARENT_FEED)).toEqual([CHILD_DM]);
     expect(store.replyChildren(PARENT_FEED)).toEqual([10]); // resolves to the DM msgId
@@ -579,12 +596,12 @@ describe('createStore: non-follower thread edges (canonical-mid reply children)'
 
   it('resolves a child stored under the FEED mid back to its DM copy via reverse alias (feed copy absent)', () => {
     const store = createStore(filePath);
-    const ref = { mid: PARENT_FEED, addr: 'author@example.org' };
+    const ref = midRef(PARENT_FEED);
     // The DM copy carries a `⚓` marker, so it aliases CHILD_DM -> CHILD_FEED and
     // the child edge is stored under CHILD_FEED — but the FEED copy never
     // arrived (non-follower). resolveMid(CHILD_FEED) must reverse-resolve to the
     // DM copy A actually holds, so the reply still renders in the thread.
-    const dmText = buildReplyTextWithCanonical('hi', ref, CHILD_FEED);
+    const dmText = `hi\n\n↳re ${ref.keyString} ${ref.addr}\n⚓ ${CHILD_FEED}`;
     store.ingestMessage(makeMessage({ id: 15, fromId: 11, text: dmText }), CHILD_DM, false);
     expect(store.canonicalize(CHILD_DM)).toBe(CHILD_FEED);
     expect(store.replyChildMids(PARENT_FEED)).toEqual([CHILD_FEED]);
@@ -594,12 +611,12 @@ describe('createStore: non-follower thread edges (canonical-mid reply children)'
 
   it('collapses a feed copy and a DM copy of the same reply to one child once aliased (dedupe)', () => {
     const store = createStore(filePath);
-    const ref = { mid: PARENT_FEED, addr: 'author@example.org' };
+    const ref = midRef(PARENT_FEED);
     // Two child entries whose alias is learned only LATER (differing bodies, so
     // the per-author text-twin heuristic doesn't fire at ingest — this test
     // exercises the aliasMid VALUE sweep in isolation).
-    store.ingestMessage(makeMessage({ id: 20, fromId: 11, text: buildReplyText('r1', ref) }), CHILD_FEED, true);
-    store.ingestMessage(makeMessage({ id: 21, fromId: 11, text: buildReplyText('r2', ref) }), CHILD_DM, false);
+    store.ingestMessage(makeMessage({ id: 20, fromId: 11, text: legacyReply('r1', ref.keyString, ref.addr) }), CHILD_FEED, true);
+    store.ingestMessage(makeMessage({ id: 21, fromId: 11, text: legacyReply('r2', ref.keyString, ref.addr) }), CHILD_DM, false);
     expect(store.childrenCount(PARENT_FEED)).toBe(2);
 
     // Learning the child alias sweeps the VALUE list: the two collapse to one,
@@ -612,10 +629,10 @@ describe('createStore: non-follower thread edges (canonical-mid reply children)'
 
   it('re-keys BOTH parent key and child value when the parent alias is learned late', () => {
     const store = createStore(filePath);
-    const ref = { mid: PARENT_DM, addr: 'author@example.org' };
+    const ref = midRef(PARENT_DM);
     // A DM-only reply registered under the parent's DM mid, before the parent
     // alias (parent's own dm->feed) is known.
-    store.ingestMessage(makeMessage({ id: 30, fromId: 11, text: buildReplyText('c', ref) }), CHILD_DM, false);
+    store.ingestMessage(makeMessage({ id: 30, fromId: 11, text: legacyReply('c', ref.keyString, ref.addr) }), CHILD_DM, false);
     expect(store.childrenCount(PARENT_DM)).toBe(1);
 
     store.aliasMid(PARENT_DM, PARENT_FEED);
@@ -629,10 +646,10 @@ describe('createStore: non-follower thread edges (canonical-mid reply children)'
     // Feed child already registered under the (feed) parent. Differing bodies
     // keep the per-author text-twin heuristic out of the way (see above); the
     // alias arrives late via aliasMid, exercising the VALUE sweep + dedupe.
-    const ref = { mid: PARENT_FEED, addr: 'author@example.org' };
-    store.ingestMessage(makeMessage({ id: 40, fromId: 11, text: buildReplyText('r1', ref) }), CHILD_FEED, true);
+    const ref = midRef(PARENT_FEED);
+    store.ingestMessage(makeMessage({ id: 40, fromId: 11, text: legacyReply('r1', ref.keyString, ref.addr) }), CHILD_FEED, true);
     // The DM copy of that same reply registers a second entry (alias unknown).
-    store.ingestMessage(makeMessage({ id: 41, fromId: 11, text: buildReplyText('r2', ref) }), CHILD_DM, false);
+    store.ingestMessage(makeMessage({ id: 41, fromId: 11, text: legacyReply('r2', ref.keyString, ref.addr) }), CHILD_DM, false);
     expect(store.childrenCount(PARENT_FEED)).toBe(2);
 
     // Alias insertion sweeps the value list, mapping CHILD_DM -> CHILD_FEED and
@@ -644,11 +661,11 @@ describe('createStore: non-follower thread edges (canonical-mid reply children)'
 
   it('childrenCount counts ALL logical children including one not held locally', () => {
     const store = createStore(filePath);
-    const ref = { mid: PARENT_FEED, addr: 'author@example.org' };
+    const ref = midRef(PARENT_FEED);
     // One child we hold (renderable) and one we only heard referenced.
-    store.ingestMessage(makeMessage({ id: 50, fromId: 11, text: buildReplyText('held', ref) }), CHILD_FEED, true);
+    store.ingestMessage(makeMessage({ id: 50, fromId: 11, text: legacyReply('held', ref.keyString, ref.addr) }), CHILD_FEED, true);
     store.ingestMessage(
-      makeMessage({ id: 51, fromId: 11, text: buildReplyText('grandchild ref', { mid: CHILD_DM, addr: 'x@x' }) }),
+      makeMessage({ id: 51, fromId: 11, text: legacyReply('grandchild ref', midRef(CHILD_DM, 'x@x').keyString, 'x@x') }),
       'grandchild@example.org',
       true,
     );
@@ -663,10 +680,10 @@ describe('createStore: non-follower thread edges (canonical-mid reply children)'
 });
 
 describe('createStore: historical text-twin aliasing during (re)index', () => {
-  const ref = { mid: 'orig@example.org', addr: 'author@example.org' };
+  const ref = midRef('orig@example.org');
   // Pre-fix copies are exact text twins: the feed copy and DM copy of a reply
   // carry identical text (no canonical marker existed yet).
-  const replyText = buildReplyText('nice pic', ref);
+  const replyText = legacyReply('nice pic', ref.keyString, ref.addr);
 
   it('aliases a SELF DM reply copy to a SELF feed reply copy with identical text (feed swept first)', () => {
     const store = createStore(filePath);
@@ -750,28 +767,28 @@ describe('createStore: historical text-twin aliasing during (re)index', () => {
     // child edges, so without the per-author twin alias the thread shows the
     // reply twice and replies_count doubles.
     const store = createStore(filePath);
-    const parent = { mid: 'own-post@example.org', addr: 'me@example.org' };
-    const historicalReply = buildReplyText('nice pic', parent);
-    store.ingestMessage(makeMessage({ id: 1, fromId: 1, text: 'my post' }), parent.mid, true);
+    const parent = midRef('own-post@example.org', 'me@example.org');
+    const historicalReply = legacyReply('nice pic', parent.keyString, parent.addr);
+    store.ingestMessage(makeMessage({ id: 1, fromId: 1, text: 'my post' }), parent.keyString, true);
     store.ingestMessage(makeMessage({ id: 88, fromId: 11, sender: carol, text: historicalReply }), 'feed88@example.org', true);
     store.ingestMessage(makeMessage({ id: 89, fromId: 11, sender: carol, text: historicalReply }), 'dm89@example.org', false);
 
-    expect(store.childrenCount(parent.mid)).toBe(1);
-    expect(store.replyChildren(parent.mid)).toEqual([88]); // the FEED copy renders
-    expect(store.replyChildMids(parent.mid)).toEqual(['feed88@example.org']);
+    expect(store.childrenCount(parent.keyString)).toBe(1);
+    expect(store.replyChildren(parent.keyString)).toEqual([88]); // the FEED copy renders
+    expect(store.replyChildMids(parent.keyString)).toEqual(['feed88@example.org']);
   });
 
   it('follower no-double-count holds in the opposite sweep order (DM copy first)', () => {
     const store = createStore(filePath);
-    const parent = { mid: 'own-post@example.org', addr: 'me@example.org' };
-    const historicalReply = buildReplyText('nice pic', parent);
-    store.ingestMessage(makeMessage({ id: 1, fromId: 1, text: 'my post' }), parent.mid, true);
+    const parent = midRef('own-post@example.org', 'me@example.org');
+    const historicalReply = legacyReply('nice pic', parent.keyString, parent.addr);
+    store.ingestMessage(makeMessage({ id: 1, fromId: 1, text: 'my post' }), parent.keyString, true);
     store.ingestMessage(makeMessage({ id: 89, fromId: 11, sender: carol, text: historicalReply }), 'dm89@example.org', false);
     store.ingestMessage(makeMessage({ id: 88, fromId: 11, sender: carol, text: historicalReply }), 'feed88@example.org', true);
 
-    expect(store.childrenCount(parent.mid)).toBe(1);
-    expect(store.replyChildren(parent.mid)).toEqual([88]);
-    expect(store.replyChildMids(parent.mid)).toEqual(['feed88@example.org']);
+    expect(store.childrenCount(parent.keyString)).toBe(1);
+    expect(store.replyChildren(parent.keyString)).toEqual([88]);
+    expect(store.replyChildMids(parent.keyString)).toEqual(['feed88@example.org']);
   });
 
   it('prefers an explicit canonical marker over text-twin matching for a DM copy', () => {
@@ -913,8 +930,119 @@ describe('createStore: schema migration / re-index', () => {
     expect(store.listNotifications({})).toHaveLength(1);
 
     const raw = JSON.parse(readFileSync(filePath, 'utf8'));
-    expect(raw.schemaVersion).toBe(3);
+    expect(raw.schemaVersion).toBe(4);
     expect(raw.schemaVersion).toBe(STORE_SCHEMA_VERSION);
+  });
+
+  it('v3 -> v4 migration does not duplicate notifications (mid-based dedupe keys survive the post-key switch)', () => {
+    // The v3->v4 concern: era-3 notification dedupe keys were computed under the
+    // canonical-MID keyspace. Legacy messages carry no `⚑` uuid, so `postKey`
+    // falls back to the canonical mid for them — the SAME key era 3 used. A
+    // v3->v4 re-index therefore recomputes the identical `type:addr:mid[:emoji]`
+    // dedupe key, which migration preserves, so the same historical event never
+    // re-notifies. (Only v1 messages key by uuid, and none exist in a v3 store.)
+    const v3 = {
+      schemaVersion: 3,
+      midToMsgId: { 'reply@x': 5, 'p@x': 1 },
+      msgIdToMid: { 1: 'p@x', 5: 'reply@x' },
+      replyChildren: { 'p@x': ['reply@x'] },
+      boostsByMid: {},
+      ownBoosts: {},
+      ingestedMsgIds: [1, 5],
+      ownMids: ['p@x'],
+      reactions: { 'p@x': { 'bob@x': ['❤'] } },
+      canonicalByMid: {},
+      feedTextToMid: {},
+      dmPendingText: {},
+      notifications: [
+        { id: '1', type: 'mention', createdAt: '2020-01-01T00:00:00.000Z', accountAddr: 'bob@x', statusMsgId: 5 },
+        { id: '2', type: 'favourite', createdAt: '2020-01-01T00:00:00.000Z', accountAddr: 'bob@x' },
+      ],
+      // The dedupe keys as era-3 computed them: keyed by the parent's CANONICAL mid.
+      notificationDedupeKeys: ['mention:bob@x:p@x', 'favourite:bob@x:p@x:❤'],
+      nextNotificationId: 3,
+      pendingFollowRequests: {},
+    };
+    writeFileSync(filePath, JSON.stringify(v3));
+
+    const store = createStore(filePath);
+    // Both historical notifications preserved (nothing lost).
+    expect(store.listNotifications({})).toHaveLength(2);
+
+    // Re-deriving the SAME two legacy events (post key = canonical mid, since
+    // these messages have no uuid) is a dedupe no-op — no re-notification.
+    const dupeMention = store.addNotification({
+      type: 'mention',
+      accountAddr: 'bob@x',
+      statusMsgId: 5,
+      dedupeMid: 'p@x',
+    });
+    const dupeFav = store.addNotification({
+      type: 'favourite',
+      accountAddr: 'bob@x',
+      dedupeMid: 'p@x',
+      dedupeEmoji: '❤',
+    });
+    expect(dupeMention).toBeNull();
+    expect(dupeFav).toBeNull();
+    expect(store.listNotifications({})).toHaveLength(2);
+
+    const raw = JSON.parse(readFileSync(filePath, 'utf8'));
+    expect(raw.schemaVersion).toBe(STORE_SCHEMA_VERSION);
+  });
+});
+
+describe('createStore: post-uuid keyspace (wire convention v1)', () => {
+  it('resolveKey resolves a post uuid to its msgId', () => {
+    const UUID = '11111111-2222-4333-8444-555555555555';
+    const store = createStore(filePath);
+    store.ingestMessage(makeMessage({ id: 100, text: buildReplyText('r', midRef('p@x'), UUID) }), 'c@x', true);
+
+    expect(store.resolveKey(UUID)).toBe(100);
+    expect(store.resolveMid(UUID)).toBe(100);
+  });
+
+  it('resolveKey prefers the FEED copy when both copies of one uuid are local', () => {
+    const UUID = '22222222-3333-4444-8555-666666666666';
+    const store = createStore(filePath);
+    const text = buildReplyText('r', midRef('p@x'), UUID);
+    store.ingestMessage(makeMessage({ id: 200, text }), 'feed@x', true);
+    store.ingestMessage(makeMessage({ id: 201, text }), 'dm@x', false);
+
+    expect(store.resolveKey(UUID)).toBe(200);
+  });
+
+  it('a reply targeting a post by uuid registers the child edge under that uuid', () => {
+    const PARENT_UUID = '33333333-4444-4555-8666-777777777777';
+    const CHILD_UUID = '44444444-5555-4666-8777-888888888888';
+    const store = createStore(filePath);
+    const parentRef: RefToken = { kind: 'uuid', uuid: PARENT_UUID };
+    store.ingestMessage(
+      makeMessage({ id: 300, text: buildReplyText('child', refFromToken(parentRef, 'a@x'), CHILD_UUID) }),
+      'c@x',
+      true,
+    );
+
+    expect(store.childrenCount(PARENT_UUID)).toBe(1);
+    expect(store.replyChildren(PARENT_UUID)).toEqual([300]);
+  });
+
+  it('childrenCount/replies count via midForMsgId returns the post uuid key', () => {
+    const UUID = '55555555-6666-4777-8888-999999999999';
+    const store = createStore(filePath);
+    store.ingestMessage(makeMessage({ id: 400, text: buildReplyText('r', midRef('p@x'), UUID) }), 'c@x', true);
+
+    expect(store.midForMsgId(400)).toBe(UUID);
+  });
+
+  it('two replies sharing NO uuid are two children', () => {
+    const PARENT_UUID = '66666666-7777-4888-8999-aaaaaaaaaaaa';
+    const store = createStore(filePath);
+    const parentRef = refFromToken({ kind: 'uuid', uuid: PARENT_UUID }, 'a@x');
+    store.ingestMessage(makeMessage({ id: 500, text: buildReplyText('r1', parentRef, mintPostUuid()) }), 'c1@x', true);
+    store.ingestMessage(makeMessage({ id: 501, text: buildReplyText('r2', parentRef, mintPostUuid()) }), 'c2@x', true);
+
+    expect(store.childrenCount(PARENT_UUID)).toBe(2);
   });
 });
 

@@ -5,7 +5,12 @@ import type { T } from '@deltachat/jsonrpc-client';
 import { createApp, type AppContext } from '../src/server.js';
 import type { TimelineQuery, Transport } from '../src/transport/types.js';
 import { createStore, ephemeralStorePath } from '../src/store.js';
-import { buildInviteRequestText, buildReplyText, buildReplyTextWithCanonical } from '../src/protocol.js';
+import { buildInviteRequestText, buildReplyText, mintPostUuid, refFromToken, type RefToken } from '../src/protocol.js';
+
+/** A mid-targeting ref token (legacy targets keyed by mid). */
+const midTok = (mid: string): RefToken => ({ kind: 'mid', mid });
+/** A mid-targeting MsgRef. */
+const midRef = (mid: string, addr: string) => refFromToken({ kind: 'mid', mid }, addr);
 import { createStreamingHub, type StreamingSocket } from '../src/streaming.js';
 import { makeContact, makeMessage } from './entities.test.js';
 
@@ -624,14 +629,15 @@ describe('POST /api/v1/statuses with in_reply_to_id', () => {
     expect(posts[0]?.text).toContain(BOB.address);
     expect(posts[0]?.quotedText).toContain('bob');
 
-    // a DM copy goes to the author (bob, contact id 11), carrying the feed
-    // copy's body/reply-marker PLUS a trailing canonical-mid marker declaring
-    // the feed copy's mid (which the feed copy itself does NOT carry).
+    // a DM copy goes to the author (bob, contact id 11), byte-identical to the
+    // feed copy — both carry the SAME `⚑` logical-post uuid (wire convention
+    // v1), so a node holding either copy unifies the one logical reply. The DM
+    // copy no longer carries a `⚓` canonical marker (the shared uuid subsumes it).
     expect(dms).toHaveLength(1);
     expect(dms[0]?.contactId).toBe(11);
-    const feedCopyMid = 'mid-100@example.org'; // first minted mid for the posted feed copy
-    expect(dms[0]?.text).toBe(`${posts[0]?.text}\n⚓ ${feedCopyMid}`);
-    // The feed copy keeps its exact prior format (no canonical marker).
+    expect(dms[0]?.text).toBe(posts[0]?.text);
+    // Both copies carry a `⚑` uuid marker; neither carries the legacy `⚓` marker.
+    expect(posts[0]?.text).toContain('⚑ ');
     expect(posts[0]?.text).not.toContain('⚓');
   });
 
@@ -670,10 +676,11 @@ describe('acting on a DM copy uses the canonical mid (issue point 5)', () => {
    */
   const withDmCopy = () => {
     const h = makeFakeTransport();
-    const ref = { mid: 'parent@example.org', addr: BOB.address };
+    // A LEGACY DM copy: pre-v1 reply text carrying a `⚓` canonical marker (still
+    // parsed). targetRef falls back to this canonical mid (no `⚑` uuid present).
     const dmCopy = makeMessage({
       id: 600,
-      text: buildReplyTextWithCanonical('a private reply', ref, CANON),
+      text: `a private reply\n\n↳re parent@example.org ${BOB.address}\n⚓ ${CANON}`,
       fromId: 11,
       sender: BOB,
       timestamp: 1751800500,
@@ -776,11 +783,11 @@ describe('status mapping: boost from a follower (synthesized reblog)', () => {
     const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
 
     const { buildBoostText, buildQuotedText } = await import('../src/protocol.js');
-    const ref = { mid: 'unknown-mid@remote.org', addr: 'remote@remote.org' };
+    const ref = midRef('unknown-mid@remote.org', 'remote@remote.org');
     messages.push({
       ...messages[0]!,
       id: 500,
-      text: buildBoostText(ref),
+      text: buildBoostText(ref, mintPostUuid()),
       quote: { kind: 'JustText', text: buildQuotedText('remote person', 'something neat', 500) },
       fromId: 11,
       sender: BOB,
@@ -841,8 +848,8 @@ describe('GET /api/v1/statuses/:id/context', () => {
 
     const parentMid = mids.get(12)!; // "newest, from bob"
     const parentAddr = messages.find((m) => m.id === 12)!.sender.address;
-    const ref = { mid: parentMid, addr: parentAddr };
-    const replyText = buildReplyText('a reply', ref);
+    const ref = midRef(parentMid, parentAddr);
+    const replyText = buildReplyText('a reply', ref, mintPostUuid());
 
     const feedCopy = makeMessage({ id: 500, text: replyText, fromId: 1 });
     const dmCopy = makeMessage({ id: 501, text: replyText, fromId: 1 });
@@ -871,8 +878,8 @@ describe('GET /api/v1/statuses/:id/context', () => {
 
     const parentMid = mids.get(12)!;
     const parentAddr = messages.find((m) => m.id === 12)!.sender.address;
-    const ref = { mid: parentMid, addr: parentAddr };
-    const replyText = buildReplyText('a reply', ref);
+    const ref = midRef(parentMid, parentAddr);
+    const replyText = buildReplyText('a reply', ref, mintPostUuid());
 
     const feedCopy = makeMessage({ id: 500, text: replyText, fromId: 1 });
     messages.push(feedCopy);
@@ -1203,7 +1210,7 @@ describe('GET /api/v1/notifications', () => {
       id: 300,
       fromId: 11,
       sender: BOB,
-      text: buildReactionText('❤', mids.get(11)!),
+      text: buildReactionText('❤', midTok(mids.get(11)!)),
     });
     messages.push(reactionMsg);
     mids.set(300, 'reaction-mid@example.org');
@@ -1231,7 +1238,7 @@ describe('GET /api/v1/notifications', () => {
         id: 300 + i,
         fromId: 11,
         sender: BOB,
-        text: buildReactionText(i === 0 ? '🎉' : i === 1 ? '🎈' : '🎁', mids.get(11)!),
+        text: buildReactionText(i === 0 ? '🎉' : i === 1 ? '🎈' : '🎁', midTok(mids.get(11)!)),
       });
       messages.push(reactionMsg);
       mids.set(300 + i, `reaction-mid-${i}@example.org`);

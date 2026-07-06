@@ -20,13 +20,17 @@ import { createMediaStore, isSupportedImageMime } from './media.js';
 import {
   buildBoostText,
   buildInviteRequestText,
+  buildPostText,
   buildQuotedText,
   buildReactionText,
   buildReplyText,
-  buildReplyTextWithCanonical,
   buildUnreactionText,
+  mintPostUuid,
   parseCanonicalMid,
   parseMarkers,
+  parsePostUuid,
+  refFromToken,
+  type RefToken,
 } from './protocol.js';
 import { createStore, ephemeralStorePath, type Store } from './store.js';
 import { deriveOnIngest } from './ingest.js';
@@ -180,20 +184,31 @@ export const createApp = (
   };
 
   /**
-   * The mid a reply/react/boost should reference for a given target message
-   * (issue point 5). When the target's text carries a `⚓` canonical marker —
-   * i.e. it's a DM copy the user only holds privately (a non-follower's post) —
-   * the outgoing ref must use the declared canonical (feed-copy) mid, so third
-   * parties who only have feed copies can resolve the interaction. This is a
-   * pure protocol parse, so it costs no extra RPC beyond the `messageMid` the
-   * caller already needed. Returns null iff neither a marker nor `messageMid`
-   * yields a mid.
+   * The ref TOKEN a reply/react/boost should target for a given message (wire
+   * convention v1). Preference order:
+   *  1. The target's own logical-post UUID (`⚑` marker) — a uuid ref. Every v1
+   *     copy of a post carries the same uuid, so a uuid ref resolves on ANY
+   *     node holding ANY copy (or a third party who only has the feed copy).
+   *     This is the case mid-based refs could not solve.
+   *  2. A legacy `⚓` canonical-mid marker (a DM copy of a pre-v1 reply the user
+   *     only holds privately) — a canonical mid ref.
+   *  3. The target's own rfc724 mid — a mid ref (legacy targets that never
+   *     minted a uuid).
+   * Pure protocol parse plus at most the `messageMid` the caller already needed.
+   * Returns null iff none of the above yields a token.
    */
-  const targetMid = async (transport: Transport, target: T.Message): Promise<string | null> => {
+  const targetRef = async (transport: Transport, target: T.Message): Promise<RefToken | null> => {
+    const uuid = parsePostUuid(target.text);
+    if (uuid) return { kind: 'uuid', uuid };
     const canonical = parseCanonicalMid(target.text);
-    if (canonical) return canonical;
-    return transport.messageMid(target.id);
+    if (canonical) return { kind: 'mid', mid: canonical };
+    const mid = await transport.messageMid(target.id);
+    return mid ? { kind: 'mid', mid } : null;
   };
+
+  /** The store post-key for a ref token (mirrors ingest.ts `refKey`): a uuid, or the canonicalized mid. */
+  const refKeyString = (ref: RefToken): string =>
+    ref.kind === 'uuid' ? ref.uuid : store.canonicalize(ref.mid);
 
   app.use(
     '*',
@@ -560,33 +575,30 @@ export const createApp = (
     if (inReplyToId) {
       const target = await transport.message(Number(inReplyToId));
       if (!target) return c.json({ error: 'Record not found' }, 404);
-      // Canonical mid of the reply target: a `⚓` marker on the target (a DM
-      // copy the user only holds) wins over the target's own DM mid (point 5).
-      const mid = await targetMid(transport, target);
-      if (!mid) return c.json({ error: 'cannot resolve message id for reply target' }, 422);
+      // The reply target's ref TOKEN: its logical-post uuid if it carries one,
+      // else a canonical/mid ref (wire convention v1). A uuid ref resolves on
+      // any node holding any copy of the target — including a third party who
+      // only has the feed copy — which is exactly what mid refs couldn't do.
+      const ref = await targetRef(transport, target);
+      if (!ref) return c.json({ error: 'cannot resolve message id for reply target' }, 422);
+      const parentRef = refFromToken(ref, target.sender.address);
       await ingest(transport, target);
 
-      const ref = { mid, addr: target.sender.address };
-      // The feed broadcast copy keeps the plain reply format (its text is its
-      // identity for historical matching). Post it FIRST so we can learn its
-      // mid — the canonical identity — and declare it on the DM copy.
-      const feedText = buildReplyText(text, ref);
+      // Mint ONE logical-post UUID for THIS reply and embed it in BOTH copies —
+      // the feed broadcast copy and the DM copy to the parent author — so a node
+      // holding either copy (or only a ref to it) unifies the one logical post.
+      // The DM copy no longer needs the `⚓` canonical marker: the shared uuid
+      // subsumes it.
+      const uuid = mintPostUuid();
+      const replyText = buildReplyText(text, parentRef, uuid);
       const quotedText = buildQuotedText(target.sender.displayName, target.text, QUOTE_EXCERPT_CAP);
 
-      const msg = await transport.post(feedText, { quotedText });
+      const msg = await transport.post(replyText, { quotedText });
       await ingest(transport, msg);
 
       if (target.sender.id !== DC_CONTACT_ID_SELF) {
-        // DM copy carries the canonical (feed-copy) mid so the parent author —
-        // who may only ever see this DM copy — and any third party can resolve
-        // everyone's interactions to the one feed mid. When our own DM copy is
-        // later ingested, the store's alias learning (its `⚓` marker) normalizes
-        // this node's own tallies/edges too.
-        const canonicalMid = await transport.messageMid(msg.id);
-        const dmText = canonicalMid
-          ? buildReplyTextWithCanonical(text, ref, canonicalMid)
-          : feedText;
-        await transport.sendControlDm(target.sender.id, dmText, quotedText).catch((err) => {
+        // DM copy: same body, same reply ref, SAME uuid as the feed copy.
+        await transport.sendControlDm(target.sender.id, replyText, quotedText).catch((err) => {
           console.error('sendControlDm failed (non-fatal):', err);
         });
       }
@@ -594,7 +606,10 @@ export const createApp = (
       return c.json(await toStatus(transport, msg));
     }
 
-    const msg = await transport.post(text, media ? { file: media.path } : undefined);
+    // A plain post carries its own minted logical-post UUID marker so replies/
+    // boosts/reactions to it can target it by uuid (resolvable on any node).
+    const postText = buildPostText(text, mintPostUuid());
+    const msg = await transport.post(postText, media ? { file: media.path } : undefined);
     if (media) mediaStore.tagMessage(msg.id, media.description);
     await ingest(transport, msg);
     return c.json(await toStatus(transport, msg, media?.description ?? null));
@@ -628,13 +643,13 @@ export const createApp = (
     const transport = c.get('transport');
     const target = await transport.message(Number(c.req.param('id')));
     if (!target) return c.json({ error: 'Record not found' }, 404);
-    // Canonical mid: boost the feed identity even when acting on a DM copy.
-    const mid = await targetMid(transport, target);
-    if (!mid) return c.json({ error: 'cannot resolve message id to boost' }, 422);
+    // Target the boosted post's uuid ref (or canonical/mid) so the boost
+    // resolves on any node, even when acting on a DM copy.
+    const ref = await targetRef(transport, target);
+    if (!ref) return c.json({ error: 'cannot resolve message id to boost' }, 422);
     await ingest(transport, target);
 
-    const ref = { mid, addr: target.sender.address };
-    const boostText = buildBoostText(ref);
+    const boostText = buildBoostText(refFromToken(ref, target.sender.address), mintPostUuid());
     const quotedText = buildQuotedText(target.sender.displayName, target.text, BOOST_QUOTE_CAP);
 
     const msg = await transport.post(boostText, { quotedText });
@@ -652,9 +667,10 @@ export const createApp = (
     const transport = c.get('transport');
     const target = await transport.message(Number(c.req.param('id')));
     if (!target) return c.json({ error: 'Record not found' }, 404);
-    const mid = await transport.messageMid(target.id);
-
-    const ownBoostMsgId = mid ? store.ownBoostMsgId(mid) : null;
+    // Look up our own boost of this target under its POST KEY (uuid ref or
+    // canonical mid) — the same key `reblog` registered `ownBoosts` under.
+    const ref = await targetRef(transport, target);
+    const ownBoostMsgId = ref ? store.ownBoostMsgId(refKeyString(ref)) : null;
     if (ownBoostMsgId !== null) {
       await transport.deleteMessage(ownBoostMsgId);
     }
@@ -683,18 +699,22 @@ export const createApp = (
     const transport = c.get('transport');
     const target = await transport.message(Number(c.req.param('id')));
     if (!target) return c.json({ error: 'Record not found' }, 404);
-    // Canonical mid: react to the feed identity even when acting on a DM copy,
-    // so a third party who only has the feed copy sees our reaction.
-    const mid = await targetMid(transport, target);
-    if (!mid) return c.json({ error: 'cannot resolve message id to react to' }, 422);
+    // Target the post's uuid ref (or canonical/mid) so a third party who only
+    // has the feed copy sees our reaction, even when acting on a DM copy.
+    const ref = await targetRef(transport, target);
+    if (!ref) return c.json({ error: 'cannot resolve message id to react to' }, 422);
     await ingest(transport, target);
 
     const myAddr = await mapper.ownAddr(transport);
-    if (action === 'react') store.applyReaction(mid, myAddr, emoji);
-    else store.retractReaction(mid, myAddr, emoji);
+    // Apply to our own local tally under the target's POST KEY.
+    const key = refKeyString(ref);
+    if (action === 'react') store.applyReaction(key, myAddr, emoji);
+    else store.retractReaction(key, myAddr, emoji);
 
     if (target.sender.id !== DC_CONTACT_ID_SELF) {
-      const text = action === 'react' ? buildReactionText(emoji, mid) : buildUnreactionText(emoji, mid);
+      // The control DM carries the KEY TOKEN (`u:<uuid>` or bare mid), which the
+      // recipient's `parseReaction` discriminates back to a ref token.
+      const text = action === 'react' ? buildReactionText(emoji, ref) : buildUnreactionText(emoji, ref);
       const quotedText = buildQuotedText(target.sender.displayName, target.text, REACTION_QUOTE_CAP);
       await transport.sendControlDm(target.sender.id, text, quotedText).catch((err) => {
         console.error('sendControlDm failed (non-fatal):', err);
@@ -724,13 +744,14 @@ export const createApp = (
     if (!target) return c.json({ error: 'Record not found' }, 404);
     await ingest(transport, target);
 
-    // Ancestors: walk the reply-marker chain upward via the store.
+    // Ancestors: walk the reply-marker chain upward via the store, resolving
+    // each parent by its ref POST KEY (uuid or canonical mid).
     const ancestorMsgs: T.Message[] = [];
     let current: T.Message | null = target;
     for (let depth = 0; depth < MAX_CONTEXT_ANCESTORS && current; depth++) {
       const parsed = parseMarkers(current.text);
       if (!parsed.reply) break;
-      const parentMsgId = store.resolveMid(parsed.reply.mid);
+      const parentMsgId = store.resolveKey(parsed.reply.keyString);
       if (parentMsgId === null) break;
       const parentMsg = await transport.message(parentMsgId);
       if (!parentMsg) break;
@@ -741,12 +762,13 @@ export const createApp = (
 
     // Descendants: transitively walk the reply-children index, breadth-first,
     // capped, then sorted chronologically (oldest first). The index stores each
-    // child's CANONICAL mid; resolve it to a msgId (feed copy when present, DM
-    // copy otherwise — so a non-follower's DM-only reply still renders), skip
-    // unresolvable children, and recurse on the child's own canonical mid.
-    const targetMid = await transport.messageMid(target.id);
+    // child's POST KEY; resolve it to a msgId (feed copy preferred, DM copy
+    // otherwise — so a non-follower's DM-only reply still renders), skip
+    // unresolvable children, and recurse on the child's own post key. The BFS
+    // root is the target's OWN post key (its uuid, or its canonical mid).
+    const rootKey = store.midForMsgId(target.id);
     const descendantMsgs: T.Message[] = [];
-    const queue: string[] = targetMid ? [targetMid] : [];
+    const queue: string[] = rootKey ? [rootKey] : [];
     const seen = new Set<number>();
     const seenMids = new Set<string>();
     while (queue.length > 0 && descendantMsgs.length < MAX_CONTEXT_DESCENDANTS) {
@@ -754,10 +776,10 @@ export const createApp = (
       for (const childMid of store.replyChildMids(mid)) {
         if (seenMids.has(childMid) || descendantMsgs.length >= MAX_CONTEXT_DESCENDANTS) continue;
         seenMids.add(childMid);
-        const childMsgId = store.resolveMid(childMid);
+        const childMsgId = store.resolveKey(childMid);
         if (childMsgId === null || seen.has(childMsgId)) {
           // Unresolvable child (referenced but never received) still gets its
-          // subtree explored — recurse on its canonical mid regardless.
+          // subtree explored — recurse on its post key regardless.
           queue.push(childMid);
           continue;
         }

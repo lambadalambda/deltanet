@@ -75,11 +75,17 @@ describe('non-follower thread rendering + own-reaction re-index over chatmail', 
     throw new Error('timed out waiting for feed message');
   };
 
-  /** Locate the DM copy of a reply on the recipient: body starts with text AND carries `⚓`. */
+  /**
+   * Locate the DM copy of a reply on the recipient: body starts with text AND
+   * carries the `⚑` logical-post uuid marker (wire convention v1 — the DM copy
+   * no longer carries the legacy `⚓` marker). Excludes feed copies by id.
+   */
   const findCanonicalDm = async (t: Transport, text: string): Promise<T.Message | null> => {
+    const feedIds = new Set((await t.timeline({ limit: 40 })).map((m) => m.id));
     for (let id = 1; id < 400; id++) {
+      if (feedIds.has(id)) continue;
       const msg = await t.message(id).catch(() => null);
-      if (msg && msg.text.startsWith(text) && msg.text.includes('⚓')) return msg;
+      if (msg && msg.text.startsWith(text) && msg.text.includes('⚑')) return msg;
     }
     return null;
   };
@@ -152,7 +158,7 @@ describe('non-follower thread rendering + own-reaction re-index over chatmail', 
       throw new Error('timed out waiting for DM copy on A');
     };
     const dmOnA = await waitDm();
-    expect(dmOnA.text).toContain('⚓');
+    expect(dmOnA.text).toContain('⚑');
 
     // --- A reacts ❤ to B's reply AND replies to it (acting on the DM copy) ---
     const aFavRes = await aApp.request(`/api/v1/statuses/${dmOnA.id}/favourite`, { method: 'POST' });

@@ -1281,3 +1281,122 @@ copies NOT auto-aliasing now use differing bodies so the explicit
 `aliasMid`-later VALUE-sweep path stays covered in isolation. Migration test
 added for v2 → v3 (double-child footprint dropped, version bumped).
 `pnpm test` (546) + `pnpm check` green.
+
+## 2026-07-06 — wire convention v1: author-minted logical post UUIDs (schema v4)
+
+Implemented ../meta/issues/post-uuids.md in full. Message-ID-based refs cannot
+unify the two copies of a logical reply across a third party: a reply's feed
+copy and DM copy have two different rfc724 mids, and a node holding only one
+copy (or only a ref to the other) can't resolve. Live orphan: bob couldn't
+resolve lain's reply ref to carol's DM copy. Fixed at the protocol level —
+every logical post is now minted an author-side UUIDv4 carried in ALL its
+copies, and refs target that uuid. This SUPERSEDES the `⚓` canonical-mid marker
++ text-twin aliasing for NEW data (both kept parse-only / legacy-only).
+
+### Design decisions (delegated to me by the brief)
+
+- **Marker glyph/format: `⚑ <uuidv4>`** as the final line of every outgoing
+  status message (plain post, reply, boost, and the DM copy of a reply).
+  Pennant reads sensibly in vanilla Delta Chat and doesn't collide with the
+  other single-glyph markers (`⚓ ♻ ↳ ⇋`). Tolerant final-line parse like the
+  others (`parsePostUuid`). `buildPostText(body, uuid)` is the new plain-post
+  builder; a media-only post is just the marker line.
+- **Ref-token discrimination: explicit `u:` prefix for uuid refs, bare token
+  for mids** (`RefToken = {kind:'uuid',uuid} | {kind:'mid',mid}`,
+  `buildRefToken`/`parseRefToken`). Shape alone would suffice here (uuidv4 has
+  no `@`, mids in this deployment always do), but the explicit tag means the
+  parser never guesses and stays robust to future mid shapes. Documented as
+  belt-and-braces. `MsgRef` became `{ key: RefToken; keyString; addr }` —
+  `keyString` is the opaque post-key value (uuid or mid) callers pass straight
+  to the store.
+- **DM copy no longer carries `⚓`.** The reply send path mints ONE uuid and
+  embeds it in BOTH the feed copy and the DM copy — which are now byte-identical
+  — so a node holding either unifies the logical reply via the shared uuid. The
+  `⚓` marker is stopped on emit (`buildReplyTextWithCanonical` deleted) but
+  `parseCanonicalMid` is kept so pre-v1 DM copies on migrated stores still
+  resolve; `parseMarkers` peels a trailing `⚑` first, then a legacy `⚓`, then
+  the reply/boost marker.
+
+### Store: the post-key keyspace
+
+- `postKey(msg) = parsePostUuid(text) ?? canonicalize(mid)`. Every derived index
+  is keyed by post key: `replyChildren` (parent KEY and child VALUES),
+  `boostsByMid`, `ownBoosts`, `ownMids`, `reactions`, plus notification
+  dedupe/statusMsgId. Follow-back state is mid-free and untouched.
+- **`resolveKey(key) → msgId`**: a uuid key resolves via a new `uuidToMsgIds`
+  index, PREFERRING the feed copy. The store can't see DC chat types, so
+  `ingestMessage` records the feed copy specially in `uuidFeedMsgId` from the
+  `isFeedMessage` flag it already receives; `resolveKey` returns
+  `uuidFeedMsgId[uuid] ?? uuidToMsgIds[uuid][0]`, then falls through the existing
+  canonical-mid chain (canonical-first + reverse-alias) for mid-shaped keys.
+  `resolveMid` stays as a synonym.
+- **`midForMsgId` now returns the post KEY** (new persistent `msgIdToKey`,
+  canonicalized at read for late-learned legacy aliases). This is what makes the
+  mapper's `childrenCount`/`boostCount`/`reactionTallies` lookups hit the
+  uuid-keyed edges of a v1 post rather than its raw mid.
+- Ref → key at the edges: `refKey(keyString)` = the uuid for a uuid ref, else
+  `canon(mid)`. Mirrored in ingest.ts (`refKey(store, ref)`) and server.ts
+  (`refKeyString`).
+
+### Emit paths (server.ts)
+
+`targetRef(transport, target)` picks the target's ref token: its `⚑` uuid if it
+carries one → uuid ref (resolves on ANY node holding ANY copy, including a third
+party with only the feed copy — the case mid refs couldn't do); else a legacy
+`⚓` canonical mid; else its own mid. Reply/boost/reaction/unreaction all target
+that token; reaction control DMs carry the token verbatim (parser
+discriminates). Unreblog and the local reaction apply now key by the target's
+post key too. Context: ancestors resolve `parsed.reply.keyString` via
+`resolveKey`; the descendants BFS roots at the target's own post key
+(`midForMsgId`) and resolves child post keys.
+
+### parentId fallback removal
+
+`messageToStatus` no longer falls back to `msg.parentId` for `in_reply_to_id`
+(DC sets parentId from email References to the previous same-chat message — not
+authorship-level reply intent; it made replies render as replying to unrelated
+posts). Resolution is now marker/uuid-only, null otherwise. Also simplified the
+content body to always use `parsed.body` (which strips the `⚑` line too, so a
+plain v1 post never renders its uuid marker). Regression unit test: a reply with
+an unresolvable ref AND a set `parentId` renders `in_reply_to_id` null.
+
+### Migration / dedupe (schema v4)
+
+`STORE_SCHEMA_VERSION = 4`; `migrate` drops all derived indices including the
+new uuid indices (`...emptyData()` resets them) and keeps
+notifications/dedupeKeys/pending as before. **Dedupe safety across the v3→v4
+post-key switch**: legacy messages carry no `⚑` marker, so `postKey` falls back
+to the canonical mid for them — exactly the key era-3 dedupe keys were computed
+under. A v3→v4 re-index therefore recomputes the SAME `type:addr:mid[:emoji]`
+keys (preserved), so historical events never re-notify. Only v1 messages key by
+uuid, and none exist in a v3 store. Proven by a v3→v4 unit test: a legacy
+mention + favourite survive the migration and re-adding the same events dedupes
+to no-ops.
+
+### What supersedes what
+
+- `⚑` uuid unification SUPERSEDES `⚓` canonical-mid marker + `learnAlias`
+  text-twin aliasing for NEW messages. The canonical-mid machinery
+  (`canonicalByMid`, `aliasMid`, reverse-alias resolution, `learnAlias`) is
+  RETAINED for legacy (marker-less / `⚓`-marked) data on migrated stores — its
+  store tests were converted to build legacy no-uuid reply text.
+- The reply-child VALUE re-key on alias insertion is now mostly redundant for
+  v1 data (both copies share a uuid, so they collapse at ingest) but still
+  covers legacy pairs.
+
+### Tests
+
+- Unit (573 total): protocol round-trips (uuid marker, ref-token
+  discrimination, both-copies-one-uuid via shared uuid, reaction tokens,
+  legacy `⚓` parse-only); store post-key keyspace (resolveKey, feed-copy
+  preference, uuid-targeted child edges, distinct-uuid = distinct children);
+  entities parentId-fallback-removal regression; v3→v4 no-double-notify
+  migration.
+- Integration (7 total, real chatmail): NEW `post-uuids.test.ts` — C follows A
+  and B, B follows A, A doesn't follow B; A posts, B replies, A replies to B's
+  reply holding only B's DM copy; on C (feed copies only) the full thread
+  renders connected, A's reply resolving to B's FEED reply via uuid
+  (in_reply_to chains A→B→A, replies_count correct). The two existing DM-copy
+  integration tests updated to detect the DM copy by its `⚑` marker.
+
+`pnpm test` (573) + `pnpm check` + `pnpm test:integration` (7) all green.

@@ -147,8 +147,8 @@ describe('canonical-mid unification over chatmail', () => {
       throw new Error('timed out waiting for DM copy on A');
     };
     const dmOnA = await waitDm();
-    // Sanity: A's copy is the DM copy carrying the canonical marker.
-    expect(dmOnA.text).toContain('⚓');
+    // Sanity: A's copy is the DM copy carrying the `⚑` uuid marker (wire v1).
+    expect(dmOnA.text).toContain('⚑');
 
     // --- A reacts ❤ to B's reply (acting on the DM copy) ---
     const aFavRes = await aApp.request(`/api/v1/statuses/${dmOnA.id}/favourite`, { method: 'POST' });
@@ -216,15 +216,18 @@ describe('canonical-mid unification over chatmail', () => {
 
 /**
  * Locate the DM copy of a reply on the recipient: the message whose body starts
- * with `text` AND carries a `⚓` canonical marker (the feed copy never reaches a
- * non-follower). Probes a window of message ids via `message()` — per-account
- * ids are small and sequential, so this reliably finds a freshly-delivered DM
- * without needing chat-listing plumbing on the narrow `Transport` interface.
+ * with `text` AND carries a `⚑` logical-post uuid marker (wire convention v1;
+ * the feed copy never reaches a non-follower). Excludes feed copies by id, then
+ * probes a window of message ids via `message()` — per-account ids are small and
+ * sequential, so this reliably finds a freshly-delivered DM without needing
+ * chat-listing plumbing on the narrow `Transport` interface.
  */
 const findCanonicalDm = async (t: Transport, text: string): Promise<T.Message | null> => {
+  const feedIds = new Set((await t.timeline({ limit: 40 })).map((m) => m.id));
   for (let id = 1; id < 400; id++) {
+    if (feedIds.has(id)) continue;
     const msg = await t.message(id).catch(() => null);
-    if (msg && msg.text.startsWith(text) && msg.text.includes('⚓')) return msg;
+    if (msg && msg.text.startsWith(text) && msg.text.includes('⚑')) return msg;
   }
   return null;
 };

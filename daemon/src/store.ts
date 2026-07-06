@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { T } from '@deltachat/jsonrpc-client';
-import { parseCanonicalMid, parseMarkers } from './protocol.js';
+import { parseCanonicalMid, parseMarkers, parsePostUuid } from './protocol.js';
 
 const DC_CONTACT_ID_SELF = 1;
 
@@ -25,8 +25,13 @@ const DC_CONTACT_ID_SELF = 1;
  * pre-canonical (marker-less) reply as children — double-rendered threads and
  * inflated replies_count on follower nodes — so already-migrated v2 stores
  * must re-index once more with the generalized aliasing.
+ * Version 4 introduced the POST-KEY keyspace (wire convention v1 — author-minted
+ * logical-post UUIDs, see ../DEVLOG.md): every derived index is now keyed by
+ * `postKey(msg) = parsed uuid ?? canonicalize(mid)`, and a new uuid->msgId index
+ * (preferring feed copies) backs `resolveKey`. The `migrate` drop covers the new
+ * uuid index too, so a v3 store re-indexes into the post-key shape on restart.
  */
-export const STORE_SCHEMA_VERSION = 3;
+export const STORE_SCHEMA_VERSION = 4;
 
 export type NotificationType =
   | 'follow'
@@ -97,25 +102,48 @@ type StoreData = {
   midToMsgId: Record<string, number>;
   msgIdToMid: Record<number, string>;
   /**
-   * Reply thread edges: parent CANONICAL mid -> child CANONICAL mids. Values are
-   * mids (not msgIds) so a reply delivered twice — the feed broadcast copy and
-   * the DM copy to the parent author, under two different rfc724 Message-IDs —
-   * collapses to ONE child entry once their alias is known (set semantics), and
-   * a non-follower who only holds the DM copy still gets a thread edge (the DM
-   * copy's mid resolves to the DM msgId via `resolveMid`). Registered from BOTH
-   * feed and Single-chat reply-marker messages (see `ingestMessage`). Read paths
-   * resolve each child mid canonical-first to a msgId, skipping unresolvable
-   * ones; `childrenCount` counts ALL entries (the logical reply count).
+   * msgId -> that message's own POST KEY (its uuid, or its canonical mid),
+   * recorded at ingest. `midForMsgId` returns this so the status mapper looks up
+   * a post's reply/boost/reaction tallies under the same key the edges/tallies
+   * are stored under (a v1 post's edges are uuid-keyed, not mid-keyed).
+   */
+  msgIdToKey: Record<number, string>;
+  /**
+   * Logical-post UUID -> the msgIds of every LOCAL copy carrying that uuid (wire
+   * convention v1). One logical post can have several copies (a reply's feed
+   * broadcast copy + its DM copy share ONE uuid), so this is a list.
+   * `resolveKey` prefers the FEED copy (see `uuidFeedMsgId`) when several
+   * copies are local, since timelines/threads render feed copies.
+   */
+  uuidToMsgIds: Record<string, number[]>;
+  /**
+   * Logical-post UUID -> the msgId of its FEED copy, when a feed-chat copy of
+   * that uuid has been ingested. Recorded from `ingestMessage`'s
+   * `isFeedMessage` flag (the store doesn't know DC chat types itself). Lets
+   * `resolveKey` prefer the feed copy over a DM copy for the same logical post.
+   */
+  uuidFeedMsgId: Record<string, number>;
+  /**
+   * Reply thread edges: parent POST-KEY -> child POST-KEYs. A post key is
+   * `postKey(msg) = parsed uuid ?? canonicalize(mid)` (wire convention v1), so
+   * the feed broadcast copy and DM copy of one logical reply — which share ONE
+   * uuid — collapse to a single child entry (set semantics), and a node holding
+   * only the DM copy still gets a thread edge (its post key resolves to whatever
+   * copy it holds via `resolveKey`). Registered from BOTH feed and Single-chat
+   * reply-marker messages. Read paths resolve each child key to a msgId
+   * (feed-copy preferred), skipping unresolvable ones; `childrenCount` counts
+   * ALL entries (the logical reply count).
    */
   replyChildren: Record<string, string[]>;
+  /** msgIds boosting a post, keyed by the boosted post's POST-KEY. */
   boostsByMid: Record<string, number[]>;
-  /** msgIds (this account's own boosts) keyed by the mid they boosted. */
+  /** msgIds (this account's own boosts) keyed by the boosted post's POST-KEY. */
   ownBoosts: Record<string, number>;
   /** msgIds already ingested, so re-ingesting the same message is a no-op. */
   ingestedMsgIds: number[];
-  /** mids authored by SELF (DC contact id 1). */
+  /** POST-KEYs authored by SELF (DC contact id 1). */
   ownMids: string[];
-  /** mid -> reactor address -> emoji[] (a reactor may use several distinct emoji per mid). */
+  /** POST-KEY -> reactor address -> emoji[] (a reactor may use several distinct emoji per post). */
   reactions: StoredReactions;
   notifications: Notification[];
   /** Dedupe keys already recorded, so re-adding the same notification is a no-op. */
@@ -138,6 +166,9 @@ const emptyData = (): StoreData => ({
   dmPendingText: {},
   midToMsgId: {},
   msgIdToMid: {},
+  msgIdToKey: {},
+  uuidToMsgIds: {},
+  uuidFeedMsgId: {},
   replyChildren: {},
   boostsByMid: {},
   ownBoosts: {},
@@ -152,14 +183,20 @@ const emptyData = (): StoreData => ({
 
 /**
  * Migrate an older/versionless store to the current schema: DROP every
- * derivable index (mid maps, edges — including `replyChildren`, whose value
- * shape changed from msgIds to child canonical mids in v2 — tallies,
- * ingestedMsgIds, ownMids, alias map) so the startup backfill re-derives them
- * fresh with canonical-mid aliasing, but KEEP notifications + dedupe keys +
- * pending requests + the next
- * notification id — so re-derivation can never duplicate-notify (the dedupe
- * keys still match) and no user-visible history is lost. Never touches any
- * Delta Chat database; a QA node heals on a plain restart. Pure.
+ * derivable index (mid maps, the uuid->msgId index, edges — including
+ * `replyChildren`, now keyed by post keys — tallies, ingestedMsgIds, ownMids,
+ * alias map) so the startup backfill re-derives them fresh, but KEEP
+ * notifications + dedupe keys + pending requests + the next notification id — so
+ * re-derivation can never duplicate-notify and no user-visible history is lost.
+ *
+ * DEDUPE SAFETY across the v3->v4 post-key switch: legacy messages carry no `⚑`
+ * uuid marker, so `postKey` falls back to the canonical mid for them — exactly
+ * the key era-3 dedupe keys were computed under. Re-deriving notifications for
+ * pre-v1 events therefore recomputes the SAME `type:addr:mid[:emoji]` dedupe
+ * keys, which are preserved here, so a v3->v4 re-index never re-notifies for
+ * historical events. (Only v1 messages, which never existed in a v3 store, key
+ * by uuid.) Never touches any Delta Chat database; a QA node heals on a plain
+ * restart. Pure.
  */
 const migrate = (old: StoreData): StoreData => ({
   ...emptyData(),
@@ -198,6 +235,15 @@ export type Store = {
    * tallies and at READ time for lookups (belt and braces).
    */
   canonicalize(mid: string): string;
+  /**
+   * Resolve a POST KEY (a logical-post uuid OR a canonical/raw mid) to a locally
+   * held msgId, or null. UUID-shaped keys resolve via the uuid index (preferring
+   * the FEED copy when several copies are local); mid-shaped keys fall through
+   * the existing canonical-mid resolve chain. This is the single resolution
+   * entry point for the post-key keyspace (wire convention v1). `resolveMid` is
+   * kept as a synonym (a mid is a valid post key) for existing call sites.
+   */
+  resolveKey(key: string): number | null;
   /**
    * Learn that `dmMid` is a DM copy of the feed post `feedMid`. Records the
    * alias and RE-KEYS any edges/tallies/mappings already registered against
@@ -306,17 +352,43 @@ export const createStore = (filePath: string): Store => {
   const canon = (mid: string): string => load().canonicalByMid[mid] ?? mid;
 
   /**
-   * Resolve a mid to a locally-held msgId, canonical-first: the canonical (feed)
-   * copy when we hold it, else the raw mid, else — for a non-follower who only
-   * ever received the DM copy but stored the child edge under the CANONICAL
-   * (feed) mid — a REVERSE-alias lookup for any dmMid that aliases to this feed
-   * mid and is itself indexed. That last fallback is what lets a DM-only reply
-   * (whose thread edge is keyed by the feed mid it will never receive) still
-   * render from the DM copy A actually holds.
+   * The POST KEY for an ingested message (wire convention v1): its own logical
+   * UUID marker if present, else its canonicalized mid. This is the single
+   * keyspace all derived indices (edges, tallies, boosts, ownMids) key by.
+   * Pure: `mid` is this message's own rfc724 Message-ID.
    */
-  const resolve = (d: StoreData, mid: string): number | null => {
-    const c = canon(mid);
-    const direct = d.midToMsgId[c] ?? d.midToMsgId[mid];
+  const postKey = (text: string, mid: string): string => parsePostUuid(text) ?? canon(mid);
+
+  /**
+   * The post key a reply/boost/reaction ref points at: a uuid ref targets that
+   * uuid directly; a mid ref canonicalizes (legacy targets, aliased DM copies).
+   * `keyString` is either a uuid (uuid ref) or a mid (mid ref) — we discriminate
+   * on shape (uuids have no '@'; mids in this deployment always do), matching
+   * the wire ref-token discrimination. Pure.
+   */
+  const refKey = (keyString: string): string =>
+    keyString.includes('@') ? canon(keyString) : keyString;
+
+  /**
+   * Resolve a POST KEY (uuid or mid) to a locally-held msgId, or null.
+   *  - A uuid key resolves via the uuid index, PREFERRING the feed copy
+   *    (`uuidFeedMsgId`) when several local copies share the uuid — timelines/
+   *    threads render feed copies. Falls back to any copy if no feed copy is held.
+   *  - A mid key resolves canonical-first: the canonical (feed) copy when held,
+   *    else the raw mid, else a REVERSE-alias lookup for any dmMid that aliases
+   *    to this feed mid and is itself indexed (a DM-only reply whose thread edge
+   *    is keyed by a feed mid the node never received).
+   */
+  const resolve = (d: StoreData, key: string): number | null => {
+    // UUID key: prefer the feed copy, else any local copy carrying the uuid.
+    const feedCopy = d.uuidFeedMsgId[key];
+    if (feedCopy !== undefined) return feedCopy;
+    const copies = d.uuidToMsgIds[key];
+    if (copies !== undefined && copies.length > 0) return copies[0]!;
+
+    // Mid key: canonical-first with the reverse-alias fallback.
+    const c = canon(key);
+    const direct = d.midToMsgId[c] ?? d.midToMsgId[key];
     if (direct !== undefined) return direct;
     for (const [dmMid, feedMid] of Object.entries(d.canonicalByMid)) {
       if (feedMid === c && d.midToMsgId[dmMid] !== undefined) return d.midToMsgId[dmMid];
@@ -446,37 +518,51 @@ export const createStore = (filePath: string): Store => {
       d.midToMsgId[mid] = msg.id;
       d.msgIdToMid[msg.id] = mid;
 
-      if (msg.fromId === DC_CONTACT_ID_SELF && !d.ownMids.includes(mid)) {
-        d.ownMids.push(mid);
-      }
-
-      // Learn a canonical alias for this message (explicit marker or historical
-      // text-twin) BEFORE registering edges, so edge keys canonicalize correctly.
+      // Learn a canonical alias for this message (explicit `⚓` legacy marker or
+      // historical text-twin) BEFORE computing keys, so a mid-shaped post key
+      // canonicalizes correctly.
       learnAlias(d, msg, mid, isFeedMessage);
 
       const parsed = parseMarkers(msg.text);
 
+      // Register the uuid->msgId index for every copy carrying a `⚑` marker.
+      // Record the feed copy specially so `resolveKey` can prefer it when
+      // several copies of one logical post (feed + DM) are held locally — the
+      // store can't see DC chat types itself, so it relies on `isFeedMessage`.
+      if (parsed.uuid) {
+        const copies = d.uuidToMsgIds[parsed.uuid] ?? [];
+        if (!copies.includes(msg.id)) copies.push(msg.id);
+        d.uuidToMsgIds[parsed.uuid] = copies;
+        if (isFeedMessage) d.uuidFeedMsgId[parsed.uuid] = msg.id;
+      }
+
+      // The message's own POST KEY: its uuid if it minted one, else its
+      // canonical mid (legacy). ownMids + msgIdToKey are keyed by post key too.
+      const ownKey = postKey(msg.text, mid);
+      d.msgIdToKey[msg.id] = ownKey;
+      if (msg.fromId === DC_CONTACT_ID_SELF && !d.ownMids.includes(ownKey)) {
+        d.ownMids.push(ownKey);
+      }
+
       // Reply edges register from BOTH feed copies AND Single-chat DM reply
       // copies — a non-follower who only holds the DM copy of a reply must still
-      // get a thread edge, or the reply is invisible in the thread (see
-      // ../meta/issues/non-follower-thread-rendering.md). The VALUE stored is
-      // the child's CANONICAL mid, not its msgId: both copies of one logical
-      // reply canonicalize to the same feed mid, so set-add dedupe collapses
-      // them to a single child entry. Parent mid is canonicalized at write time
-      // so an interaction referencing a DM copy's mid lands on the feed copy
-      // (belt: read-time canonicalization too).
+      // get a thread edge, or the reply is invisible in the thread. The VALUE
+      // stored is the child's POST KEY: both copies of one logical reply share
+      // one uuid (or canonicalize to one mid), so set-add dedupe collapses them
+      // to a single child entry. The parent key is the ref's post key (its uuid,
+      // or its canonical mid).
       if (parsed.reply) {
-        const key = canon(parsed.reply.mid);
-        const childMid = canon(mid);
+        const key = refKey(parsed.reply.keyString);
+        const childKey = ownKey;
         const children = d.replyChildren[key] ?? [];
-        if (!children.includes(childMid)) children.push(childMid);
+        if (!children.includes(childKey)) children.push(childKey);
         d.replyChildren[key] = children;
       }
 
       // Boost edges stay FEED-only: boosts have no DM copy (unlike replies), so
       // there's nothing to unify — registering from a DM would be spurious.
       if (isFeedMessage && parsed.boost) {
-        const key = canon(parsed.boost.mid);
+        const key = refKey(parsed.boost.keyString);
         const boosters = d.boostsByMid[key] ?? [];
         boosters.push(msg.id);
         d.boostsByMid[key] = boosters;
@@ -499,7 +585,15 @@ export const createStore = (filePath: string): Store => {
     },
 
     resolveMid: (mid) => resolve(load(), mid),
-    midForMsgId: (msgId) => load().msgIdToMid[msgId] ?? null,
+    resolveKey: (key) => resolve(load(), key),
+    // The message's own POST KEY (canonicalized at read for a mid-shaped key
+    // whose alias was learned after ingest; a uuid key passes through). Used by
+    // the mapper to look up this post's reply/boost/reaction tallies.
+    midForMsgId: (msgId) => {
+      const d = load();
+      const key = d.msgIdToKey[msgId];
+      return key !== undefined ? canon(key) : (d.msgIdToMid[msgId] ?? null);
+    },
     replyChildren: (mid) => {
       const d = load();
       const resolved: number[] = [];

@@ -3,7 +3,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createStore, type Store } from '../src/store.js';
-import { buildBoostText, buildReactionText, buildReplyText, buildUnreactionText } from '../src/protocol.js';
+import {
+  buildBoostText,
+  buildReactionText,
+  buildReplyText,
+  buildUnreactionText,
+  mintPostUuid,
+  refFromToken,
+  type RefToken,
+} from '../src/protocol.js';
 import { deriveOnIngest } from '../src/ingest.js';
 import { makeMessage } from './entities.test.js';
 
@@ -24,6 +32,9 @@ afterEach(() => {
 const OWN_MID = 'own-mid@example.org';
 const BOB = 'bob@example.org';
 
+/** A mid-targeting ref token (these tests target legacy mid-keyed posts). */
+const midTok = (mid: string): RefToken => ({ kind: 'mid', mid });
+
 const seedOwnMessage = () => {
   store.ingestMessage(makeMessage({ id: 1, fromId: 1, text: 'my original post' }), OWN_MID);
 };
@@ -31,8 +42,8 @@ const seedOwnMessage = () => {
 describe('deriveOnIngest: mentions (replies)', () => {
   it('creates a mention notification when an incoming reply targets an own mid', () => {
     seedOwnMessage();
-    const ref = { mid: OWN_MID, addr: 'self@example.org' };
-    const msg = makeMessage({ id: 2, fromId: 11, text: buildReplyText('nice!', ref), sender: { address: BOB } as any });
+    const ref = refFromToken({ kind: 'mid', mid: OWN_MID }, 'self@example.org');
+    const msg = makeMessage({ id: 2, fromId: 11, text: buildReplyText('nice!', ref, mintPostUuid()), sender: { address: BOB } as any });
     store.ingestMessage(msg, 'reply-mid@example.org');
 
     deriveOnIngest(store, msg, 'reply-mid@example.org');
@@ -43,16 +54,16 @@ describe('deriveOnIngest: mentions (replies)', () => {
   });
 
   it('does not notify when the reply target is not an own mid', () => {
-    const ref = { mid: 'someone-elses-mid@example.org', addr: 'other@example.org' };
-    const msg = makeMessage({ id: 2, fromId: 11, text: buildReplyText('nice!', ref), sender: { address: BOB } as any });
+    const ref = refFromToken({ kind: 'mid', mid: 'someone-elses-mid@example.org' }, 'other@example.org');
+    const msg = makeMessage({ id: 2, fromId: 11, text: buildReplyText('nice!', ref, mintPostUuid()), sender: { address: BOB } as any });
     deriveOnIngest(store, msg, 'reply-mid@example.org');
     expect(store.listNotifications({})).toHaveLength(0);
   });
 
   it('dedupes a reply seen twice (DM copy + feed copy) to a single notification', () => {
     seedOwnMessage();
-    const ref = { mid: OWN_MID, addr: 'self@example.org' };
-    const msg = makeMessage({ id: 2, fromId: 11, text: buildReplyText('nice!', ref), sender: { address: BOB } as any });
+    const ref = refFromToken({ kind: 'mid', mid: OWN_MID }, 'self@example.org');
+    const msg = makeMessage({ id: 2, fromId: 11, text: buildReplyText('nice!', ref, mintPostUuid()), sender: { address: BOB } as any });
 
     deriveOnIngest(store, msg, 'reply-mid@example.org');
     deriveOnIngest(store, msg, 'reply-mid@example.org');
@@ -64,8 +75,8 @@ describe('deriveOnIngest: mentions (replies)', () => {
 describe('deriveOnIngest: reblogs (boosts)', () => {
   it('creates a reblog notification when an incoming boost targets an own mid', () => {
     seedOwnMessage();
-    const ref = { mid: OWN_MID, addr: 'self@example.org' };
-    const msg = makeMessage({ id: 3, fromId: 11, text: buildBoostText(ref), sender: { address: BOB } as any });
+    const ref = refFromToken({ kind: 'mid', mid: OWN_MID }, 'self@example.org');
+    const msg = makeMessage({ id: 3, fromId: 11, text: buildBoostText(ref, mintPostUuid()), sender: { address: BOB } as any });
 
     deriveOnIngest(store, msg, 'boost-mid@example.org');
 
@@ -75,8 +86,8 @@ describe('deriveOnIngest: reblogs (boosts)', () => {
   });
 
   it('does not notify when the boosted mid is not our own', () => {
-    const ref = { mid: 'not-ours@example.org', addr: 'other@example.org' };
-    const msg = makeMessage({ id: 3, fromId: 11, text: buildBoostText(ref), sender: { address: BOB } as any });
+    const ref = refFromToken({ kind: 'mid', mid: 'not-ours@example.org' }, 'other@example.org');
+    const msg = makeMessage({ id: 3, fromId: 11, text: buildBoostText(ref, mintPostUuid()), sender: { address: BOB } as any });
     deriveOnIngest(store, msg, 'boost-mid@example.org');
     expect(store.listNotifications({})).toHaveLength(0);
   });
@@ -85,7 +96,7 @@ describe('deriveOnIngest: reblogs (boosts)', () => {
 describe('deriveOnIngest: reactions', () => {
   it('applies a heart reaction and notifies favourite when the mid is our own', () => {
     seedOwnMessage();
-    const msg = makeMessage({ id: 4, fromId: 11, text: buildReactionText('❤', OWN_MID), sender: { address: BOB } as any });
+    const msg = makeMessage({ id: 4, fromId: 11, text: buildReactionText('❤', midTok(OWN_MID)), sender: { address: BOB } as any });
 
     deriveOnIngest(store, msg, 'react-mid@example.org');
 
@@ -97,7 +108,7 @@ describe('deriveOnIngest: reactions', () => {
 
   it('applies a non-heart reaction and notifies pleroma:emoji_reaction with the emoji field', () => {
     seedOwnMessage();
-    const msg = makeMessage({ id: 4, fromId: 11, text: buildReactionText('🎉', OWN_MID), sender: { address: BOB } as any });
+    const msg = makeMessage({ id: 4, fromId: 11, text: buildReactionText('🎉', midTok(OWN_MID)), sender: { address: BOB } as any });
 
     deriveOnIngest(store, msg, 'react-mid@example.org');
 
@@ -115,7 +126,7 @@ describe('deriveOnIngest: reactions', () => {
     const msg = makeMessage({
       id: 4,
       fromId: 11,
-      text: buildReactionText('❤', 'not-ours@example.org'),
+      text: buildReactionText('❤', midTok('not-ours@example.org')),
       sender: { address: BOB } as any,
     });
     deriveOnIngest(store, msg, 'react-mid@example.org');
@@ -129,7 +140,7 @@ describe('deriveOnIngest: reactions', () => {
     const msg = makeMessage({
       id: 5,
       fromId: 11,
-      text: buildUnreactionText('❤', OWN_MID),
+      text: buildUnreactionText('❤', midTok(OWN_MID)),
       sender: { address: BOB } as any,
     });
     deriveOnIngest(store, msg, 'unreact-mid@example.org');
@@ -139,7 +150,7 @@ describe('deriveOnIngest: reactions', () => {
 
   it('does not double-notify the same reactor+emoji seen twice', () => {
     seedOwnMessage();
-    const msg = makeMessage({ id: 4, fromId: 11, text: buildReactionText('❤', OWN_MID), sender: { address: BOB } as any });
+    const msg = makeMessage({ id: 4, fromId: 11, text: buildReactionText('❤', midTok(OWN_MID)), sender: { address: BOB } as any });
     deriveOnIngest(store, msg, 'react-mid@example.org');
     deriveOnIngest(store, msg, 'react-mid@example.org');
     expect(store.listNotifications({})).toHaveLength(1);
@@ -170,7 +181,7 @@ describe('backfill order-independence (two-pass ingest/derive)', () => {
     const reactionMsg = makeMessage({
       id: 10,
       fromId: 11,
-      text: buildReactionText('❤', OWN_MID),
+      text: buildReactionText('❤', midTok(OWN_MID)),
       sender: { address: BOB } as any,
     });
     const ownMsg = makeMessage({ id: 1, fromId: 1, text: 'my original post' });
@@ -209,7 +220,7 @@ describe('backfill order-independence (two-pass ingest/derive)', () => {
     const reactionMsg = makeMessage({
       id: 10,
       fromId: 11,
-      text: buildReactionText('❤', OWN_MID),
+      text: buildReactionText('❤', midTok(OWN_MID)),
       sender: { address: BOB } as any,
     });
     const ownMsg = makeMessage({ id: 1, fromId: 1, text: 'my original post' });
@@ -230,8 +241,8 @@ describe('backfill order-independence (two-pass ingest/derive)', () => {
 describe('deriveOnIngest: return value (newly created notifications)', () => {
   it('returns the created notification for a fresh mention', () => {
     seedOwnMessage();
-    const ref = { mid: OWN_MID, addr: 'self@example.org' };
-    const msg = makeMessage({ id: 2, fromId: 11, text: buildReplyText('nice!', ref), sender: { address: BOB } as any });
+    const ref = refFromToken({ kind: 'mid', mid: OWN_MID }, 'self@example.org');
+    const msg = makeMessage({ id: 2, fromId: 11, text: buildReplyText('nice!', ref, mintPostUuid()), sender: { address: BOB } as any });
 
     const created = deriveOnIngest(store, msg, 'reply-mid@example.org');
 
@@ -245,15 +256,15 @@ describe('deriveOnIngest: return value (newly created notifications)', () => {
   });
 
   it('returns an empty array when the target mid is not our own', () => {
-    const ref = { mid: 'not-ours@example.org', addr: 'other@example.org' };
-    const msg = makeMessage({ id: 2, fromId: 11, text: buildReplyText('nice!', ref), sender: { address: BOB } as any });
+    const ref = refFromToken({ kind: 'mid', mid: 'not-ours@example.org' }, 'other@example.org');
+    const msg = makeMessage({ id: 2, fromId: 11, text: buildReplyText('nice!', ref, mintPostUuid()), sender: { address: BOB } as any });
     expect(deriveOnIngest(store, msg, 'reply-mid@example.org')).toEqual([]);
   });
 
   it('returns an empty array on a dedupe no-op (same reply seen twice)', () => {
     seedOwnMessage();
-    const ref = { mid: OWN_MID, addr: 'self@example.org' };
-    const msg = makeMessage({ id: 2, fromId: 11, text: buildReplyText('nice!', ref), sender: { address: BOB } as any });
+    const ref = refFromToken({ kind: 'mid', mid: OWN_MID }, 'self@example.org');
+    const msg = makeMessage({ id: 2, fromId: 11, text: buildReplyText('nice!', ref, mintPostUuid()), sender: { address: BOB } as any });
 
     expect(deriveOnIngest(store, msg, 'reply-mid@example.org')).toHaveLength(1);
     expect(deriveOnIngest(store, msg, 'reply-mid@example.org')).toEqual([]);
@@ -261,21 +272,21 @@ describe('deriveOnIngest: return value (newly created notifications)', () => {
 
   it('returns an empty array for SELF-authored messages', () => {
     seedOwnMessage();
-    const ref = { mid: OWN_MID, addr: 'self@example.org' };
-    const msg = makeMessage({ id: 2, fromId: 1, text: buildReplyText('nice!', ref) });
+    const ref = refFromToken({ kind: 'mid', mid: OWN_MID }, 'self@example.org');
+    const msg = makeMessage({ id: 2, fromId: 1, text: buildReplyText('nice!', ref, mintPostUuid()) });
     expect(deriveOnIngest(store, msg, 'self-reply-mid@example.org')).toEqual([]);
   });
 
   it('returns an empty array for a reaction retraction (never notifies)', () => {
     seedOwnMessage();
     store.applyReaction(OWN_MID, BOB, '❤');
-    const msg = makeMessage({ id: 5, fromId: 11, text: buildUnreactionText('❤', OWN_MID), sender: { address: BOB } as any });
+    const msg = makeMessage({ id: 5, fromId: 11, text: buildUnreactionText('❤', midTok(OWN_MID)), sender: { address: BOB } as any });
     expect(deriveOnIngest(store, msg, 'unreact-mid@example.org')).toEqual([]);
   });
 
   it('returns the created favourite notification for a heart reaction', () => {
     seedOwnMessage();
-    const msg = makeMessage({ id: 4, fromId: 11, text: buildReactionText('❤', OWN_MID), sender: { address: BOB } as any });
+    const msg = makeMessage({ id: 4, fromId: 11, text: buildReactionText('❤', midTok(OWN_MID)), sender: { address: BOB } as any });
     const created = deriveOnIngest(store, msg, 'react-mid@example.org');
     expect(created).toHaveLength(1);
     expect(created[0]).toMatchObject({ type: 'favourite', accountAddr: BOB, statusMsgId: 1 });
@@ -285,15 +296,15 @@ describe('deriveOnIngest: return value (newly created notifications)', () => {
 describe('deriveOnIngest: SELF messages never notify', () => {
   it('ignores a reply-shaped message authored by SELF', () => {
     seedOwnMessage();
-    const ref = { mid: OWN_MID, addr: 'self@example.org' };
-    const msg = makeMessage({ id: 2, fromId: 1, text: buildReplyText('nice!', ref) });
+    const ref = refFromToken({ kind: 'mid', mid: OWN_MID }, 'self@example.org');
+    const msg = makeMessage({ id: 2, fromId: 1, text: buildReplyText('nice!', ref, mintPostUuid()) });
     deriveOnIngest(store, msg, 'self-reply-mid@example.org');
     expect(store.listNotifications({})).toHaveLength(0);
   });
 
   it('ignores a reaction-shaped message authored by SELF when no own address is provided', () => {
     seedOwnMessage();
-    const msg = makeMessage({ id: 4, fromId: 1, text: buildReactionText('❤', OWN_MID) });
+    const msg = makeMessage({ id: 4, fromId: 1, text: buildReactionText('❤', midTok(OWN_MID)) });
     // No ownAddr passed: SELF re-derivation is skipped (nothing applies).
     deriveOnIngest(store, msg, 'self-react-mid@example.org');
     expect(store.reactionTallies(OWN_MID)).toEqual([]);
@@ -310,7 +321,7 @@ describe('deriveOnIngest: SELF reaction re-derivation (own reactions on re-index
     // else's post) re-applies our own tally so a re-indexed/migrated store
     // recovers reactions that were previously only applied by the endpoint.
     store.ingestMessage(makeMessage({ id: 1, fromId: 11, text: 'bobs post', sender: { address: 'bob@x' } as any }), TARGET);
-    const react = makeMessage({ id: 2, fromId: 1, text: buildReactionText('❤', TARGET) });
+    const react = makeMessage({ id: 2, fromId: 1, text: buildReactionText('❤', midTok(TARGET)) });
     deriveOnIngest(store, react, 'self-react@example.org', SELF);
 
     expect(store.reactionTallies(TARGET)).toEqual([{ emoji: '❤', count: 1, reactors: [SELF] }]);
@@ -319,7 +330,7 @@ describe('deriveOnIngest: SELF reaction re-derivation (own reactions on re-index
   });
 
   it('is idempotent: re-deriving the same SELF reaction does not double-apply (set-add)', () => {
-    const react = makeMessage({ id: 2, fromId: 1, text: buildReactionText('🎉', TARGET) });
+    const react = makeMessage({ id: 2, fromId: 1, text: buildReactionText('🎉', midTok(TARGET)) });
     deriveOnIngest(store, react, 'self-react@example.org', SELF);
     deriveOnIngest(store, react, 'self-react@example.org', SELF);
     expect(store.reactionTallies(TARGET)).toEqual([{ emoji: '🎉', count: 1, reactors: [SELF] }]);
@@ -328,8 +339,8 @@ describe('deriveOnIngest: SELF reaction re-derivation (own reactions on re-index
   it('replays a react then a later unreact in chronological order: the retract wins', () => {
     // Within one chat getMessageIds is chronological, so react (earlier) then
     // unreact (later) replay in order and the tally ends empty.
-    const react = makeMessage({ id: 2, fromId: 1, text: buildReactionText('❤', TARGET) });
-    const unreact = makeMessage({ id: 3, fromId: 1, text: buildUnreactionText('❤', TARGET) });
+    const react = makeMessage({ id: 2, fromId: 1, text: buildReactionText('❤', midTok(TARGET)) });
+    const unreact = makeMessage({ id: 3, fromId: 1, text: buildUnreactionText('❤', midTok(TARGET)) });
     deriveOnIngest(store, react, 'self-react@example.org', SELF);
     deriveOnIngest(store, unreact, 'self-unreact@example.org', SELF);
     expect(store.reactionTallies(TARGET)).toEqual([]);
@@ -339,15 +350,15 @@ describe('deriveOnIngest: SELF reaction re-derivation (own reactions on re-index
     const DM = 'dm-copy@example.org';
     const FEED = 'feed-copy@example.org';
     store.aliasMid(DM, FEED);
-    const react = makeMessage({ id: 2, fromId: 1, text: buildReactionText('❤', DM) });
+    const react = makeMessage({ id: 2, fromId: 1, text: buildReactionText('❤', midTok(DM)) });
     deriveOnIngest(store, react, 'self-react@example.org', SELF);
     expect(store.reactionTallies(FEED)).toEqual([{ emoji: '❤', count: 1, reactors: [SELF] }]);
   });
 
   it('a SELF reply/boost still derives nothing even with ownAddr (only reactions re-derive)', () => {
     seedOwnMessage();
-    const ref = { mid: OWN_MID, addr: SELF };
-    const reply = makeMessage({ id: 2, fromId: 1, text: buildReplyText('self reply', ref) });
+    const ref = refFromToken({ kind: 'mid', mid: OWN_MID }, SELF);
+    const reply = makeMessage({ id: 2, fromId: 1, text: buildReplyText('self reply', ref, mintPostUuid()) });
     expect(deriveOnIngest(store, reply, 'self-reply@example.org', SELF)).toEqual([]);
     expect(store.listNotifications({})).toHaveLength(0);
   });

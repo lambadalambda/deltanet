@@ -3,55 +3,148 @@ import {
   buildBoostText,
   buildInviteGrantText,
   buildInviteRequestText,
+  buildPostText,
   buildQuotedText,
   buildReactionText,
+  buildRefToken,
   buildReplyText,
-  buildReplyTextWithCanonical,
   buildUnreactionText,
+  mintPostUuid,
   parseCanonicalMid,
   parseInviteGrant,
   parseInviteRequest,
   parseMarkers,
+  parsePostUuid,
   parseQuotedAuthor,
   parseReaction,
+  parseRefToken,
+  refFromToken,
+  type RefToken,
 } from '../src/protocol.js';
 
-const REF = { mid: 'abc123@nine.testrun.org', addr: 'bob@nine.testrun.org' };
+const UUID = '11111111-2222-4333-8444-555555555555';
+const OTHER_UUID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+const MID = 'abc123@nine.testrun.org';
+const ADDR = 'bob@nine.testrun.org';
+// A ref targeting a legacy mid (a target that never minted a uuid).
+const MID_REF = refFromToken({ kind: 'mid', mid: MID }, ADDR);
+// A ref targeting a uuid post.
+const UUID_REF = refFromToken({ kind: 'uuid', uuid: UUID }, ADDR);
 
-describe('buildReplyText / parseMarkers (reply round-trip)', () => {
-  it('appends a reply marker as the final line', () => {
-    const text = buildReplyText('hello there', REF);
-    expect(text).toBe('hello there\n\n↳re abc123@nine.testrun.org bob@nine.testrun.org');
+describe('ref token discrimination (buildRefToken / parseRefToken)', () => {
+  it('serializes a uuid ref with a u: prefix', () => {
+    expect(buildRefToken({ kind: 'uuid', uuid: UUID })).toBe(`u:${UUID}`);
   });
 
-  it('round-trips: parseMarkers recovers the body and reply ref', () => {
-    const text = buildReplyText('hello there', REF);
+  it('serializes a mid ref bare', () => {
+    expect(buildRefToken({ kind: 'mid', mid: MID })).toBe(MID);
+  });
+
+  it('round-trips a uuid ref', () => {
+    expect(parseRefToken(`u:${UUID}`)).toEqual({ kind: 'uuid', uuid: UUID });
+  });
+
+  it('round-trips a mid ref (mids contain @, never a u: prefix)', () => {
+    expect(parseRefToken(MID)).toEqual({ kind: 'mid', mid: MID });
+  });
+
+  it('refFromToken exposes the opaque key string for the store', () => {
+    expect(UUID_REF.keyString).toBe(UUID);
+    expect(MID_REF.keyString).toBe(MID);
+  });
+});
+
+describe('mintPostUuid / parsePostUuid', () => {
+  it('mints a distinct uuid each call', () => {
+    expect(mintPostUuid()).not.toBe(mintPostUuid());
+  });
+
+  it('parses the trailing ⚑ marker of a plain post', () => {
+    expect(parsePostUuid(buildPostText('hi', UUID))).toBe(UUID);
+  });
+
+  it('returns null for a message with no ⚑ marker (legacy / vanilla DC)', () => {
+    expect(parsePostUuid('just a normal post')).toBeNull();
+    expect(parsePostUuid('')).toBeNull();
+  });
+
+  it('ignores a ⚑-shaped line that is not the final line', () => {
+    expect(parsePostUuid(`⚑ ${UUID}\nmore text after`)).toBeNull();
+  });
+});
+
+describe('buildPostText / parseMarkers (plain post uuid marker)', () => {
+  it('appends a ⚑ uuid marker as the final line', () => {
+    expect(buildPostText('hello there', UUID)).toBe(`hello there\n⚑ ${UUID}`);
+  });
+
+  it('a media-only (empty body) post is just the marker line', () => {
+    expect(buildPostText('', UUID)).toBe(`⚑ ${UUID}`);
+  });
+
+  it('parseMarkers strips the uuid line from the body and exposes the uuid', () => {
+    const parsed = parseMarkers(buildPostText('line one\nline two', UUID));
+    expect(parsed.body).toBe('line one\nline two');
+    expect(parsed.uuid).toBe(UUID);
+    expect(parsed.reply).toBeUndefined();
+    expect(parsed.boost).toBeUndefined();
+  });
+});
+
+describe('buildReplyText / parseMarkers (reply round-trip)', () => {
+  it('appends a reply marker then a ⚑ uuid line (mid ref, bare token)', () => {
+    const text = buildReplyText('hello there', MID_REF, UUID);
+    expect(text).toBe(`hello there\n\n↳re ${MID} ${ADDR}\n⚑ ${UUID}`);
+  });
+
+  it('appends a u:-prefixed token when the reply targets a uuid post', () => {
+    const text = buildReplyText('hello there', UUID_REF, OTHER_UUID);
+    expect(text).toBe(`hello there\n\n↳re u:${UUID} ${ADDR}\n⚑ ${OTHER_UUID}`);
+  });
+
+  it('round-trips: parseMarkers recovers the body, reply ref, and this reply\'s own uuid', () => {
+    const text = buildReplyText('hello there', MID_REF, UUID);
     const parsed = parseMarkers(text);
     expect(parsed.body).toBe('hello there');
-    expect(parsed.reply).toEqual(REF);
+    expect(parsed.reply).toEqual(MID_REF);
+    expect(parsed.uuid).toBe(UUID);
     expect(parsed.boost).toBeUndefined();
   });
 
+  it('round-trips a uuid-targeting reply ref', () => {
+    const parsed = parseMarkers(buildReplyText('hi', UUID_REF, OTHER_UUID));
+    expect(parsed.reply).toEqual(UUID_REF);
+    expect(parsed.reply?.key).toEqual({ kind: 'uuid', uuid: UUID });
+    expect(parsed.uuid).toBe(OTHER_UUID);
+  });
+
   it('round-trips multi-line bodies', () => {
-    const text = buildReplyText('line one\nline two', REF);
+    const text = buildReplyText('line one\nline two', MID_REF, UUID);
     const parsed = parseMarkers(text);
     expect(parsed.body).toBe('line one\nline two');
-    expect(parsed.reply).toEqual(REF);
+    expect(parsed.reply).toEqual(MID_REF);
   });
 });
 
 describe('buildBoostText / parseMarkers (boost round-trip)', () => {
-  it('is just the marker, no body', () => {
-    const text = buildBoostText(REF);
-    expect(text).toBe('♻ abc123@nine.testrun.org bob@nine.testrun.org');
+  it('is the boost marker then a ⚑ uuid line, no body', () => {
+    const text = buildBoostText(MID_REF, UUID);
+    expect(text).toBe(`♻ ${MID} ${ADDR}\n⚑ ${UUID}`);
   });
 
-  it('round-trips: parseMarkers recovers the boost ref with empty body', () => {
-    const text = buildBoostText(REF);
+  it('round-trips: parseMarkers recovers the boost ref, empty body, and the boost\'s own uuid', () => {
+    const text = buildBoostText(MID_REF, UUID);
     const parsed = parseMarkers(text);
     expect(parsed.body).toBe('');
-    expect(parsed.boost).toEqual(REF);
+    expect(parsed.boost).toEqual(MID_REF);
+    expect(parsed.uuid).toBe(UUID);
     expect(parsed.reply).toBeUndefined();
+  });
+
+  it('round-trips a uuid-targeting boost ref', () => {
+    const parsed = parseMarkers(buildBoostText(UUID_REF, OTHER_UUID));
+    expect(parsed.boost).toEqual(UUID_REF);
+    expect(parsed.uuid).toBe(OTHER_UUID);
   });
 });
 
@@ -67,7 +160,7 @@ describe('parseMarkers tolerance', () => {
     expect(parsed).toEqual({ body: text });
   });
 
-  it('does not treat a boost-marker-shaped prefix as a marker unless it is the whole text', () => {
+  it('does not treat a boost-marker-shaped prefix as a marker unless it (plus its uuid line) is the whole text', () => {
     const text = '♻ abc123@nine.testrun.org bob@nine.testrun.org\nplus extra commentary';
     const parsed = parseMarkers(text);
     expect(parsed).toEqual({ body: text });
@@ -89,36 +182,66 @@ describe('parseMarkers tolerance', () => {
   });
 
   it('does not choke on a mid or addr containing no spaces but odd chars', () => {
-    const ref = { mid: '<weird+id.123@sub.nine.testrun.org>', addr: 'a.b+tag@nine.testrun.org' };
-    const text = buildReplyText('body text', ref);
-    expect(parseMarkers(text)).toEqual({ body: 'body text', reply: ref });
+    const ref = refFromToken({ kind: 'mid', mid: '<weird+id.123@sub.nine.testrun.org>' }, 'a.b+tag@nine.testrun.org');
+    const text = buildReplyText('body text', ref, UUID);
+    const parsed = parseMarkers(text);
+    expect(parsed.body).toBe('body text');
+    expect(parsed.reply).toEqual(ref);
+    expect(parsed.uuid).toBe(UUID);
   });
 });
 
 describe('buildReactionText / parseReaction (reaction round-trip)', () => {
-  it('builds "<emoji> ↳ <mid>"', () => {
-    expect(buildReactionText('❤', REF.mid)).toBe('❤ ↳ abc123@nine.testrun.org');
+  const MID_TOKEN: RefToken = { kind: 'mid', mid: MID };
+  const UUID_TOKEN: RefToken = { kind: 'uuid', uuid: UUID };
+
+  it('builds "<emoji> ↳ <mid>" for a mid target', () => {
+    expect(buildReactionText('❤', MID_TOKEN)).toBe(`❤ ↳ ${MID}`);
   });
 
-  it('round-trips: parseReaction recovers the emoji, mid, and kind', () => {
-    const text = buildReactionText('❤', REF.mid);
-    expect(parseReaction(text)).toEqual({ kind: 'react', emoji: '❤', mid: REF.mid });
+  it('builds a u:-prefixed token for a uuid target', () => {
+    expect(buildReactionText('❤', UUID_TOKEN)).toBe(`❤ ↳ u:${UUID}`);
   });
 
-  it('round-trips a non-heart emoji', () => {
-    const text = buildReactionText('🎉', REF.mid);
-    expect(parseReaction(text)).toEqual({ kind: 'react', emoji: '🎉', mid: REF.mid });
+  it('round-trips: parseReaction recovers the emoji, ref, and kind (mid)', () => {
+    expect(parseReaction(buildReactionText('❤', MID_TOKEN))).toEqual({
+      kind: 'react',
+      emoji: '❤',
+      ref: MID_TOKEN,
+    });
+  });
+
+  it('round-trips a uuid-targeting reaction', () => {
+    expect(parseReaction(buildReactionText('🎉', UUID_TOKEN))).toEqual({
+      kind: 'react',
+      emoji: '🎉',
+      ref: UUID_TOKEN,
+    });
   });
 });
 
 describe('buildUnreactionText / parseReaction (unreaction round-trip)', () => {
+  const MID_TOKEN: RefToken = { kind: 'mid', mid: MID };
+  const UUID_TOKEN: RefToken = { kind: 'uuid', uuid: UUID };
+
   it('builds "✖ ↳ <mid> <emoji>"', () => {
-    expect(buildUnreactionText('❤', REF.mid)).toBe('✖ ↳ abc123@nine.testrun.org ❤');
+    expect(buildUnreactionText('❤', MID_TOKEN)).toBe(`✖ ↳ ${MID} ❤`);
   });
 
-  it('round-trips: parseReaction recovers the emoji, mid, and kind', () => {
-    const text = buildUnreactionText('❤', REF.mid);
-    expect(parseReaction(text)).toEqual({ kind: 'unreact', emoji: '❤', mid: REF.mid });
+  it('round-trips: parseReaction recovers the emoji, ref, and kind (mid)', () => {
+    expect(parseReaction(buildUnreactionText('❤', MID_TOKEN))).toEqual({
+      kind: 'unreact',
+      emoji: '❤',
+      ref: MID_TOKEN,
+    });
+  });
+
+  it('round-trips a uuid-targeting unreaction', () => {
+    expect(parseReaction(buildUnreactionText('❤', UUID_TOKEN))).toEqual({
+      kind: 'unreact',
+      emoji: '❤',
+      ref: UUID_TOKEN,
+    });
   });
 });
 
@@ -135,7 +258,7 @@ describe('parseReaction tolerance', () => {
     expect(parseReaction('✖ ↳ abc123@nine.testrun.org ❤\nextra line')).toBeNull();
   });
 
-  it('returns null for a malformed reaction (missing mid)', () => {
+  it('returns null for a malformed reaction (missing token)', () => {
     expect(parseReaction('❤ ↳ ')).toBeNull();
   });
 
@@ -220,49 +343,36 @@ describe('buildInviteGrantText / parseInviteGrant (invite-grant round-trip)', ()
   });
 });
 
-describe('canonical-mid marker (buildReplyTextWithCanonical / parseCanonicalMid)', () => {
+describe('legacy canonical-mid marker (parse-only; no longer emitted)', () => {
+  // v1 stops emitting the `⚓` canonical marker (the shared `⚑` uuid subsumes
+  // it) but must still PARSE it for pre-v1 data on migrated stores.
   const CANON = 'feed-copy-mid@nine.testrun.org';
+  const legacyDmCopy = `hello there\n\n↳re ${MID} ${ADDR}\n⚓ ${CANON}`;
 
-  it('appends a canonical marker line after the reply marker', () => {
-    const text = buildReplyTextWithCanonical('hello there', REF, CANON);
-    // reply marker first (last-line reply parse still works), canonical marker after it.
-    expect(text).toBe(
-      `hello there\n\n↳re ${REF.mid} ${REF.addr}\n⚓ ${CANON}`,
-    );
+  it('parseCanonicalMid recovers the canonical mid from a legacy DM reply copy', () => {
+    expect(parseCanonicalMid(legacyDmCopy)).toBe(CANON);
   });
 
-  it('parseCanonicalMid recovers the canonical mid from a DM reply copy', () => {
-    const text = buildReplyTextWithCanonical('hello there', REF, CANON);
-    expect(parseCanonicalMid(text)).toBe(CANON);
-  });
-
-  it('parseMarkers still recovers the body and reply ref from a canonical DM copy', () => {
-    const text = buildReplyTextWithCanonical('hello there\nsecond line', REF, CANON);
-    const parsed = parseMarkers(text);
+  it('parseMarkers still recovers the body and reply ref from a legacy canonical DM copy', () => {
+    const parsed = parseMarkers(`hello there\nsecond line\n\n↳re ${MID} ${ADDR}\n⚓ ${CANON}`);
     expect(parsed.body).toBe('hello there\nsecond line');
-    expect(parsed.reply).toEqual(REF);
+    expect(parsed.reply).toEqual(MID_REF);
+    expect(parsed.uuid).toBeUndefined();
   });
 
   it('parseCanonicalMid returns null when there is no canonical marker', () => {
-    expect(parseCanonicalMid(buildReplyText('plain reply', REF))).toBeNull();
+    expect(parseCanonicalMid(buildReplyText('plain reply', MID_REF, UUID))).toBeNull();
     expect(parseCanonicalMid('just a normal post')).toBeNull();
     expect(parseCanonicalMid('')).toBeNull();
   });
 
   it('parseCanonicalMid ignores a marker-shaped line that is not the final line', () => {
-    const text = `⚓ ${CANON}\nmore text after`;
-    expect(parseCanonicalMid(text)).toBeNull();
+    expect(parseCanonicalMid(`⚓ ${CANON}\nmore text after`)).toBeNull();
   });
 
   it('parseCanonicalMid ignores a malformed marker (empty mid)', () => {
     expect(parseCanonicalMid('body\n\n↳re m a\n⚓ ')).toBeNull();
     expect(parseCanonicalMid('body\n\n↳re m a\n⚓ has space')).toBeNull();
-  });
-
-  it('round-trips a canonical marker on a multi-line body', () => {
-    const text = buildReplyTextWithCanonical('line one\nline two', REF, CANON);
-    expect(parseCanonicalMid(text)).toBe(CANON);
-    expect(parseMarkers(text).reply).toEqual(REF);
   });
 });
 
