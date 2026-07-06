@@ -14,3 +14,4 @@
 - [x] [Replies lack in_reply_to_account_id and mentions](issues/reply-mentions-metadata.md)
 - [x] [Profile editing (name, bio, avatar)](issues/profile-editing.md)
 - [x] [Follow-back via invite-request convention](issues/follow-back-invite-request.md)
+- [x] [Emoji normalization (withdrawn — by design)](issues/emoji-normalization.md)

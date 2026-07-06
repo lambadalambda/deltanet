@@ -1,27 +1,20 @@
-# Emoji normalization (❤ vs ❤️)
+# Emoji normalization (❤ vs ❤️) — WITHDRAWN
 
 ## Summary
 
-Reactions arrive in both bare (`❤` U+2764) and variation-selector
-(`❤️` U+2764 U+FE0F) forms; the store tallies them as different emoji
-(observed live: one post with both forms as separate entries), and a VS16
-heart doesn't count as a favourite (★0 plus a stray ❤️ chip).
+Originally proposed merging bare `❤` (U+2764) and `❤️` (U+2764 U+FE0F)
+reaction forms and counting any heart as a favourite.
 
-## Requirements
+**Withdrawn after user review (2026-07-06): the premise was wrong.** The
+two forms are two *distinct interactions by design*: bare `❤` is the wire
+encoding of a favourite (star button), while `❤️` with the variation
+selector is a deliberate red-heart *emoji reaction* from the picker. A
+store entry holding both forms for one user reflects two intentional acts
+(favourited AND heart-reacted), not duplication. Merging them would
+destroy the favourite/reaction distinction.
 
-- Normalize emoji when storing and comparing reactions: strip U+FE0F
-  variation selectors (and skin-tone-safe: only the VS, don't mangle ZWJ
-  sequences). One normalize helper used by: reaction apply/retract,
-  tallies, favourite detection, the reaction endpoints (after URL decode),
-  and outgoing reaction text building.
-- Any normalized `❤` counts as a favourite (favourites_count/favourited);
-  non-heart emoji tally under their normalized form.
-- Existing store data heals via the same re-index migration as the
-  canonical-mid issue (tallies are re-derived from messages).
+## Notes
 
-## Acceptance Criteria
-
-- A ❤️ (VS16) reaction from another client counts as a favourite: star
-  count increments, no separate ❤️ chip.
-- Unit tests: normalization cases (bare, VS16, non-heart, multi-codepoint
-  emoji stay intact), tally merging.
+- Known subtlety, accepted: the distinction rides on the variation
+  selector's presence. Emoji pickers emit the VS16 form, so in practice a
+  bare ❤ only ever originates from the favourite path.
