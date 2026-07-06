@@ -93,7 +93,7 @@ Notes:
   `deltachat-rpc-server` behind. Unit tests (vitest) + a real-network
   federation integration test (`pnpm test:integration`).
 - `frontend/` — DeltaNet web UI, a fork of
-  [PleromaNet](https://github.com/…/pleromanet) reworked for invite-based
+  PleromaNet (a SvelteKit Pleroma frontend) reworked for invite-based
   federation and daemon sign-up. Playwright tests.
 
 ## Model (v0)
