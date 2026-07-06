@@ -97,7 +97,12 @@ export const openTransport = async (
         dc.on(kind, handler);
       }),
 
-    self: () => rpc.getContact(accountId, DC_CONTACT_ID_SELF),
+    self: async () => {
+      // the SELF contact's displayName is a placeholder ("Me"); use the config value
+      const contact = await rpc.getContact(accountId, DC_CONTACT_ID_SELF);
+      const displayname = await rpc.getConfig(accountId, 'displayname');
+      return displayname ? { ...contact, displayName: displayname } : contact;
+    },
 
     timeline: async ({ limit, maxId, minId }: TimelineQuery) => {
       const chatIds = await feedChatIds();

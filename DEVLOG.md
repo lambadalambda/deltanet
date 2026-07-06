@@ -36,6 +36,27 @@ Delta Chat/chatmail federation behind. Test frontend: PleromaNet.
 - First `IncomingMsg` after a join can be a securejoin system message, not
   the followed feed's post — consumers should filter/poll, not assume.
 
+### End-to-end result (same day!)
+
+PleromaNet signs in against the daemon (OAuth auto-grant → token →
+verify_credentials), renders the home timeline, and posting from the
+composer delivers over chatmail to followers. Ran two daemons (alice :4030,
+bob :4031, separate testrun.org accounts), followed each other via
+`/api/deltanet/invite` + `/api/deltanet/follow`, posts flow both ways.
+
+Surprises / follow-ups:
+
+- **Followers received posts made *before* they followed** — the core seems
+  to re-deliver recent broadcast history to new members. That's the backfill
+  problem solved for free; verify the mechanism and its limits.
+- `parentId` is sometimes set on plain broadcast messages (saw a post with
+  `in_reply_to_id` pointing at a securejoin system message). May need to
+  suppress in mapping unless it's a real reply.
+- SELF contact's `displayName` is a placeholder ("Me") — worked around by
+  reading the `displayname` config in `transport.self()`. The UI shows "Me"
+  as the account name otherwise.
+- PleromaNet requires node 24 (mise); run it with `mise exec -- pnpm dev`.
+
 ### PleromaNet API surface (from code survey)
 
 Hard requirements: `POST /api/v1/apps`, `GET /oauth/authorize`,
