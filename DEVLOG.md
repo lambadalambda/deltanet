@@ -83,3 +83,40 @@ no restart needed. Also wired real follower/following/status counts
 `verify_credentials`, and added static SPA serving (`DELTANET_STATIC`,
 default `../frontend/build`) with an index.html fallback for client-side
 routes. All new behavior was driven top-down from `tests/server.test.ts`.
+
+## 2026-07-06 — experiment findings: broadcasts are stricter than hoped
+
+Ran controlled experiments (fresh accounts, scratch script) against core 2.53:
+
+- **Cross-chat `quotedMessageId` is rejected at send time** ("Quote of message
+  from Chat#X cannot be sent to Chat#Y"). Native quotes can't implement
+  replies/boosts across feeds.
+- **Read-only broadcast members cannot `sendReaction`** ("Broadcast channel is
+  read-only"). Native reactions can't implement likes on others' posts.
+- Same-chat quotes DO resolve cross-node (receiver gets `WithMessage` with a
+  locally fetchable messageId — References-based linking works), empty-text
+  quotes are accepted, and image messages round-trip fine.
+- `MessageData.quotedText` (freeform) has no chat restriction, and every
+  message's global email Message-ID is available via
+  `getMessageInfoObject().rfc724Mid`. No reverse mid→msgId RPC exists, so the
+  daemon must keep its own index.
+
+### deltanet wire convention v0 (consequence)
+
+Replies, boosts, and reactions become an application-layer convention over
+message text, with the rfc724 Message-ID as the global post reference:
+
+- **Reply**: post to OWN feed, text ends with marker line `↳re <mid> <addr>`;
+  `quotedText` carries "<author>: <excerpt>" so vanilla Delta Chat renders a
+  quote bubble. A copy goes as DM to the original author (thread + notify
+  even without a follow-back).
+- **Boost**: post to own feed, text = `♻ <mid> <addr>`, `quotedText` = the
+  original text (embedded, SSB-style, so non-followers can render it).
+- **Like/reaction**: DM to the author: `<emoji> ↳ <mid>`; retraction
+  `✖ ↳ <mid> <emoji>`. DMs never appear in timelines, so these stay out of
+  feeds; vanilla DC users see a readable "❤ ↳ …" message.
+- Daemon keeps a persistent store per account (mid⇄msgId index, reply
+  children, reaction tallies, notifications), fed by an idempotent ingest
+  pass over timeline loads + incoming-message events.
+- Honest limitations: reaction counts are only authoritative on your own
+  posts; markers are visible (if unobtrusive) to vanilla DC readers.
