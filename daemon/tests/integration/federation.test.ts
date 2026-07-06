@@ -1,6 +1,5 @@
 import { rmSync } from 'node:fs';
 import { afterAll, describe, expect, it } from 'vitest';
-import { readAccounts } from '../../src/config.js';
 import { registerAccount } from '../../src/signup.js';
 import { openTransport, type DeltaChatTransport } from '../../src/transport/deltachat.js';
 
@@ -10,19 +9,43 @@ import { openTransport, type DeltaChatTransport } from '../../src/transport/delt
  * Slow by nature (real SMTP/IMAP + securejoin handshake).
  */
 describe('federation over chatmail', () => {
-  const accounts = readAccounts();
   const transports: DeltaChatTransport[] = [];
 
   afterAll(() => {
     for (const transport of transports) transport.close();
   });
 
+  /**
+   * Uses its own fresh accounts and data dirs (`data/int-basic-alice`,
+   * `data/int-basic-bob`, two freshly registered chatmail accounts via
+   * `registerAccount`) rather than `accounts.local.json` / `data/it-*`.
+   *
+   * This test used to rmSync `data/it-alice`/`data/it-bob` and reuse
+   * long-lived credentials from `accounts.local.json` — those same data
+   * dirs/credentials are also used by long-running daemon processes
+   * (`data/main`, `data/demo`, `data/it-bob`), so running this suite wiped a
+   * *live* daemon's database out from under it. See DEVLOG.
+   */
   it('delivers a post from alice to her follower bob', async () => {
-    rmSync('data/it-alice', { recursive: true, force: true });
-    rmSync('data/it-bob', { recursive: true, force: true });
+    rmSync('data/int-basic-alice', { recursive: true, force: true });
+    rmSync('data/int-basic-bob', { recursive: true, force: true });
 
-    const alice = await openTransport('data/it-alice', accounts['main']!);
-    const bob = await openTransport('data/it-bob', accounts['peer']!);
+    const relay = 'https://nine.testrun.org';
+    const [aliceCreds, bobCreds] = await Promise.all([
+      registerAccount(relay),
+      registerAccount(relay),
+    ]);
+
+    const alice = await openTransport('data/int-basic-alice', {
+      addr: aliceCreds.addr,
+      password: aliceCreds.password,
+      displayName: 'int-basic-alice',
+    });
+    const bob = await openTransport('data/int-basic-bob', {
+      addr: bobCreds.addr,
+      password: bobCreds.password,
+      displayName: 'int-basic-bob',
+    });
     transports.push(alice, bob);
 
     // bob follows alice's feed
@@ -50,7 +73,7 @@ describe('federation over chatmail', () => {
       if (arrived === undefined) await new Promise((r) => setTimeout(r, 3000));
     }
     expect(arrived).toBeDefined();
-    expect(arrived?.sender.address).toBe(accounts['main']!.addr);
+    expect(arrived?.sender.address).toBe(aliceCreds.addr);
     expect(arrived?.showPadlock).toBe(true); // e2e encrypted
   }, 300_000);
 
@@ -64,9 +87,9 @@ describe('federation over chatmail', () => {
    *
    * Uses its own fresh accounts and data dirs (`data/int-alice`,
    * `data/int-bob`, two freshly registered chatmail accounts via
-   * `registerAccount`) so it can never contend with the `data/it-*`/
-   * `accounts.local.json` state used by the test above, or with any
-   * long-running daemon processes holding `data/main`/`data/demo`/etc. open.
+   * `registerAccount`) so it can never contend with the `data/int-basic-*`
+   * dirs used by the test above, or with any long-running daemon processes
+   * holding `data/main`/`data/demo`/etc. open.
    */
   it('lets a follower re-follow a feed after unfollowing it', async () => {
     rmSync('data/int-alice', { recursive: true, force: true });

@@ -146,6 +146,87 @@ describe('deriveOnIngest: reactions', () => {
   });
 });
 
+describe('backfill order-independence (two-pass ingest/derive)', () => {
+  /**
+   * Regression test for the live notification-loss bug: `backfill()` used to
+   * call `store.ingestMessage` + `deriveOnIngest` inline, per message, in
+   * chatlist sweep order. `getChatlistEntries` orders by recency, not
+   * dependency, so a DM chat holding a reaction control message can be swept
+   * *before* the chat holding the own post it reacts to — at which point
+   * `store.isOwnMid` isn't populated yet for that mid, and
+   * `deriveOnIngest` silently skips the favourite notification (the reaction
+   * tally itself still applies via `ingestMessage`, since that isn't gated
+   * on `isOwnMid`).
+   *
+   * The fix (mirrors `main.ts`'s `ingestOnMessage` + `deltachat.ts`'s
+   * `backfill()`): run an `'index'` pass — `store.ingestMessage` only — over
+   * every backfilled message first, then a `'derive'` pass — `deriveOnIngest`
+   * only — over all of them again. This proves that even when the reaction
+   * DM is *collected and indexed* before the own post, deriving only after
+   * every message has been indexed still yields the favourite notification.
+   */
+  it('derives a favourite notification for a reaction seen before its target post, when indexed as a full backfill pass first', () => {
+    const reactionMid = 'react-mid@example.org';
+    const reactionMsg = makeMessage({
+      id: 10,
+      fromId: 11,
+      text: buildReactionText('❤', OWN_MID),
+      sender: { address: BOB } as any,
+    });
+    const ownMsg = makeMessage({ id: 1, fromId: 1, text: 'my original post' });
+
+    // Simulate backfill's collection order: the reaction DM's chat was swept
+    // before the own-feed chat, so the reaction message is indexed first.
+    const backfillOrder = [
+      { msg: reactionMsg, mid: reactionMid },
+      { msg: ownMsg, mid: OWN_MID },
+    ];
+
+    // Pass 1 ('index'): store.ingestMessage only, in sweep order — no
+    // derivation yet, so ordering here can't affect notification derivation.
+    for (const { msg, mid } of backfillOrder) {
+      store.ingestMessage(msg, mid);
+    }
+
+    // By now every backfilled message is indexed, regardless of sweep order:
+    // ownMids already contains OWN_MID even though the own post was indexed
+    // *after* the reaction that targets it.
+    expect(store.isOwnMid(OWN_MID)).toBe(true);
+
+    // Pass 2 ('derive'): deriveOnIngest only, same order.
+    for (const { msg, mid } of backfillOrder) {
+      deriveOnIngest(store, msg, mid);
+    }
+
+    expect(store.reactionTallies(OWN_MID)).toEqual([{ emoji: '❤', count: 1, reactors: [BOB] }]);
+    const notifications = store.listNotifications({});
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]).toMatchObject({ type: 'favourite', accountAddr: BOB, statusMsgId: 1 });
+  });
+
+  it('contrast: deriving inline (single combined pass, old behavior) loses the notification in the same order', () => {
+    const reactionMid = 'react-mid@example.org';
+    const reactionMsg = makeMessage({
+      id: 10,
+      fromId: 11,
+      text: buildReactionText('❤', OWN_MID),
+      sender: { address: BOB } as any,
+    });
+    const ownMsg = makeMessage({ id: 1, fromId: 1, text: 'my original post' });
+
+    // Old (pre-fix) behavior: ingest+derive inline, per message, in sweep order.
+    store.ingestMessage(reactionMsg, reactionMid);
+    deriveOnIngest(store, reactionMsg, reactionMid); // isOwnMid(OWN_MID) is still false here
+    store.ingestMessage(ownMsg, OWN_MID);
+    deriveOnIngest(store, ownMsg, OWN_MID);
+
+    // The tally still applies (not gated on isOwnMid)...
+    expect(store.reactionTallies(OWN_MID)).toEqual([{ emoji: '❤', count: 1, reactors: [BOB] }]);
+    // ...but the favourite notification was silently never derived.
+    expect(store.listNotifications({})).toHaveLength(0);
+  });
+});
+
 describe('deriveOnIngest: SELF messages never notify', () => {
   it('ignores a reply-shaped message authored by SELF', () => {
     seedOwnMessage();

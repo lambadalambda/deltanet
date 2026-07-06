@@ -4,7 +4,7 @@ import { serve } from '@hono/node-server';
 import { readAccounts, writeAccount } from './config.js';
 import { createApp, type AppContext } from './server.js';
 import { registerAccount } from './signup.js';
-import { openTransport, type ChatmailCredentials } from './transport/deltachat.js';
+import { openTransport, type ChatmailCredentials, type IngestPhase } from './transport/deltachat.js';
 import type { Transport } from './transport/types.js';
 import { createStore } from './store.js';
 import { deriveOnIngest } from './ingest.js';
@@ -37,9 +37,36 @@ let transport: Transport | null = null;
 // resolves, but `transport` is only assigned after `await openTransport(...)`
 // returns — so a `transport === null` guard here would silently drop every
 // message the backfill sweep or an early event delivered. See DEVLOG.
-const ingestOnMessage = async (msg: T.Message, isFeedMessage: boolean, mid: string | null) => {
-  if (mid) {
+//
+// `phase` distinguishes the transport's two ingestion modes (see
+// `IngestPhase`): live events and ordinary timeline/message loads always
+// pass `'combined'`, doing both halves below in one call, exactly as before
+// `phase` existed. Only the startup backfill sweep splits the same message
+// into two separate calls — `'index'` (mid/msgId bookkeeping only) across
+// *every* backfilled message, then `'derive'` (notification/reaction side
+// effects) across all of them again — so that derivation for any one
+// message never runs before every other backfilled message (regardless of
+// chat sweep order) has already updated the store's `ownMids` index. See
+// DEVLOG for the notification-loss bug this fixes.
+//
+// `store.ingestMessage`'s own `ingestedMsgIds` dedupe only guards the index
+// half (re-running `'index'` for an already-ingested msgId is a no-op by
+// design); it must never also suppress the `'derive'` call for that same
+// msgId, or the second backfill pass would derive nothing. Calling
+// `deriveOnIngest` unconditionally (outside any ingested-check) keeps that
+// guard scoped to indexing only — derivation has its own, separate dedupe
+// (`notificationDedupeKeys`).
+const ingestOnMessage = async (
+  msg: T.Message,
+  isFeedMessage: boolean,
+  mid: string | null,
+  phase: IngestPhase,
+) => {
+  if (!mid) return;
+  if (phase === 'combined' || phase === 'index') {
     store.ingestMessage(msg, mid, isFeedMessage);
+  }
+  if (phase === 'combined' || phase === 'derive') {
     deriveOnIngest(store, msg, mid);
   }
 };

@@ -565,3 +565,109 @@ fix (first attempt, before the best-effort event-wait change above, failed
 only on the flaky `SecurejoinInviterProgress` wait for the second join —
 state inspection confirmed the unblock itself had already succeeded even
 in that failing run).
+
+## 2026-07-06 — incident: integration suite wiped a live daemon's database; startup backfill was order-dependent
+
+**Incident: running the integration suite wiped a live daemon's data.**
+`tests/integration/federation.test.ts`'s original test (`delivers a post from
+alice to her follower bob`) predates the `data/int-*`-per-test convention
+established by the re-follow regression test above. It still opened
+`data/it-alice`/`data/it-bob` with long-lived credentials read out of
+`accounts.local.json` (`accounts['main']`/`accounts['peer']`), and began with
+`rmSync('data/it-alice', ...)` / `rmSync('data/it-bob', ...)`. Both of those —
+the data dir names *and* the `accounts.local.json` entries — are shared with
+long-running daemon processes (this repo runs `data/main`, `data/demo`,
+`data/it-bob` as live daemons against real chatmail accounts). Running the
+suite today `rmSync`'d a live daemon's DeltaChat database out from under it
+mid-run. Nothing caught this beforehand because the old test was never
+migrated when the isolation convention was introduced — it just kept
+quietly reusing shared state next to a newer sibling test that had already
+solved this exact problem correctly.
+
+**Fix**: reworked the old test to the same pattern as its newer sibling —
+its own fresh, test-only data dirs (`data/int-basic-alice`,
+`data/int-basic-bob`, `rmSync`'d at start) and two freshly registered
+chatmail accounts via `registerAccount(relay)`, instead of
+`accounts.local.json`. No test in this file touches `data/it-*` or
+`accounts.local.json` anymore, and no test's data dir/account can collide
+with another test's or with a live daemon's. `readAccounts` is no longer
+imported by this file at all. Only `tests/integration/federation.test.ts`
+changed; nothing outside `tests/integration` was touched, and the live
+daemons' data was not further touched by this fix (out of scope — this task
+only stops the *test suite* from being able to do it again).
+
+**Bug: startup backfill's notification derivation was sweep-order-dependent.**
+`deltachat.ts`'s `backfill()` walked `getChatlistEntries` (recency order, not
+dependency order) and called `notifyOnMessage` inline per message, which —
+via `main.ts`'s `ingestOnMessage` — ran `store.ingestMessage` (mid/msgId
+indexing, `ownMids` bookkeeping) *and* `deriveOnIngest` (notification/
+reaction-store side effects) back to back for that one message before moving
+to the next. If a DM chat holding a reaction/reply control message happened
+to be swept *before* the chat holding the mid it targets (e.g. our own feed
+chat with the original post), `deriveOnIngest` ran while `store.isOwnMid`
+still read `false` for that mid — `ownMids` for the target message hadn't
+been populated yet, because indexing *that* message hadn't happened yet.
+Net effect: the reaction was still tallied (`applyReaction` isn't gated on
+`isOwnMid`), but the corresponding favourite/`pleroma:emoji_reaction`
+notification was silently never derived, purely because of which chat the
+core happened to list first.
+
+**Fix**: split ingestion into two explicit phases. `OpenTransportOptions.
+onMessage` grew a fourth argument, `phase: 'combined' | 'index' | 'derive'`
+(new exported type `IngestPhase`). Every existing call site — live
+`IncomingMsg`/`MsgsChanged` events, and ordinary timeline/message loads via
+`loadMessages`/`notifyOnMessage`'s default — passes `'combined'`, meaning
+"do both halves for this one message," exactly the behavior before this
+argument existed. Only `backfill()` uses the split: it now first collects
+every message from every chat (unchanged sweep/batch/error-handling logic,
+just pushed into an array instead of notifying inline), then runs a first
+pass calling `notifyOnMessage(msg, 'index')` for every collected message,
+then a second pass calling `notifyOnMessage(msg, 'derive')` for every one of
+them again. `main.ts`'s `ingestOnMessage` switches on `phase`: `'combined'`
+or `'index'` runs `store.ingestMessage`; `'combined'` or `'derive'` runs
+`deriveOnIngest`. By the time any message reaches the `'derive'` pass, every
+backfilled message — regardless of source chat or sweep order — has already
+been indexed, so `store.isOwnMid` is fully populated store-wide before
+derivation ever runs. This deliberately does **not** give the transport a
+`Store` dependency: `deltachat.ts` still only knows about `phase` as an
+opaque tag it passes through, all store semantics stay in `main.ts`.
+
+Checked the interaction with `Store.ingestMessage`'s own dedupe
+(`ingestedMsgIds`) carefully, since backfill's `'index'` pass now runs before
+`'derive'` ever touches the same msgId: the dedupe guard
+(`if (ingestedSet().has(msg.id)) return;`) only lives inside `ingestMessage`
+itself, so it can only ever make a repeated `'index'` call a no-op — it has
+no way to suppress a `'derive'` call, because `deriveOnIngest` is a
+different function with its own, separate dedupe
+(`notificationDedupeKeys`). So `ingestOnMessage`'s `'combined'`/`'index'`
+branch calling `store.ingestMessage` first and its `'combined'`/`'derive'`
+branch calling `deriveOnIngest` unconditionally (never behind an
+"already ingested?" check) was exactly the right shape — no adjustment to
+`store.ts` was needed.
+
+Added `acceptIfContactRequest` skip on the `'derive'` phase in
+`notifyOnMessage` (it's redundant work, not a correctness issue: the
+`'index'` pass for the same message already accepted the chat moments
+earlier if needed).
+
+New unit tests in `daemon/tests/ingest.test.ts` (`backfill
+order-independence (two-pass ingest/derive)`): one test simulates the
+two-pass backfill directly — an `'index'` pass over `[reaction message, own
+post]` in that (bug-triggering) order, confirming `isOwnMid` is populated
+for the own post's mid before any derivation runs, then a `'derive'` pass
+over the same order — and asserts the favourite notification *is* produced.
+A companion "contrast" test runs the old inline-per-message behavior in the
+same order and asserts the notification is *not* produced (reaction tally
+still applies), to document the bug the fix closes and guard against a
+future regression back to single-pass ingestion.
+
+Files changed: `daemon/src/transport/deltachat.ts` (`IngestPhase` type,
+`onMessage` signature, `notifyOnMessage` phase plumbing, `backfill()`
+rewritten to collect-then-two-pass), `daemon/src/main.ts` (`ingestOnMessage`
+switches on `phase`), `daemon/tests/ingest.test.ts` (two new tests),
+`daemon/tests/integration/federation.test.ts` (old test reworked to fresh
+`data/int-basic-*` dirs + `registerAccount`, no more `accounts.local.json`/
+`data/it-*`). `pnpm test` (345 tests) and `pnpm check` green. Did not run
+`pnpm test:integration` this round (several minutes, and live daemons are
+running against real chatmail data — out of scope for this fix, and exactly
+the risk this task closes off).

@@ -95,6 +95,26 @@ export type DeltaChatTransport = Transport & {
   ): Promise<Extract<T.EventType, { kind: K }>>;
 };
 
+/**
+ * Which half of ingestion an `onMessage` call represents.
+ *
+ * - `'combined'`: do both the mid/msgId-index bookkeeping (`Store.
+ *   ingestMessage`) *and* notification/reaction derivation (`deriveOnIngest`)
+ *   for this message, in one call — what every live event (`IncomingMsg`/
+ *   `MsgsChanged`) and ordinary timeline/message load has always done, and
+ *   still does.
+ * - `'index'` / `'derive'`: the two halves of that same work, split across
+ *   two separate calls for the same message. Only the startup `backfill()`
+ *   sweep uses this split — see its doc comment for why: a chat containing
+ *   reaction/reply control DMs can be swept before the chat holding the mid
+ *   they target, and running derivation inline (as `'combined'` would) means
+ *   `store.isOwnMid` isn't populated yet for that target, so the
+ *   notification is silently never derived. Doing an `'index'` pass over
+ *   *every* backfilled message first (populating `ownMids` etc. store-wide),
+ *   then a `'derive'` pass over all of them, makes backfill order-independent.
+ */
+export type IngestPhase = 'combined' | 'index' | 'derive';
+
 export type OpenTransportOptions = {
   /**
    * Called for every message loaded via timeline/message reads, and for
@@ -124,8 +144,19 @@ export type OpenTransportOptions = {
    * backfill sweep or an early event delivers — silently dropping them.
    * Passing everything the hook needs as arguments removes that variable
    * from the picture entirely.
+   *
+   * The fourth argument is the ingestion `phase` (see `IngestPhase`). Every
+   * caller except the startup backfill sweep sees `'combined'` for every
+   * call, exactly as before this argument existed; callers that don't care
+   * about the split can ignore it entirely and always do both halves of
+   * their work.
    */
-  onMessage?: (msg: T.Message, isFeedMessage: boolean, mid: string | null) => void | Promise<void>;
+  onMessage?: (
+    msg: T.Message,
+    isFeedMessage: boolean,
+    mid: string | null,
+    phase: IngestPhase,
+  ) => void | Promise<void>;
 };
 
 export const openTransport = async (
@@ -180,7 +211,7 @@ export const openTransport = async (
     return mid;
   };
 
-  const notifyOnMessage = async (msg: T.Message): Promise<void> => {
+  const notifyOnMessage = async (msg: T.Message, phase: IngestPhase = 'combined'): Promise<void> => {
     if (!shouldIngest(msg)) return;
     // Single getBasicChatInfo lookup, reused for both the contact-request
     // check and the FEED-vs-DM classification passed to onMessage — avoids
@@ -189,12 +220,15 @@ export const openTransport = async (
       console.error('failed to load chat info for ingestion (non-fatal):', err);
       return null;
     });
-    if (chat) await acceptIfContactRequest(chat);
+    // Only worth doing once, on the 'index'/'combined' pass: a 'derive'-phase
+    // call means backfill already saw (and accepted, if needed) this exact
+    // message during its 'index' pass moments earlier.
+    if (chat && phase !== 'derive') await acceptIfContactRequest(chat);
     if (!options.onMessage) return;
     const isFeedMessage = chat ? isFeedChat(chat.chatType) : false;
     const mid = await resolveMid(msg.id);
     try {
-      await options.onMessage(msg, isFeedMessage, mid);
+      await options.onMessage(msg, isFeedMessage, mid, phase);
     } catch (err) {
       console.error('onMessage ingestion failed (non-fatal):', err);
     }
@@ -315,25 +349,46 @@ export const openTransport = async (
    * latency-sensitive, and a simple sequential loop is easiest to reason
    * about for concurrency. Errors are logged per-chat so one bad chat
    * doesn't abort the whole sweep.
+   *
+   * Two-pass over the whole collected set rather than one `notifyOnMessage`
+   * call per message as they're loaded: `getChatlistEntries` returns chats in
+   * recency order, not dependency order, so e.g. a DM chat carrying a
+   * reaction control message can be swept *before* the chat holding the mid
+   * it targets. Deriving inline (as live single-call ingestion does) would
+   * then run `deriveOnIngest` before the target mid's `ownMids` bookkeeping
+   * exists yet, so `store.isOwnMid` reads false and the notification is
+   * silently never derived — the reaction tally still applies (that's
+   * `Store.ingestMessage`'s job, run in the first pass), only the
+   * *notification* derivation was order-dependent. Splitting into an
+   * `'index'` pass over every backfilled message (mid/msgId bookkeeping only)
+   * followed by a `'derive'` pass over the same messages (notification/
+   * reaction-store side effects) makes backfill order-independent: by the
+   * time any message is derived, every backfilled message — regardless of
+   * which chat or batch it came from — has already been indexed.
    */
   const backfill = async (): Promise<void> => {
     const chatIds = await rpc.getChatlistEntries(accountId, null, null, null);
+    const displayname = await selfDisplayName();
+    const collected: T.Message[] = [];
+
     for (const chatId of chatIds) {
       try {
         const msgIds = await rpc.getMessageIds(accountId, chatId, false, false);
         for (let i = 0; i < msgIds.length; i += BACKFILL_BATCH_SIZE) {
           const batch = msgIds.slice(i, i + BACKFILL_BATCH_SIZE);
           const loaded = await rpc.getMessages(accountId, batch);
-          const displayname = await selfDisplayName();
           const messages = Object.values(loaded)
             .filter((res): res is Extract<T.MessageLoadResult, { kind: 'message' }> => res.kind === 'message')
             .map((msg) => withSelfDisplayName(msg, displayname));
-          for (const msg of messages) await notifyOnMessage(msg);
+          collected.push(...messages);
         }
       } catch (err) {
         console.error(`backfill failed for chat ${chatId} (non-fatal):`, err);
       }
     }
+
+    for (const msg of collected) await notifyOnMessage(msg, 'index');
+    for (const msg of collected) await notifyOnMessage(msg, 'derive');
   };
 
   // Fire-and-forget: must not delay openTransport's resolution.
