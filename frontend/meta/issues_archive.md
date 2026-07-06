@@ -56,3 +56,7 @@
 - [x] [56 Composer upload alt text](issues/56-composer-upload-alt-text.md)
 - [x] [57 Direct messages (Pleroma chats)](issues/57-direct-messages.md)
 - [x] [58 Remove the header timeline strip](issues/58-remove-header-timeline-strip.md)
+- [x] [59 Rebrand PleromaNet to DeltaNet](issues/59-rebrand-deltanet.md)
+- [x] [60 Default to same-origin instance](issues/60-same-origin-default-instance.md)
+- [x] [61 DeltaNet signup flow](issues/61-deltanet-signup-flow.md)
+- [x] [62 Invite and follow-by-invite UI](issues/62-invite-and-follow-ui.md)

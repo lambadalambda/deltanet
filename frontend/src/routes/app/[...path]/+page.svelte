@@ -27,6 +27,7 @@
 	import TimelineNewPostsIndicator from '$lib/rebuild/TimelineNewPostsIndicator.svelte';
 	import { accountsFromPleromaNotifications, accountsFromPleromaStatus, accountsFromPleromaStatuses, createPleromaAccountCache, getCachedPleromaAccount, upsertPleromaAccounts } from '$lib/pleroma/account-cache';
 	import { createPleromaClient } from '$lib/pleroma/client';
+	import { fetchDeltanetInvite, followDeltanetInvite, isFeedInvite } from '$lib/pleroma/deltanet';
 	import { NOTIFICATION_POLL_EVENT, NOTIFICATION_POLL_INTERVAL_MS, readNotificationLastSeenAt, writeNotificationLastSeenAt } from '$lib/pleroma/notifications';
 	import { readPleromaSession, signOutPleroma, writePleromaSession } from '$lib/pleroma/session';
 	import { openPleromaTimelineStream } from '$lib/pleroma/streaming';
@@ -152,7 +153,7 @@
 	type SuggestionAccountView = { id: string; name: string; nameEmojis: CustomEmoji[]; handle: string; avatarUrl: string | null; followState: PleromaProfileFollowState };
 	type StatusActionErrorState = { targetId: string; key: string; route: StatusActionOrigin; error: PleromaRequestErrorView };
 	type NotificationPopoverStatus = 'ready' | 'loading' | 'empty' | 'error';
-	const HOME_TIMELINE_CHECK_EVENT = 'pleromanet:check-home-timeline';
+	const HOME_TIMELINE_CHECK_EVENT = 'deltanet:check-home-timeline';
 	const HOME_TIMELINE_FALLBACK_INTERVAL_MS = 60_000;
 	const HOME_TIMELINE_STREAM_RECONNECT_MS = HOME_TIMELINE_FALLBACK_INTERVAL_MS;
 	const APP_PUBLIC_TIMELINE_STREAM_RECONNECT_MS = HOME_TIMELINE_FALLBACK_INTERVAL_MS;
@@ -264,6 +265,11 @@
 	let chatSendError = $state<PleromaRequestErrorView | null>(null);
 	let loadedBookmarksKey = '';
 	let profileAccountLoadError = $state<PleromaRequestErrorView | null>(null);
+	let inviteState = $state<PleromaRequestState<string>>({ status: 'idle' });
+	let inviteRequestId = 0;
+	let loadedInviteKey = '';
+	let followInviteInput = $state('');
+	let followInvitePending = $state(false);
 	let replySort = $state<ReplySort>('top');
 	let expandedThreadReplyIds = $state<Record<string, boolean>>({});
 	let homeTimelineRequestId = 0;
@@ -327,11 +333,11 @@
 		if (nextCache !== accountCache) accountCache = nextCache;
 	};
 	const instanceHost = (instanceUrl: string | undefined) => {
-		if (!instanceUrl) return 'pleromanet.social';
+		if (!instanceUrl) return 'deltanet.example';
 		try {
 			return new URL(instanceUrl).hostname;
 		} catch {
-			return instanceUrl.replace(/^https?:\/\//, '').replace(/\/$/, '') || 'pleromanet.social';
+			return instanceUrl.replace(/^https?:\/\//, '').replace(/\/$/, '') || 'deltanet.example';
 		}
 	};
 	const accountStat = (value: number | null | undefined) => accountStatFormatter.format(Math.max(0, value ?? 0));
@@ -494,6 +500,13 @@
 		chatDraft = '';
 		chatSending = false;
 		chatSendError = null;
+	};
+	const invalidateInviteRequests = () => {
+		inviteRequestId += 1;
+		loadedInviteKey = '';
+		inviteState = { status: 'idle' };
+		followInviteInput = '';
+		followInvitePending = false;
 	};
 	const invalidateComposerAutocompleteRequests = () => {
 		composerMentionSearchRequestId += 1;
@@ -1933,6 +1946,7 @@
 		invalidateSuggestionsRequests();
 		invalidateBookmarksRequests();
 		invalidateChatsRequests();
+		invalidateInviteRequests();
 		invalidateComposerAutocompleteRequests();
 		closeHomeTimelineStreaming();
 		localHomePosts = [];
@@ -1964,6 +1978,7 @@
 		invalidateSuggestionsRequests();
 		invalidateBookmarksRequests();
 		invalidateChatsRequests();
+		invalidateInviteRequests();
 			invalidateComposerAutocompleteRequests();
 			closeHomeTimelineStreaming();
 			localHomePosts = [];
@@ -2110,6 +2125,65 @@
 
 		loadedSuggestionsKey = requestSessionKey;
 		void loadSuggestions(session);
+	};
+	const loadInvite = async (session: PleromaSession) => {
+		const requestSessionKey = sessionKey(session);
+		const requestId = inviteRequestId + 1;
+		inviteRequestId = requestId;
+		inviteState = { status: 'loading' };
+
+		try {
+			const invite = await fetchDeltanetInvite({
+				instanceUrl: session.instanceUrl,
+				accessToken: session.accessToken,
+				fetch: window.fetch.bind(window)
+			});
+			if (requestId !== inviteRequestId || !isCurrentSessionRequest(requestSessionKey)) return;
+
+			inviteState = { status: 'success', data: invite };
+		} catch (error) {
+			if (requestId !== inviteRequestId || !isCurrentSessionRequest(requestSessionKey)) return;
+
+			inviteState = { status: 'error', error: normalizePleromaRequestError(error) };
+		}
+	};
+	const ensureInvite = (session: PleromaSession) => {
+		const requestSessionKey = sessionKey(session);
+		if (loadedInviteKey === requestSessionKey) return;
+
+		loadedInviteKey = requestSessionKey;
+		void loadInvite(session);
+	};
+	const copyInviteLink = async (invite: string) => {
+		try {
+			await writeClipboardText(invite);
+			flashPostControl('Invite link copied');
+		} catch {
+			flashPostControl('Copy failed');
+		}
+	};
+	const confirmFollowInvite = async (invite: string) => {
+		const session = currentSession;
+		if (!session || followInvitePending) return;
+
+		followInvitePending = true;
+		try {
+			await followDeltanetInvite({
+				instanceUrl: session.instanceUrl,
+				accessToken: session.accessToken,
+				invite,
+				fetch: window.fetch.bind(window)
+			});
+			flashPostControl('Followed that feed');
+			followInviteInput = '';
+			headerSearchDraft = '';
+			closeHeaderSearch();
+		} catch (error) {
+			const message = error && typeof error === 'object' && 'message' in error ? String((error as { message: unknown }).message) : 'Could not follow that feed.';
+			flashPostControl(`Could not follow: ${message}`);
+		} finally {
+			followInvitePending = false;
+		}
 	};
 	const chatClient = (session: PleromaSession) =>
 		createPleromaClient({ instanceUrl: session.instanceUrl, accessToken: session.accessToken, fetch: window.fetch.bind(window) });
@@ -2569,6 +2643,7 @@
 	};
 	const submitHeaderSearch = (event: SubmitEvent) => {
 		event.preventDefault();
+		if (isFeedInvite(headerSearchDraft)) return;
 		rememberSearch(headerSearchDraft);
 		closeHeaderSearch();
 		submitSearch(headerSearchDraft);
@@ -2611,6 +2686,7 @@
 	};
 	const focusHeaderSearch = () => {
 		headerSearchOpen = true;
+		if (isFeedInvite(headerSearchDraft)) return;
 		if (headerSearchDraft.trim() && currentSession) scheduleHeaderSearch(currentSession, headerSearchDraft);
 	};
 	const updateHeaderSearch = (value: string) => {
@@ -2618,6 +2694,13 @@
 		headerSearchOpen = true;
 		headerSearchSelectedIndex = -1;
 		const session = currentSession;
+		if (isFeedInvite(value)) {
+			clearHeaderSearchDebounce();
+			headerSearchRequestId += 1;
+			headerSearchState = { status: 'idle' };
+			return;
+		}
+
 		if (!session || !value.trim()) {
 			clearHeaderSearchDebounce();
 			headerSearchRequestId += 1;
@@ -3293,7 +3376,7 @@
 				error: {
 					kind: 'request',
 					title: 'Thread unavailable',
-					message: 'PleromaNet needs a status id to load a thread.',
+					message: 'DeltaNet needs a status id to load a thread.',
 					retryable: false,
 					reauthRequired: false
 				}
@@ -3438,7 +3521,7 @@
 				error: {
 					kind: 'request',
 					title: 'Profile unavailable',
-					message: 'PleromaNet needs an account handle to load a profile.',
+					message: 'DeltaNet needs an account handle to load a profile.',
 					retryable: false,
 					reauthRequired: false
 				}
@@ -3785,6 +3868,7 @@
 				else ensureNotifications(session);
 				connectNotificationStreaming(session);
 				ensureChats(session);
+				ensureInvite(session);
 				if (route === 'messages') {
 					const chatId = pathname.split('/')[3] || null;
 					if (chatId) ensureChatThread(session, chatId);
@@ -3852,7 +3936,7 @@
 </script>
 
 <svelte:head>
-	<title>PleromaNet · App</title>
+	<title>DeltaNet · App</title>
 </svelte:head>
 
 <svelte:window onkeydown={handleWindowKeydown} onpointerdown={handleWindowPointerdown} />
@@ -3987,7 +4071,7 @@
 						</button>
 						<a href="/app/home" class="brand-core" onclick={closeMobilePanels}>
 							<span class="brand-mark"><Icon name="sparkBig" /></span>
-							<span class="brand-name">PleromaNet<sup>™</sup></span>
+							<span class="brand-name">DeltaNet<sup>™</sup></span>
 						</a>
 						<div class="brand-tag" data-testid="brand-tag">A federated<br />social web</div>
 					</div>
@@ -3995,14 +4079,20 @@
 					<div class="app-header-right">
 						<form bind:this={headerSearchForm} class="app-search" role="search" onsubmit={submitHeaderSearch} onfocusin={focusHeaderSearch}>
 							<Icon name="search" width={14} height={14} />
-							<input bind:this={headerSearchInput} value={headerSearchDraft} type="search" role="combobox" aria-label="Search PleromaNet" placeholder="Search..." aria-autocomplete="list" aria-expanded={headerSearchOpen} aria-controls={headerSearchOpen ? 'header-search-dropdown' : undefined} aria-activedescendant={headerSearchActiveDescendant} oninput={(event) => updateHeaderSearch(event.currentTarget.value)} onkeydown={handleHeaderSearchKeydown} />
+							<input bind:this={headerSearchInput} value={headerSearchDraft} type="search" role="combobox" aria-label="Search DeltaNet" placeholder="Search..." aria-autocomplete="list" aria-expanded={headerSearchOpen} aria-controls={headerSearchOpen ? 'header-search-dropdown' : undefined} aria-activedescendant={headerSearchActiveDescendant} oninput={(event) => updateHeaderSearch(event.currentTarget.value)} onkeydown={handleHeaderSearchKeydown} />
 							<span class="search-kbd">⌘K</span>
 							{#if headerSearchOpen}
 								<div id="header-search-dropdown" class="se-dropdown" role="listbox" data-testid="header-search-dropdown">
-									{#if !headerSearchDraft.trim()}
+									{#if isFeedInvite(headerSearchDraft)}
+										<div class="se-dd-empty">
+											<div class="se-dd-empty-h">Feed invite detected</div>
+											<div class="se-dd-empty-s">Follow this feed instead of searching for it.</div>
+										</div>
+										<button type="button" class="se-dd-l-see invite-follow-btn" disabled={followInvitePending} onclick={() => confirmFollowInvite(headerSearchDraft.trim())}>{followInvitePending ? 'Following…' : 'Follow this feed'}</button>
+									{:else if !headerSearchDraft.trim()}
 										{#if searchRecents.length === 0}
 											<div class="se-dd-empty">
-												<div class="se-dd-empty-h">Search across PleromaNet</div>
+												<div class="se-dd-empty-h">Search across DeltaNet</div>
 												<div class="se-dd-empty-s">Find people and posts on this instance and across the federation. Hashtags are ignored.</div>
 											</div>
 										{:else}
@@ -4128,7 +4218,7 @@
 										<span>Sign out</span>
 									</button>
 								</div>
-								<div class="user-menu-foot"><span>PleromaNet™</span><span class="user-menu-dot"></span><span>{headerInstanceDomain}</span></div>
+								<div class="user-menu-foot"><span>DeltaNet™</span><span class="user-menu-dot"></span><span>{headerInstanceDomain}</span></div>
 							</div>
 						{/if}
 					</div>
@@ -4139,6 +4229,19 @@
 		<div class="app-shell-grid" class:search-grid={searchShell}>
 			<aside class="app-left-sidebar" data-testid="left-sidebar">
 				<ProfileMini account={currentSession?.account} instanceUrl={currentSession?.instanceUrl} />
+				<div class="card rail-card invite-card" data-testid="invite-card">
+					<div class="card-head"><span class="card-title">Share your feed</span></div>
+					<div class="card-body">
+						{#if inviteState.status === 'loading' || inviteState.status === 'idle'}
+							<span class="invite-status">Loading your invite link...</span>
+						{:else if inviteState.status === 'error'}
+							<span class="invite-status">Could not load your invite link.</span>
+						{:else if inviteState.status === 'success'}
+							<code class="invite-link">{inviteState.data}</code>
+							<button type="button" class="btn-ghost invite-copy" onclick={() => copyInviteLink(inviteState.status === 'success' ? inviteState.data : '')}>Copy invite link</button>
+						{/if}
+					</div>
+				</div>
 				<div class="card app-side-card">
 					<nav class="side-nav" aria-label="App sections">
 						{#each navItems as item}
@@ -4418,7 +4521,7 @@
 						<div class="se-pageframe card" data-testid="search-pageframe">
 							<form class="se-bar" role="search" onsubmit={submitSearchPage}>
 								<Icon name="search" width={18} height={18} />
-								<input class="se-bar-input" value={searchPageDraft} type="search" aria-label="Search this instance and federation" placeholder="Search PleromaNet..." oninput={(event) => updateSearchPageDraft(event.currentTarget.value)} />
+								<input class="se-bar-input" value={searchPageDraft} type="search" aria-label="Search this instance and federation" placeholder="Search DeltaNet..." oninput={(event) => updateSearchPageDraft(event.currentTarget.value)} />
 								<span class="se-bar-count">{searchResultTotal} {searchResultTotal === 1 ? 'result' : 'results'}</span>
 							</form>
 							<div class="se-tabs" role="tablist" aria-label="Search result types">
@@ -4788,7 +4891,7 @@
 			<button type="button" class="mobile-drawer-bg open" aria-label="Close navigation menu" onclick={() => (mobileDrawerOpen = false)}></button>
 			<aside class="mobile-drawer open" data-testid="mobile-drawer">
 				<div class="drawer-head">
-					<div class="drawer-brand"><span class="brand-mark"><Icon name="sparkBig" /></span><span class="brand-name">PleromaNet<sup>™</sup></span></div>
+					<div class="drawer-brand"><span class="brand-mark"><Icon name="sparkBig" /></span><span class="brand-name">DeltaNet<sup>™</sup></span></div>
 					<button type="button" class="drawer-close" aria-label="Close navigation menu" onclick={() => (mobileDrawerOpen = false)}>×</button>
 				</div>
 				<nav class="side-nav" aria-label="Mobile sections">
