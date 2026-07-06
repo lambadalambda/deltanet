@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { badgeOf, isFeedChat, matchesSelfAddr, shouldIngest } from '../src/transport/deltachat.js';
+import {
+  badgeOf,
+  blockedContactIds,
+  isFeedChat,
+  matchesSelfAddr,
+  shouldIngest,
+} from '../src/transport/deltachat.js';
 import { makeContact, makeMessage } from './entities.test.js';
 
 describe('shouldIngest', () => {
@@ -70,6 +76,29 @@ describe('matchesSelfAddr', () => {
 
   it('does not match the local part with a foreign domain', () => {
     expect(matchesSelfAddr('carol123@elsewhere.org', SELF_ADDR)).toBe(false);
+  });
+});
+
+describe('blockedContactIds', () => {
+  it('returns the ids of blocked contacts', () => {
+    const contacts = [
+      makeContact({ id: 2, isBlocked: true }),
+      makeContact({ id: 3, isBlocked: false }),
+    ];
+    expect(blockedContactIds(contacts)).toEqual([2]);
+  });
+
+  it('returns an empty array when no contact is blocked', () => {
+    const contacts = [makeContact({ id: 2, isBlocked: false })];
+    expect(blockedContactIds(contacts)).toEqual([]);
+  });
+
+  it('returns all ids when every contact is blocked', () => {
+    const contacts = [
+      makeContact({ id: 2, isBlocked: true }),
+      makeContact({ id: 3, isBlocked: true }),
+    ];
+    expect(blockedContactIds(contacts)).toEqual([2, 3]);
   });
 });
 

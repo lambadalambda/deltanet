@@ -39,6 +39,18 @@ export const shouldIngest = (msg: T.Message): boolean => {
 export const isFeedChat = (chatType: T.ChatType): boolean => FEED_CHAT_TYPES.has(chatType);
 
 /**
+ * Pure predicate: which of these contacts are currently blocked?
+ *
+ * There is no chat-level "blocked" flag on `BasicChat`/`FullChat` — blocking
+ * a chat (`blockChat`, used by `unfollow()`) actually blocks the underlying
+ * contact(s), which surfaces as `Contact.isBlocked`. Used by `follow()` to
+ * detect a previously-unfollowed feed owner so it can be unblocked before
+ * the (re-)joined chat can deliver again.
+ */
+export const blockedContactIds = (contacts: T.Contact[]): number[] =>
+  contacts.filter((contact) => contact.isBlocked).map((contact) => contact.id);
+
+/**
  * Pure predicate: does `handle` refer to our own account? Matches the full
  * address or its bare local part (username), case-insensitively. Used by
  * `contactIdByAddr` so profile lookups for "carol" or "carol@relay" resolve
@@ -98,8 +110,22 @@ export type OpenTransportOptions = {
    * `Store.ingestMessage`), since the same logical reply/boost is delivered
    * twice: once via the feed broadcast, once as a DM copy to the original
    * author.
+   *
+   * The third argument is the message's resolved `rfc724Mid` (or null if it
+   * couldn't be resolved), pre-fetched by the transport itself via the same
+   * `messageMid`/cache machinery `DeltaChatTransport.messageMid` exposes.
+   * This exists so callers never need to reach back into a
+   * not-yet-constructed transport handle to resolve it themselves — see the
+   * DEVLOG entry on the startup-backfill race this replaced: `openTransport`
+   * fires the startup backfill sweep (and may deliver live events) before
+   * it returns, so a caller that captures its own `transport` reference in
+   * an outer variable and assigns it only after `await openTransport(...)`
+   * resolves would see that variable still `null` for every message the
+   * backfill sweep or an early event delivers — silently dropping them.
+   * Passing everything the hook needs as arguments removes that variable
+   * from the picture entirely.
    */
-  onMessage?: (msg: T.Message, isFeedMessage: boolean) => void | Promise<void>;
+  onMessage?: (msg: T.Message, isFeedMessage: boolean, mid: string | null) => void | Promise<void>;
 };
 
 export const openTransport = async (
@@ -138,6 +164,22 @@ export const openTransport = async (
     }
   };
 
+  // No reverse mid -> msgId RPC exists; getMessageInfoObject is the only way
+  // to learn a message's rfc724Mid, so cache it in-memory once resolved.
+  // Defined ahead of `notifyOnMessage` (which resolves each ingested
+  // message's mid via `resolveMid` before calling `options.onMessage`).
+  const midCache = new Map<number, string | null>();
+
+  const resolveMid = async (msgId: number): Promise<string | null> => {
+    if (midCache.has(msgId)) return midCache.get(msgId) ?? null;
+    const mid = await rpc
+      .getMessageInfoObject(accountId, msgId)
+      .then((info) => info.rfc724Mid ?? null)
+      .catch(() => null);
+    midCache.set(msgId, mid);
+    return mid;
+  };
+
   const notifyOnMessage = async (msg: T.Message): Promise<void> => {
     if (!shouldIngest(msg)) return;
     // Single getBasicChatInfo lookup, reused for both the contact-request
@@ -150,8 +192,9 @@ export const openTransport = async (
     if (chat) await acceptIfContactRequest(chat);
     if (!options.onMessage) return;
     const isFeedMessage = chat ? isFeedChat(chat.chatType) : false;
+    const mid = await resolveMid(msg.id);
     try {
-      await options.onMessage(msg, isFeedMessage);
+      await options.onMessage(msg, isFeedMessage, mid);
     } catch (err) {
       console.error('onMessage ingestion failed (non-fatal):', err);
     }
@@ -167,10 +210,6 @@ export const openTransport = async (
       console.error(`failed to load message from ${eventKind} for ingestion:`, err);
     }
   };
-
-  // No reverse mid -> msgId RPC exists; getMessageInfoObject is the only way
-  // to learn a message's rfc724Mid, so cache it in-memory once resolved.
-  const midCache = new Map<number, string | null>();
 
   const feedChatIds = async (): Promise<number[]> => {
     const entries = await rpc.getChatlistEntries(accountId, null, null, null);
@@ -212,16 +251,6 @@ export const openTransport = async (
       .map((msg) => withSelfDisplayName(msg, displayname));
     for (const msg of messages) void notifyOnMessage(msg);
     return messages;
-  };
-
-  const resolveMid = async (msgId: number): Promise<string | null> => {
-    if (midCache.has(msgId)) return midCache.get(msgId) ?? null;
-    const mid = await rpc
-      .getMessageInfoObject(accountId, msgId)
-      .then((info) => info.rfc724Mid ?? null)
-      .catch(() => null);
-    midCache.set(msgId, mid);
-    return mid;
   };
 
   const dm1to1ChatId = async (contactId: number): Promise<number> => {
@@ -389,7 +418,30 @@ export const openTransport = async (
 
     follow: async (invite: string) => {
       const chatId = await rpc.secureJoin(accountId, invite);
-      await rpc.acceptChat(accountId, chatId).catch(() => undefined);
+      // Re-following a feed we previously `unfollow()`-ed (which calls
+      // `blockChat`) hands back the *same* chat id from `secureJoin` —
+      // still blocked. `acceptChat` alone does not unblock it (verified:
+      // `Contact.isBlocked` stays true and the chat keeps missing from
+      // `getChatlistEntries`); blocking happens at the contact level
+      // (`blockChat` blocks the chat's contact(s), there is no separate
+      // "unblock chat" RPC), so the fix is to detect a blocked contact on
+      // this chat and call `unblockContact`. Errors are logged, not
+      // swallowed — silently failing here is exactly how this bug shipped.
+      try {
+        const contactIds = await rpc.getChatContacts(accountId, chatId);
+        const contacts = await rpc.getContactsByIds(accountId, contactIds);
+        const blocked = blockedContactIds(Object.values(contacts));
+        for (const contactId of blocked) {
+          await rpc.unblockContact(accountId, contactId);
+        }
+      } catch (err) {
+        console.error('failed to check/unblock re-followed feed contact:', err);
+      }
+      try {
+        await rpc.acceptChat(accountId, chatId);
+      } catch (err) {
+        console.error('failed to accept re-joined feed chat:', err);
+      }
       return chatId;
     },
 

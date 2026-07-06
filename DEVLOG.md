@@ -456,3 +456,112 @@ username). (2) self avatar placeholder showed "M" — `contactBadge` now
 applies the cached configured-displayname override via pure `badgeOf`
 instead of the raw SELF contact's "Me". `pnpm test` (340) + `pnpm check`
 green.
+
+## 2026-07-06 — bug fixes: re-follow after unfollow silently failed; startup backfill silently dropped
+
+**Bug 1: re-following a previously-unfollowed feed didn't work.**
+`unfollow()` calls `blockChat` on the InBroadcast chat, which correctly
+hides it from `getChatlistEntries`/the timeline. But `follow()`, called
+again on the same invite/contact, got back the *same* (still-blocked) chat
+id from `secureJoin`, and its `acceptChat(...).catch(() => undefined)` call
+swallowed whatever error `acceptChat` threw on a blocked chat — so the feed
+stayed invisible while `POST /api/deltanet/follow` still returned 200.
+
+Root cause / what `acceptChat` actually does: **nothing relevant to
+blocking**. It has no doc comment in the generated client at all (unlike
+e.g. `deleteChat`, which spells out exactly what it does and doesn't do),
+and empirically it does not undo a `blockChat`. Blocking in `@deltachat`'s
+model is a *contact*-level operation, not a chat-level one: neither
+`BasicChat` nor `FullChat` expose a `blocked`/`isBlocked` field at all —
+the only place blocked-ness is observable is `Contact.isBlocked`. There is
+also no "unblock chat" RPC, only `unblockContact(accountId, contactId)`.
+So `blockChat(chatId)` blocks the chat's underlying contact(s), and the
+only way back is to find those contacts and call `unblockContact` on them.
+
+**Fix** (`daemon/src/transport/deltachat.ts`): added a pure predicate
+`blockedContactIds(contacts: T.Contact[]): number[]` (filters
+`contact.isBlocked`, unit-tested in `tests/deltachat.test.ts` against
+`makeContact({ isBlocked })`). `follow()` now, after `secureJoin`, calls
+`getChatContacts` + `getContactsByIds` on the returned chat id, runs the
+result through `blockedContactIds`, and `unblockContact`s each one before
+calling `acceptChat` — and neither call swallows its error silently
+anymore (both are logged via `console.error`, matching the project's
+existing "log, don't swallow" convention for best-effort RPC calls
+elsewhere in this file). Confirmed live via a real unfollow→re-follow
+cycle (see integration test below): after the fix, the re-joined
+InBroadcast chat shows `isBlocked: false` on the owner contact and reappears
+in `getChatlistEntries`, and alice's next post reaches bob's timeline again.
+
+Proven end-to-end by a new integration test in
+`tests/integration/federation.test.ts`: `lets a follower re-follow a feed
+after unfollowing it`. Runs against two **freshly registered** chatmail
+accounts (via `registerAccount`, not `accounts.local.json`) in fresh
+`data/int-alice`/`data/int-bob` dirs (renamed from an initial `data/int-*`
+attempt's sibling `it-*` naming specifically to avoid any collision with
+`data/it-alice`/`data/it-bob`, which the pre-existing test also uses, and
+with `data/main`/`data/demo`, which live daemon processes hold open) —
+follow, confirm delivery, unfollow, confirm the next post is *not*
+delivered, re-follow via a fresh invite, confirm a new post *is* delivered
+again. One wrinkle: the second `secureJoin` reuses an already-verified
+key-contact relationship between the two test accounts, and unlike the
+first join, alice's side does not reliably re-emit
+`SecurejoinInviterPropgress` (progress===1000) for it — so the test treats
+that wait as best-effort (`.catch(() => undefined)`, 60s) and falls through
+to polling `bob.timeline()`, which is what the regression actually cares
+about. Full run: 2 tests passed in ~97s.
+
+**Bug 2: startup backfill (and any event delivered before `openTransport`
+returns) was a silent no-op.** `openTransport` fires its startup `backfill()`
+sweep fire-and-forget *before* it returns (`void backfill()...`, deliberately
+not awaited so it doesn't delay startup) and can independently deliver live
+core events (`IncomingMsg`/`MsgsChanged`) in the same window. But
+`main.ts`'s `ingestOnMessage` read a module-level `transport` variable —
+`let transport: Transport | null = null;` — that's only assigned *after*
+`await openTransport(...)` resolves:
+```
+const ingestOnMessage = async (msg, isFeedMessage) => {
+  const t = transport;
+  if (!t) return;         // <- backfilled messages hit this and vanish
+  const mid = await t.messageMid(msg.id);
+  ...
+};
+...
+transport = await openTransport(DATA_DIR, creds, { onMessage: ingestOnMessage });
+```
+Every message the hook saw before that assignment landed — which, for a
+fire-and-forget sweep racing the outer `await`, is not a rare edge case —
+hit the null guard and was dropped. Live symptom: a rebuilt
+`deltanet-store.json` after restart had `ingestedMsgIds` covering only
+live-event messages (count 3), `ownBoosts`/`boostsByMid` empty, and
+`POST /statuses/:id/unreblog` 404ing because `store.ownBoostMsgId` had
+nothing to find. It "mostly worked" only because core happens to re-emit
+`MsgsChanged`/`IncomingMsg` for some messages after startup anyway, masking
+the gap.
+
+**Fix**: removed the outer-variable dependency structurally rather than
+just avoiding it. `OpenTransportOptions.onMessage`'s signature grew a third
+argument, `mid: string | null` — the transport now resolves each ingested
+message's `rfc724Mid` itself (reusing the same `resolveMid`/`midCache`
+machinery `messageMid()` already exposed, just called a step earlier,
+inside `notifyOnMessage`) and passes it straight through. `main.ts`'s
+`ingestOnMessage` no longer reads `transport` at all — it just uses the
+`mid` argument — so there is no window where the hook can be called before
+the data it needs is available; the race is impossible by construction, not
+just unlikely. (`notifyFollower` in `main.ts` was checked too: it's
+registered via `transport.onFollower(...)` *after* `openTransport` resolves,
+so no equivalent race exists there — left as-is.)
+
+Files changed: `daemon/src/transport/deltachat.ts` (`blockedContactIds`,
+`follow()` unblock logic, `onMessage` signature + `notifyOnMessage`
+resolving `mid` before calling it, `midCache`/`resolveMid` moved earlier in
+the closure), `daemon/src/main.ts` (`ingestOnMessage` takes `mid` directly),
+`daemon/tests/deltachat.test.ts` (`blockedContactIds` unit tests, TDD
+red→green: written against the not-yet-exported function first, confirmed
+failing via `TypeError: blockedContactIds is not a function`, then
+implemented), `daemon/tests/integration/federation.test.ts` (new
+re-follow-after-unfollow test). `pnpm test` (343 tests) and `pnpm check`
+both green throughout; `pnpm test:integration` green (2/2, ~97s) after the
+fix (first attempt, before the best-effort event-wait change above, failed
+only on the flaky `SecurejoinInviterProgress` wait for the second join —
+state inspection confirmed the unblock itself had already succeeded even
+in that failing run).

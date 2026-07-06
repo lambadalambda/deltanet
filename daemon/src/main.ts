@@ -31,10 +31,13 @@ const announce = async (transport: Transport) => {
 
 let transport: Transport | null = null;
 
-const ingestOnMessage = async (msg: T.Message, isFeedMessage: boolean) => {
-  const t = transport;
-  if (!t) return;
-  const mid = await t.messageMid(msg.id);
+// Takes the resolved `mid` as an argument instead of calling back into the
+// module-level `transport` variable below. `openTransport` fires its
+// startup backfill sweep (and may deliver live core events) *before* it
+// resolves, but `transport` is only assigned after `await openTransport(...)`
+// returns — so a `transport === null` guard here would silently drop every
+// message the backfill sweep or an early event delivered. See DEVLOG.
+const ingestOnMessage = async (msg: T.Message, isFeedMessage: boolean, mid: string | null) => {
   if (mid) {
     store.ingestMessage(msg, mid, isFeedMessage);
     deriveOnIngest(store, msg, mid);

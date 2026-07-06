@@ -43,13 +43,36 @@ contact id to read our own feed) are all in `daemon/src/server.ts`.
 `contactToAccount` gained an optional `relationship` param
 (`daemon/src/mastodon/entities.ts`) folded into `pleroma.relationship`.
 
-**Open finding, not integration-tested** (per this task's scope,
-`pnpm test:integration` was off-limits): the assumption that an InBroadcast
-chat's `getFullChatById(...).contactIds` contains exactly the feed owner as
-the only non-SELF contact is reasoned from RPC semantics/doc comments, not
-verified against a real joined broadcast. Worth confirming with
-`tests/integration/federation.test.ts` before relying on this in
-production. See `../../DEVLOG.md` for the full write-up. Tests:
-`daemon/tests/server.test.ts` (relationships, unfollow, follow-422, account
-statuses); transport itself has no unit tests per project convention
-(network-bound, covered by integration tests only).
+Previously-open finding — **now integration-tested and confirmed**: the
+assumption that an InBroadcast chat's `getFullChatById(...).contactIds`
+contains exactly the feed owner as the only non-SELF contact was verified
+against a real joined broadcast in `tests/integration/federation.test.ts`
+(the pre-existing test, and the new re-follow test below both rely on it
+and pass).
+
+## Update (2026-07-06): re-follow-after-unfollow bug found and fixed
+
+Live testing surfaced a real bug in the `unfollow()`/`follow()` pair above:
+`unfollow()`'s `blockChat` correctly hid the feed, but re-`follow()`-ing the
+same feed afterward silently failed — `secureJoin` returned the same
+(still-blocked) chat id, and `follow()`'s `acceptChat(...).catch(() =>
+undefined)` swallowed whatever error `acceptChat` threw, so the feed stayed
+invisible even though `POST /api/deltanet/follow` returned 200.
+
+Root cause: `acceptChat` does not undo `blockChat` — blocking is a
+*contact*-level operation (`Contact.isBlocked`; neither `BasicChat` nor
+`FullChat` expose a chat-level blocked flag), and the only way back is
+`unblockContact`, there is no "unblock chat" RPC. Fixed in
+`daemon/src/transport/deltachat.ts`: `follow()` now looks up the re-joined
+chat's contacts, unblocks any that are blocked (via a new pure
+`blockedContactIds` helper, unit-tested in `daemon/tests/deltachat.test.ts`),
+then calls `acceptChat` — with both calls' errors logged instead of
+swallowed. Proven end-to-end by a new integration test,
+`lets a follower re-follow a feed after unfollowing it`
+(`tests/integration/federation.test.ts`), using two freshly-registered
+chatmail accounts and fresh `data/int-alice`/`data/int-bob` dirs (never
+touching `data/it-*`, `data/main`, `data/demo`, or `accounts.local.json`'s
+credentials, all of which are used by other tests or live daemons). Full
+write-up, including the `acceptChat`/blocking-model finding, in
+`../../DEVLOG.md`. `pnpm test` (343 tests) and `pnpm test:integration`
+(2/2) both green.
