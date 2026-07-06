@@ -49,3 +49,29 @@ migration:
 - Unit tests: canonical-mid child registration from both copy types with
   dedupe, alias-later value merging, SELF reaction derivation (react +
   unreact ordering), migration v1→v2.
+
+## Current Status
+
+DONE (implemented, not archived). Shipped in daemon:
+
+- Store schema bumped to `STORE_SCHEMA_VERSION = 2`; `replyChildren` values are
+  now child CANONICAL mids. Reply edges register from BOTH feed and DM reply
+  copies (set-add dedupe); boosts stay feed-only. `applyAlias` sweeps
+  replyChildren VALUE lists (dm->feed, dedupe) plus the existing key re-key;
+  read paths canonicalize child mids defensively. `childrenCount` counts ALL
+  children; `replyChildren` returns the *renderable* resolved msgIds.
+  `resolveMid` gained a reverse-alias fallback so a DM-only reply (child keyed
+  by the never-received feed mid) still resolves to the DM copy. Context
+  descendants BFS walks the new `replyChildMids`.
+- SELF reaction/unreaction control DMs re-apply our own tally on (re)ingest
+  (`deriveOnIngest` gained an `ownAddr` param, threaded from server/main/ingest
+  call sites). SELF still derives no notifications and no follow-back actions.
+- Migration drops replyChildren (v1 msgId shape) so the backfill re-indexes v2
+  values on restart; no data surgery.
+
+Tests: unit (store child-edge registration + dedupe + alias re-key + reverse
+resolve + migration v1->v2; SELF reaction react/unreact/ordering) and a new
+integration test (`tests/integration/non-follower-thread.test.ts`) covering the
+acceptance topology, the fresh-store re-index (own reaction recovered), and the
+follower-side no-double-count. `pnpm test` (541) + `pnpm check` +
+`pnpm test:integration` (6) all green.

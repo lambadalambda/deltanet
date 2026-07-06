@@ -1143,3 +1143,97 @@ one flip covers them; `isOwnMid` is an order-independent boolean OR; all other
 store lookups already key by `canon(mid)` only. Unit tests added for both
 sides (both copies ingested → FEED msgId; alias known but feed copy absent →
 DM msgId).
+
+## 2026-07-06 — non-follower thread rendering + own-reaction re-index (schema v2)
+
+Fixed the two non-follower-node QA regressions from
+../meta/issues/non-follower-thread-rendering.md, found on lain's node (lain
+does NOT follow carol):
+
+1. **DM-only replies were invisible in threads.** Reply edges registered only
+   from FEED messages, but a non-follower holds a reply solely as its DM copy —
+   so the thread edge was never created and the reply never rendered.
+2. **Own reactions vanished on re-index.** The migration re-derives tallies
+   from messages, but `deriveOnIngest` skipped all SELF-authored messages, so
+   our own outgoing reaction control DMs never re-applied — reactions we made
+   were only ever applied directly by the REST endpoint, and a fresh store lost
+   them.
+
+### Design
+
+- **`replyChildren` value shape: msgId -> child CANONICAL mid** (store schema
+  `STORE_SCHEMA_VERSION = 2`). Storing the child's canonical mid (not its
+  msgId) means the feed copy and DM copy of one logical reply collapse to a
+  single child entry once aliased (set-add dedupe), AND a DM-only reply keeps a
+  thread edge that resolves back to the DM copy. Registered from BOTH feed
+  copies and Single-chat DM reply-marker messages (reply markers only — DMs
+  still register nothing else: reactions/boosts/control DMs register no edges,
+  and boost edges stay feed-only since boosts have no DM twin to unify).
+- **childrenCount counting choice: count ALL children (resolvable or not).**
+  It represents the logical reply count — a reply we've only heard referenced
+  but never received still counts, even though it can't render. `replyChildren`
+  (the *renderable* list) resolves each stored child mid to a msgId and skips
+  unresolvable ones; the two intentionally differ. Both dedupe by canonical
+  child mid defensively (an alias learned late could momentarily leave a
+  dm/feed pair in the raw list before the next write-time sweep).
+- **`applyAlias` now sweeps replyChildren VALUE lists too.** On learning
+  `dmMid -> feedMid` it (a) re-keys any children under the dmMid onto the feedMid
+  (KEY re-key, existing), and (b) walks every value list mapping `dmMid ->
+  feedMid` and deduping (VALUE re-key, new) — a child edge may have been
+  registered against the DM copy's mid before its alias was learned. Read paths
+  (`replyChildren`/`replyChildMids`/`childrenCount`) canonicalize child mids
+  defensively too.
+- **`resolveMid` reverse-alias fallback.** A DM-only reply's child edge is keyed
+  by the CANONICAL (feed) mid the node will never receive, so `midToMsgId[feedMid]`
+  is empty. Added a third fallback after canonical-first/raw: a reverse scan of
+  `canonicalByMid` for any dmMid that aliases to this feed mid and IS indexed,
+  resolving to the DM copy the node actually holds. This is what makes the
+  DM-only reply render (via the new `replyChildMids` BFS in the context
+  endpoint) instead of resolving to null.
+- **Context descendants BFS** now walks `store.replyChildMids(mid)` (canonical
+  child mids), resolves each to a msgId via `resolveMid` (skip nulls but still
+  recurse on the child's own canonical mid so an unheld middle node doesn't sever
+  its subtree), and recurses. Replaced the old msgId-list + `messageMid`
+  round-trip.
+- **SELF reaction re-derivation.** `deriveOnIngest` gained an optional 4th
+  `ownAddr` param. A SELF reaction/unreaction control DM now re-applies OUR OWN
+  tally keyed by `ownAddr` (idempotent set-add). **How own-address reaches
+  derivation:** threaded from the ingest call sites — `server.ts`'s `ingest`
+  passes `await mapper.ownAddr(transport)` (memoized); `main.ts`'s
+  `ingestOnMessage` passes `ownSelfAddr(msg)`, a memoized helper that prefers
+  the live transport's `self()` but falls back to a SELF message's own sender
+  address during the startup backfill's `'derive'` pass (when the module
+  `transport` var is not yet assigned). The function stays pure. SELF still
+  derives ZERO notifications and no follow-back actions; the followback path
+  still ignores SELF; the endpoints' direct-apply stays (idempotent double-apply
+  is fine). Reaction target mids canonicalize as before.
+  - *Backfill order caveat* (noted in code): within one chat `getMessageIds` is
+    chronological, so a react then a later unreact of the same mid replay in
+    order and the retract wins; across chats ordering is irrelevant since
+    distinct chats hold reactions for distinct mids.
+- **Migration.** `migrate()` already drops `replyChildren` among all derived
+  indices (verified) and keeps notifications/dedupe keys/pending — so a v1
+  store's stale msgId-valued `replyChildren` is dropped and the backfill
+  re-derives the v2 canonical-mid values on restart. No data surgery; QA nodes
+  heal on a plain restart.
+
+### Tests
+
+- Unit: DM-only reply edge registration; feed+DM copy collapse to one child on
+  alias (dedupe); alias-later VALUE + KEY re-key; childrenCount counts ALL
+  (including an unheld child); reverse-alias `resolveMid` (child keyed by feed
+  mid, feed copy absent -> resolves to DM copy); SELF reaction re-derivation
+  (apply, idempotent, react-then-unreact ordering, canonicalized target,
+  reply/boost still derive nothing); v1->v2 migration drops replyChildren.
+- Integration (`tests/integration/non-follower-thread.test.ts`, fresh accounts
+  + `data/int-nf-*`): B follows A, A does NOT follow B. A posts; B replies; A
+  reacts ❤ and replies to B's reply (holding only the DM copy). On A's node the
+  thread of A's original shows B's reply (from the DM copy) and A's
+  reply-to-reply, with A's own ❤ on B's reply. Then **simulate the migration**:
+  close A's transport, delete ONLY the test's own
+  `data/int-nf-a/deltanet-store.json`, reopen, wait for the backfill re-index,
+  and re-assert the thread + own reaction — all recovered. On B's (follower)
+  node the same reply shows exactly ONE reply-to-reply and ONE favourite (no
+  double-count). Green on real chatmail.
+
+`pnpm test` (541) + `pnpm check` + `pnpm test:integration` (6) all green.

@@ -30,21 +30,53 @@ const FAVOURITE_EMOJI = '❤';
  * - incoming (non-SELF) reaction/unreaction -> apply/retract in the
  *   reaction store; if the reacted-to mid is our own, also notify
  *   (favourite for ❤, pleroma:emoji_reaction otherwise).
- * - SELF messages are ingested for `ownMids` bookkeeping elsewhere
- *   (`Store.ingestMessage`) but never produce notifications or reaction
- *   side effects here — the favourite/react endpoints apply our own
- *   reactions to the store directly instead of relying on ingesting our
- *   own outgoing control DM.
+ * - SELF reaction/unreaction control DMs re-derive OUR OWN tally (apply/retract
+ *   with `ownAddr`), so a re-index (migration) restores reactions we made —
+ *   the endpoints only ever applied them directly, so without this a fresh
+ *   store loses them (see ../meta/issues/non-follower-thread-rendering.md).
+ *   `ownAddr` is threaded in from the caller (main.ts/server/integration
+ *   ingest) since a SELF message's `sender.address` is not reliably our own
+ *   canonical address. Requires `ownAddr` to be present; when it's undefined
+ *   (a caller that can't know it yet) SELF derivation is skipped.
+ * - SELF messages otherwise produce NO notifications and NO reaction side
+ *   effects here (and never a follow-back action). The endpoints' direct-apply
+ *   of our own reactions stays (idempotent set-add, so a later re-derive is a
+ *   no-op).
+ *
+ * Ordering caveat for the SELF reaction re-derivation: within one chat,
+ * `getMessageIds` is chronological, so a react then a later unreact of the same
+ * mid replay in order and the retract wins; across chats, ordering is
+ * irrelevant since distinct chats hold reactions for distinct mids.
  *
  * Returns the notifications actually created (i.e. not dedupe no-ops) —
  * `Store.addNotification` already reports this per-call via its `| null`
  * return, so this just collects the non-null results. Live ingestion
  * (`main.ts`) uses this to broadcast exactly the newly-derived notifications
  * over the streaming hub without a separate before/after diff against
- * `listNotifications`.
+ * `listNotifications`. SELF re-derivation never produces notifications, so it
+ * doesn't affect the return value.
  */
-export const deriveOnIngest = (store: Store, msg: T.Message, mid: string): Notification[] => {
-  if (msg.fromId === DC_CONTACT_ID_SELF) return [];
+export const deriveOnIngest = (
+  store: Store,
+  msg: T.Message,
+  mid: string,
+  ownAddr?: string,
+): Notification[] => {
+  if (msg.fromId === DC_CONTACT_ID_SELF) {
+    // SELF still derives zero notifications and no follow-back actions, but a
+    // SELF reaction/unreaction control DM must re-apply OUR OWN tally so a
+    // re-indexed store recovers reactions we made. Pure: only touches the
+    // reaction store, keyed by our own address.
+    if (ownAddr) {
+      const reaction = parseReaction(msg.text);
+      if (reaction) {
+        const targetMid = store.canonicalize(reaction.mid);
+        if (reaction.kind === 'react') store.applyReaction(targetMid, ownAddr, reaction.emoji);
+        else store.retractReaction(targetMid, ownAddr, reaction.emoji);
+      }
+    }
+    return [];
+  }
 
   const accountAddr = msg.sender.address;
   const accountContactId = msg.fromId;

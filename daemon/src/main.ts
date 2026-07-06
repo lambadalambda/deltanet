@@ -33,6 +33,21 @@ const store = createStore(join(DATA_DIR, 'deltanet-store.json'));
 const hub = createStreamingHub();
 const mapper = createStatusMapper(store, BASE_URL);
 
+// Memoized own account address, used to key SELF reaction re-derivation.
+// Prefers the live transport's `self()` (the authoritative canonical address),
+// but the startup backfill's 'derive' pass runs while the module `transport`
+// var is still null — so it falls back to a SELF-authored message's own sender
+// address (contact id 1's address IS our account address). Cached once resolved.
+let selfAddrCache: string | null = null;
+const ownSelfAddr = async (msg: T.Message): Promise<string | undefined> => {
+  if (selfAddrCache) return selfAddrCache;
+  if (transport) {
+    selfAddrCache = (await transport.self()).address;
+    return selfAddrCache;
+  }
+  return msg.fromId === 1 ? msg.sender.address : undefined;
+};
+
 const announce = async (transport: Transport) => {
   const self = await transport.self();
   console.log(`logged in as ${self.displayName} <${self.address}>`);
@@ -97,7 +112,12 @@ const ingestOnMessage = async (
   }
   let newNotifications: ReturnType<typeof deriveOnIngest> = [];
   if (phase === 'combined' || phase === 'derive') {
-    newNotifications = deriveOnIngest(store, msg, mid);
+    // Own address for SELF reaction re-derivation (see deriveOnIngest): a SELF
+    // reaction control DM re-applies our own tally so a re-indexed store
+    // recovers our reactions. `ownSelfAddr()` is memoized and works during the
+    // startup backfill's 'derive' pass (when the module `transport` var is not
+    // yet assigned) by falling back to the SELF message's own sender address.
+    newNotifications = deriveOnIngest(store, msg, mid, await ownSelfAddr(msg));
   }
 
   // Follow-back control DMs (`⇋ invite-request` / `⇋ invite <link>`), DM-only

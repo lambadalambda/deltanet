@@ -291,11 +291,64 @@ describe('deriveOnIngest: SELF messages never notify', () => {
     expect(store.listNotifications({})).toHaveLength(0);
   });
 
-  it('ignores a reaction-shaped message authored by SELF (does not apply or notify)', () => {
+  it('ignores a reaction-shaped message authored by SELF when no own address is provided', () => {
     seedOwnMessage();
     const msg = makeMessage({ id: 4, fromId: 1, text: buildReactionText('❤', OWN_MID) });
+    // No ownAddr passed: SELF re-derivation is skipped (nothing applies).
     deriveOnIngest(store, msg, 'self-react-mid@example.org');
     expect(store.reactionTallies(OWN_MID)).toEqual([]);
+    expect(store.listNotifications({})).toHaveLength(0);
+  });
+});
+
+describe('deriveOnIngest: SELF reaction re-derivation (own reactions on re-index)', () => {
+  const SELF = 'me@example.org';
+  const TARGET = 'bobs-post@example.org';
+
+  it('applies OUR OWN reaction from a SELF react control DM when ownAddr is given', () => {
+    // A SELF-authored `⇋ react` control DM (a reaction we made to someone
+    // else's post) re-applies our own tally so a re-indexed/migrated store
+    // recovers reactions that were previously only applied by the endpoint.
+    store.ingestMessage(makeMessage({ id: 1, fromId: 11, text: 'bobs post', sender: { address: 'bob@x' } as any }), TARGET);
+    const react = makeMessage({ id: 2, fromId: 1, text: buildReactionText('❤', TARGET) });
+    deriveOnIngest(store, react, 'self-react@example.org', SELF);
+
+    expect(store.reactionTallies(TARGET)).toEqual([{ emoji: '❤', count: 1, reactors: [SELF] }]);
+    // Still no notification for SELF-authored anything.
+    expect(store.listNotifications({})).toHaveLength(0);
+  });
+
+  it('is idempotent: re-deriving the same SELF reaction does not double-apply (set-add)', () => {
+    const react = makeMessage({ id: 2, fromId: 1, text: buildReactionText('🎉', TARGET) });
+    deriveOnIngest(store, react, 'self-react@example.org', SELF);
+    deriveOnIngest(store, react, 'self-react@example.org', SELF);
+    expect(store.reactionTallies(TARGET)).toEqual([{ emoji: '🎉', count: 1, reactors: [SELF] }]);
+  });
+
+  it('replays a react then a later unreact in chronological order: the retract wins', () => {
+    // Within one chat getMessageIds is chronological, so react (earlier) then
+    // unreact (later) replay in order and the tally ends empty.
+    const react = makeMessage({ id: 2, fromId: 1, text: buildReactionText('❤', TARGET) });
+    const unreact = makeMessage({ id: 3, fromId: 1, text: buildUnreactionText('❤', TARGET) });
+    deriveOnIngest(store, react, 'self-react@example.org', SELF);
+    deriveOnIngest(store, unreact, 'self-unreact@example.org', SELF);
+    expect(store.reactionTallies(TARGET)).toEqual([]);
+  });
+
+  it('canonicalizes the reaction target mid (a SELF reaction to a DM copy tallies under the feed mid)', () => {
+    const DM = 'dm-copy@example.org';
+    const FEED = 'feed-copy@example.org';
+    store.aliasMid(DM, FEED);
+    const react = makeMessage({ id: 2, fromId: 1, text: buildReactionText('❤', DM) });
+    deriveOnIngest(store, react, 'self-react@example.org', SELF);
+    expect(store.reactionTallies(FEED)).toEqual([{ emoji: '❤', count: 1, reactors: [SELF] }]);
+  });
+
+  it('a SELF reply/boost still derives nothing even with ownAddr (only reactions re-derive)', () => {
+    seedOwnMessage();
+    const ref = { mid: OWN_MID, addr: SELF };
+    const reply = makeMessage({ id: 2, fromId: 1, text: buildReplyText('self reply', ref) });
+    expect(deriveOnIngest(store, reply, 'self-reply@example.org', SELF)).toEqual([]);
     expect(store.listNotifications({})).toHaveLength(0);
   });
 });

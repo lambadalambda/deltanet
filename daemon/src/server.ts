@@ -170,7 +170,9 @@ export const createApp = (
       const mid = await transport.messageMid(msg.id);
       if (mid) {
         store.ingestMessage(msg, mid, true);
-        deriveOnIngest(store, msg, mid);
+        // Pass our own address so a SELF reaction control DM re-applies our own
+        // tally on (re)ingest (see deriveOnIngest); `ownAddr` is memoized.
+        deriveOnIngest(store, msg, mid, await mapper.ownAddr(transport));
       }
     } catch (err) {
       console.error('ingest failed (non-fatal):', err);
@@ -738,23 +740,34 @@ export const createApp = (
     }
 
     // Descendants: transitively walk the reply-children index, breadth-first,
-    // capped, then sorted chronologically (oldest first).
+    // capped, then sorted chronologically (oldest first). The index stores each
+    // child's CANONICAL mid; resolve it to a msgId (feed copy when present, DM
+    // copy otherwise — so a non-follower's DM-only reply still renders), skip
+    // unresolvable children, and recurse on the child's own canonical mid.
     const targetMid = await transport.messageMid(target.id);
     const descendantMsgs: T.Message[] = [];
     const queue: string[] = targetMid ? [targetMid] : [];
     const seen = new Set<number>();
+    const seenMids = new Set<string>();
     while (queue.length > 0 && descendantMsgs.length < MAX_CONTEXT_DESCENDANTS) {
       const mid = queue.shift()!;
-      const childIds = store.replyChildren(mid);
-      for (const childId of childIds) {
-        if (seen.has(childId) || descendantMsgs.length >= MAX_CONTEXT_DESCENDANTS) continue;
-        seen.add(childId);
-        const childMsg = await transport.message(childId);
-        if (!childMsg) continue;
-        await ingest(transport, childMsg);
-        descendantMsgs.push(childMsg);
-        const childMid = await transport.messageMid(childId);
-        if (childMid) queue.push(childMid);
+      for (const childMid of store.replyChildMids(mid)) {
+        if (seenMids.has(childMid) || descendantMsgs.length >= MAX_CONTEXT_DESCENDANTS) continue;
+        seenMids.add(childMid);
+        const childMsgId = store.resolveMid(childMid);
+        if (childMsgId === null || seen.has(childMsgId)) {
+          // Unresolvable child (referenced but never received) still gets its
+          // subtree explored — recurse on its canonical mid regardless.
+          queue.push(childMid);
+          continue;
+        }
+        seen.add(childMsgId);
+        const childMsg = await transport.message(childMsgId);
+        if (childMsg) {
+          await ingest(transport, childMsg);
+          descendantMsgs.push(childMsg);
+        }
+        queue.push(childMid);
       }
     }
     descendantMsgs.sort((a, b) => a.timestamp - b.timestamp || a.id - b.id);

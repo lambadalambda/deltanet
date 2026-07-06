@@ -41,11 +41,18 @@ describe('canonical-mid unification over chatmail', () => {
 
   /** main.ts-style ingest wiring: index (capturing freshness), then derive. */
   const wireIngest =
-    (store: Store) =>
+    (store: Store, transport: () => Transport | null) =>
     async (msg: T.Message, isFeedMessage: boolean, mid: string | null, phase: IngestPhase): Promise<void> => {
       if (!mid) return;
       if (phase === 'combined' || phase === 'index') store.ingestMessage(msg, mid, isFeedMessage);
-      if (phase === 'combined' || phase === 'derive') deriveOnIngest(store, msg, mid);
+      if (phase === 'combined' || phase === 'derive') {
+        // Own address for SELF reaction re-derivation (mirrors main.ts): prefer
+        // the live transport's self address, fall back to a SELF message's own
+        // sender during backfill (before the transport ref is available).
+        const t = transport();
+        const ownAddr = t ? (await t.self()).address : msg.fromId === 1 ? msg.sender.address : undefined;
+        deriveOnIngest(store, msg, mid, ownAddr);
+      }
     };
 
   const ctxFor = (t: Transport): AppContext => ({
@@ -65,16 +72,19 @@ describe('canonical-mid unification over chatmail', () => {
     const aStore = scratchStore();
     const bStore = scratchStore();
 
+    const refs: { a: Transport | null; b: Transport | null } = { a: null, b: null };
     const a = await openTransport(
       'data/int-canon-a',
       { addr: aCreds.addr, password: aCreds.password, displayName: 'int-canon-a' },
-      { onMessage: wireIngest(aStore) },
+      { onMessage: wireIngest(aStore, () => refs.a) },
     );
     const b = await openTransport(
       'data/int-canon-b',
       { addr: bCreds.addr, password: bCreds.password, displayName: 'int-canon-b' },
-      { onMessage: wireIngest(bStore) },
+      { onMessage: wireIngest(bStore, () => refs.b) },
     );
+    refs.a = a;
+    refs.b = b;
     transports.push(a, b);
 
     const aApp = createApp(ctxFor(a), { baseUrl: BASE, store: aStore });

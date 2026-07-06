@@ -15,8 +15,13 @@ const DC_CONTACT_ID_SELF = 1;
  * the startup backfill re-derives them (now with canonical-mid aliasing), while
  * notifications + dedupe keys + pending requests are preserved so re-derivation
  * can never duplicate-notify. Version 1 introduced canonical-mid aliasing.
+ * Version 2 changed `replyChildren` values from child msgIds to child CANONICAL
+ * mids (so a reply's DM copy and feed copy collapse to one child edge, and a
+ * non-follower's DM-only reply renders in the thread — see
+ * ../meta/issues/non-follower-thread-rendering.md); the `migrate` drop covers
+ * `replyChildren`, so a v1 store re-indexes into the new value shape on restart.
  */
-export const STORE_SCHEMA_VERSION = 1;
+export const STORE_SCHEMA_VERSION = 2;
 
 export type NotificationType =
   | 'follow'
@@ -83,7 +88,18 @@ type StoreData = {
   selfDmPendingText: Record<string, string>;
   midToMsgId: Record<string, number>;
   msgIdToMid: Record<number, string>;
-  replyChildren: Record<string, number[]>;
+  /**
+   * Reply thread edges: parent CANONICAL mid -> child CANONICAL mids. Values are
+   * mids (not msgIds) so a reply delivered twice — the feed broadcast copy and
+   * the DM copy to the parent author, under two different rfc724 Message-IDs —
+   * collapses to ONE child entry once their alias is known (set semantics), and
+   * a non-follower who only holds the DM copy still gets a thread edge (the DM
+   * copy's mid resolves to the DM msgId via `resolveMid`). Registered from BOTH
+   * feed and Single-chat reply-marker messages (see `ingestMessage`). Read paths
+   * resolve each child mid canonical-first to a msgId, skipping unresolvable
+   * ones; `childrenCount` counts ALL entries (the logical reply count).
+   */
+  replyChildren: Record<string, string[]>;
   boostsByMid: Record<string, number[]>;
   /** msgIds (this account's own boosts) keyed by the mid they boosted. */
   ownBoosts: Record<string, number>;
@@ -128,9 +144,11 @@ const emptyData = (): StoreData => ({
 
 /**
  * Migrate an older/versionless store to the current schema: DROP every
- * derivable index (mid maps, edges, tallies, ingestedMsgIds, ownMids, alias
- * map) so the startup backfill re-derives them fresh with canonical-mid
- * aliasing, but KEEP notifications + dedupe keys + pending requests + the next
+ * derivable index (mid maps, edges — including `replyChildren`, whose value
+ * shape changed from msgIds to child canonical mids in v2 — tallies,
+ * ingestedMsgIds, ownMids, alias map) so the startup backfill re-derives them
+ * fresh with canonical-mid aliasing, but KEEP notifications + dedupe keys +
+ * pending requests + the next
  * notification id — so re-derivation can never duplicate-notify (the dedupe
  * keys still match) and no user-visible history is lost. Never touches any
  * Delta Chat database; a QA node heals on a plain restart. Pure.
@@ -148,14 +166,14 @@ export type ReactionTally = { emoji: string; count: number; reactors: string[] }
 export type Store = {
   /**
    * `isFeedMessage` (default `true`, for back-compat with existing callers)
-   * gates reply/boost edge registration: only messages delivered in a FEED
-   * chat (Group/OutBroadcast/InBroadcast) may register `replyChildren` /
-   * `boostsByMid` entries. DM copies of the same reply/boost (e.g. the
-   * reply-notify control DM to the original author) still get their mid
-   * <-> msgId mapping and `ownMids` bookkeeping recorded — just not the
-   * edge — so the same logical reply delivered twice (once via feed, once
-   * via DM) registers only once. See DEVLOG for the double-count bug this
-   * fixes.
+   * gates BOOST edge registration: only messages delivered in a FEED chat
+   * (Group/OutBroadcast/InBroadcast) may register `boostsByMid` entries (boosts
+   * have no DM copy). REPLY edges register from BOTH feed copies and DM reply
+   * copies — the child's CANONICAL mid is stored, so the two copies of one
+   * logical reply collapse to a single child entry (set semantics), and a
+   * non-follower who only holds the DM copy still gets a thread edge (see
+   * ../meta/issues/non-follower-thread-rendering.md). DM copies always get their
+   * mid <-> msgId mapping and `ownMids` bookkeeping recorded regardless.
    *
    * Returns `true` iff this msgId was *freshly* ingested (first time seen),
    * `false` for the already-ingested no-op case. A single live message can
@@ -181,7 +199,21 @@ export type Store = {
   aliasMid(dmMid: string, feedMid: string): void;
   resolveMid(mid: string): number | null;
   midForMsgId(msgId: number): string | null;
+  /**
+   * The child msgIds of `mid`'s replies: each stored child CANONICAL mid
+   * resolved to a msgId via `resolveMid` (canonical-first, DM copy as fallback),
+   * with unresolvable children skipped. So a child we hold locally (in either
+   * copy) renders; one we've only heard referenced but never received is
+   * omitted from the rendered list — but still contributes to `childrenCount`.
+   */
   replyChildren(mid: string): number[];
+  /**
+   * The child CANONICAL mids of `mid`'s replies (canonicalized defensively at
+   * read time, deduped). Used by the context descendants BFS to recurse into a
+   * child's own subtree without a msgId round-trip.
+   */
+  replyChildMids(mid: string): string[];
+  /** Count of ALL reply children (resolvable or not) — the logical reply count. */
   childrenCount(mid: string): number;
   boostsByMid(mid: string): number[];
   boostCount(mid: string): number;
@@ -266,6 +298,25 @@ export const createStore = (filePath: string): Store => {
   const canon = (mid: string): string => load().canonicalByMid[mid] ?? mid;
 
   /**
+   * Resolve a mid to a locally-held msgId, canonical-first: the canonical (feed)
+   * copy when we hold it, else the raw mid, else — for a non-follower who only
+   * ever received the DM copy but stored the child edge under the CANONICAL
+   * (feed) mid — a REVERSE-alias lookup for any dmMid that aliases to this feed
+   * mid and is itself indexed. That last fallback is what lets a DM-only reply
+   * (whose thread edge is keyed by the feed mid it will never receive) still
+   * render from the DM copy A actually holds.
+   */
+  const resolve = (d: StoreData, mid: string): number | null => {
+    const c = canon(mid);
+    const direct = d.midToMsgId[c] ?? d.midToMsgId[mid];
+    if (direct !== undefined) return direct;
+    for (const [dmMid, feedMid] of Object.entries(d.canonicalByMid)) {
+      if (feedMid === c && d.midToMsgId[dmMid] !== undefined) return d.midToMsgId[dmMid];
+    }
+    return null;
+  };
+
+  /**
    * Record `dmMid` -> `feedMid` and re-key any edges/tallies/mappings already
    * under `dmMid` onto `feedMid`. In-place mutation of `d`; caller saves.
    */
@@ -274,9 +325,25 @@ export const createStore = (filePath: string): Store => {
     if (d.canonicalByMid[dmMid] === feedMid) return; // already aliased
     d.canonicalByMid[dmMid] = feedMid;
 
+    // Re-key any children registered under the dmMid onto the feedMid (KEY
+    // re-key), then sweep EVERY value list to map this dmMid -> feedMid (VALUE
+    // re-key) — a child edge may have been registered against the DM copy's mid
+    // before its alias was learned. Both merges dedupe (set semantics): the two
+    // copies of one logical reply must collapse to a single child entry.
+    const addChild = (parentMid: string, childMid: string): void => {
+      const list = d.replyChildren[parentMid] ?? [];
+      if (!list.includes(childMid)) list.push(childMid);
+      d.replyChildren[parentMid] = list;
+    };
     if (d.replyChildren[dmMid]) {
-      d.replyChildren[feedMid] = [...(d.replyChildren[feedMid] ?? []), ...d.replyChildren[dmMid]];
+      for (const child of d.replyChildren[dmMid]) addChild(feedMid, child);
       delete d.replyChildren[dmMid];
+    }
+    for (const parentMid of Object.keys(d.replyChildren)) {
+      const list = d.replyChildren[parentMid]!;
+      if (!list.includes(dmMid)) continue;
+      d.replyChildren[parentMid] = list.filter((c) => c !== dmMid);
+      addChild(parentMid, feedMid);
     }
     if (d.boostsByMid[dmMid]) {
       d.boostsByMid[feedMid] = [...(d.boostsByMid[feedMid] ?? []), ...d.boostsByMid[dmMid]];
@@ -366,29 +433,34 @@ export const createStore = (filePath: string): Store => {
       // text-twin) BEFORE registering edges, so edge keys canonicalize correctly.
       learnAlias(d, msg, mid, isFeedMessage);
 
-      // Reply/boost edges are only registered from FEED chats (Group/
-      // OutBroadcast/InBroadcast). DM copies of the same reply/boost
-      // (delivered under a different rfc724Mid) must not also register an
-      // edge, or context/reply-count would double-count a single logical
-      // reply/boost delivered both ways. The parent/boosted mid is
-      // canonicalized at write time so an interaction referencing a DM copy's
-      // mid lands on the feed copy (belt: read-time canonicalization too).
-      if (isFeedMessage) {
-        const parsed = parseMarkers(msg.text);
-        if (parsed.reply) {
-          const key = canon(parsed.reply.mid);
-          const children = d.replyChildren[key] ?? [];
-          children.push(msg.id);
-          d.replyChildren[key] = children;
-        }
-        if (parsed.boost) {
-          const key = canon(parsed.boost.mid);
-          const boosters = d.boostsByMid[key] ?? [];
-          boosters.push(msg.id);
-          d.boostsByMid[key] = boosters;
-          if (msg.fromId === DC_CONTACT_ID_SELF) {
-            d.ownBoosts[key] = msg.id;
-          }
+      const parsed = parseMarkers(msg.text);
+
+      // Reply edges register from BOTH feed copies AND Single-chat DM reply
+      // copies — a non-follower who only holds the DM copy of a reply must still
+      // get a thread edge, or the reply is invisible in the thread (see
+      // ../meta/issues/non-follower-thread-rendering.md). The VALUE stored is
+      // the child's CANONICAL mid, not its msgId: both copies of one logical
+      // reply canonicalize to the same feed mid, so set-add dedupe collapses
+      // them to a single child entry. Parent mid is canonicalized at write time
+      // so an interaction referencing a DM copy's mid lands on the feed copy
+      // (belt: read-time canonicalization too).
+      if (parsed.reply) {
+        const key = canon(parsed.reply.mid);
+        const childMid = canon(mid);
+        const children = d.replyChildren[key] ?? [];
+        if (!children.includes(childMid)) children.push(childMid);
+        d.replyChildren[key] = children;
+      }
+
+      // Boost edges stay FEED-only: boosts have no DM copy (unlike replies), so
+      // there's nothing to unify — registering from a DM would be spurious.
+      if (isFeedMessage && parsed.boost) {
+        const key = canon(parsed.boost.mid);
+        const boosters = d.boostsByMid[key] ?? [];
+        boosters.push(msg.id);
+        d.boostsByMid[key] = boosters;
+        if (msg.fromId === DC_CONTACT_ID_SELF) {
+          d.ownBoosts[key] = msg.id;
         }
       }
 
@@ -405,19 +477,40 @@ export const createStore = (filePath: string): Store => {
       save();
     },
 
-    resolveMid: (mid) => {
-      const d = load();
-      // Canonical FIRST: a historical ref pointing at a DM copy's mid (pre-fix
-      // data) must resolve to the FEED copy when we hold it, or context
-      // ancestors on migrated stores would still route through the Single-chat
-      // twin. Raw is the fallback for the legitimate case where the canonical
-      // feed copy simply doesn't exist locally (e.g. a non-follower's node
-      // only ever received the DM copy).
-      return d.midToMsgId[canon(mid)] ?? d.midToMsgId[mid] ?? null;
-    },
+    resolveMid: (mid) => resolve(load(), mid),
     midForMsgId: (msgId) => load().msgIdToMid[msgId] ?? null,
-    replyChildren: (mid) => load().replyChildren[canon(mid)] ?? [],
-    childrenCount: (mid) => (load().replyChildren[canon(mid)] ?? []).length,
+    replyChildren: (mid) => {
+      const d = load();
+      const resolved: number[] = [];
+      const seen = new Set<number>();
+      for (const childMid of d.replyChildren[canon(mid)] ?? []) {
+        // Resolve each stored child CANONICAL mid to a msgId (canonical-first,
+        // then the reverse-alias DM copy — same as `resolveMid`), skipping
+        // children we don't hold locally and deduping resolved msgIds.
+        const msgId = resolve(d, childMid);
+        if (msgId !== null && !seen.has(msgId)) {
+          seen.add(msgId);
+          resolved.push(msgId);
+        }
+      }
+      return resolved;
+    },
+    replyChildMids: (mid) => {
+      const seen: string[] = [];
+      for (const childMid of load().replyChildren[canon(mid)] ?? []) {
+        const c = canon(childMid);
+        if (!seen.includes(c)) seen.push(c);
+      }
+      return seen;
+    },
+    // ALL children count (resolvable or not): the logical reply count, deduped
+    // by canonical child mid (an alias learned late could leave a dm/feed pair
+    // in the raw list until the next write-time sweep, so dedupe here too).
+    childrenCount: (mid) => {
+      const seen = new Set<string>();
+      for (const childMid of load().replyChildren[canon(mid)] ?? []) seen.add(canon(childMid));
+      return seen.size;
+    },
     boostsByMid: (mid) => load().boostsByMid[canon(mid)] ?? [],
     boostCount: (mid) => (load().boostsByMid[canon(mid)] ?? []).length,
     isOwnBoost: (mid) => load().ownBoosts[canon(mid)] !== undefined,

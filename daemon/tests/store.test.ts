@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { T } from '@deltachat/jsonrpc-client';
 import { writeFileSync } from 'node:fs';
 import { createStore, STORE_SCHEMA_VERSION } from '../src/store.js';
-import { buildBoostText, buildReplyText } from '../src/protocol.js';
+import { buildBoostText, buildReplyText, buildReplyTextWithCanonical } from '../src/protocol.js';
 import { makeMessage } from './entities.test.js';
 
 let dir: string;
@@ -73,15 +73,20 @@ describe('createStore: reply edges', () => {
     expect(store.replyChildren('mid-30@example.org')).toEqual([]);
   });
 
-  it('does not record a reply edge when isFeedMessage is false (DM reply-notify copy)', () => {
+  it('records a reply edge even when isFeedMessage is false (DM-only reply copy)', () => {
+    // Non-follower-thread-rendering: a DM reply copy now DOES register a thread
+    // edge (its child mid), so a non-follower who only holds the DM copy still
+    // sees the reply in the thread. Boosts stay feed-only (see boost tests).
     const store = createStore(filePath);
     const parentRef = { mid: 'parent-mid@example.org', addr: 'author@example.org' };
     const replyMsg = makeMessage({ id: 23, text: buildReplyText('a DM copy of a reply', parentRef) });
     store.ingestMessage(replyMsg, 'dm-child-mid@example.org', false);
 
-    expect(store.replyChildren(parentRef.mid)).toEqual([]);
-    expect(store.childrenCount(parentRef.mid)).toBe(0);
-    // But the mid <-> msgId mapping is still recorded for all messages.
+    // The child renders (resolves to its DM msgId).
+    expect(store.replyChildren(parentRef.mid)).toEqual([23]);
+    expect(store.childrenCount(parentRef.mid)).toBe(1);
+    expect(store.replyChildMids(parentRef.mid)).toEqual(['dm-child-mid@example.org']);
+    // And the mid <-> msgId mapping is recorded for all messages.
     expect(store.resolveMid('dm-child-mid@example.org')).toBe(23);
   });
 
@@ -552,6 +557,108 @@ describe('createStore: canonical-mid aliasing', () => {
   });
 });
 
+describe('createStore: non-follower thread edges (canonical-mid reply children)', () => {
+  // The reply child stored is its CANONICAL mid, registered from BOTH a feed
+  // copy and a DM copy, so the two copies of one logical reply collapse to a
+  // single child entry and a DM-only reply still renders in the thread.
+  const PARENT_DM = 'parent-dm@example.org';
+  const PARENT_FEED = 'parent-feed@example.org';
+  const CHILD_DM = 'child-dm@example.org';
+  const CHILD_FEED = 'child-feed@example.org';
+
+  it('registers a child edge from a DM-only reply (non-follower parent holds only the DM copy)', () => {
+    const store = createStore(filePath);
+    const ref = { mid: PARENT_FEED, addr: 'author@example.org' };
+    // A non-follower node received the reply only as a DM copy carrying the
+    // parent's feed mid via its `⚓` marker (parsed into the reply ref here).
+    store.ingestMessage(makeMessage({ id: 10, fromId: 11, text: buildReplyText('hi', ref) }), CHILD_DM, false);
+    expect(store.childrenCount(PARENT_FEED)).toBe(1);
+    expect(store.replyChildMids(PARENT_FEED)).toEqual([CHILD_DM]);
+    expect(store.replyChildren(PARENT_FEED)).toEqual([10]); // resolves to the DM msgId
+  });
+
+  it('resolves a child stored under the FEED mid back to its DM copy via reverse alias (feed copy absent)', () => {
+    const store = createStore(filePath);
+    const ref = { mid: PARENT_FEED, addr: 'author@example.org' };
+    // The DM copy carries a `⚓` marker, so it aliases CHILD_DM -> CHILD_FEED and
+    // the child edge is stored under CHILD_FEED — but the FEED copy never
+    // arrived (non-follower). resolveMid(CHILD_FEED) must reverse-resolve to the
+    // DM copy A actually holds, so the reply still renders in the thread.
+    const dmText = buildReplyTextWithCanonical('hi', ref, CHILD_FEED);
+    store.ingestMessage(makeMessage({ id: 15, fromId: 11, text: dmText }), CHILD_DM, false);
+    expect(store.canonicalize(CHILD_DM)).toBe(CHILD_FEED);
+    expect(store.replyChildMids(PARENT_FEED)).toEqual([CHILD_FEED]);
+    expect(store.resolveMid(CHILD_FEED)).toBe(15); // reverse-alias to the DM copy
+    expect(store.replyChildren(PARENT_FEED)).toEqual([15]);
+  });
+
+  it('collapses a feed copy and a DM copy of the same reply to one child once aliased (dedupe)', () => {
+    const store = createStore(filePath);
+    const ref = { mid: PARENT_FEED, addr: 'author@example.org' };
+    // Both copies of the SAME logical reply, under different mids, before the
+    // child alias is known: two distinct child entries.
+    store.ingestMessage(makeMessage({ id: 20, fromId: 11, text: buildReplyText('r', ref) }), CHILD_FEED, true);
+    store.ingestMessage(makeMessage({ id: 21, fromId: 11, text: buildReplyText('r', ref) }), CHILD_DM, false);
+    expect(store.childrenCount(PARENT_FEED)).toBe(2);
+
+    // Learning the child alias sweeps the VALUE list: the two collapse to one,
+    // resolving to the FEED copy (canonical-first).
+    store.aliasMid(CHILD_DM, CHILD_FEED);
+    expect(store.childrenCount(PARENT_FEED)).toBe(1);
+    expect(store.replyChildMids(PARENT_FEED)).toEqual([CHILD_FEED]);
+    expect(store.replyChildren(PARENT_FEED)).toEqual([20]);
+  });
+
+  it('re-keys BOTH parent key and child value when the parent alias is learned late', () => {
+    const store = createStore(filePath);
+    const ref = { mid: PARENT_DM, addr: 'author@example.org' };
+    // A DM-only reply registered under the parent's DM mid, before the parent
+    // alias (parent's own dm->feed) is known.
+    store.ingestMessage(makeMessage({ id: 30, fromId: 11, text: buildReplyText('c', ref) }), CHILD_DM, false);
+    expect(store.childrenCount(PARENT_DM)).toBe(1);
+
+    store.aliasMid(PARENT_DM, PARENT_FEED);
+    // The edge moved onto the feed parent (KEY re-key).
+    expect(store.childrenCount(PARENT_FEED)).toBe(1);
+    expect(store.replyChildMids(PARENT_FEED)).toEqual([CHILD_DM]);
+  });
+
+  it('dedupes on the child VALUE re-key when both the feed child and a not-yet-aliased dm child are present under one parent', () => {
+    const store = createStore(filePath);
+    // Feed child already registered under the (feed) parent.
+    const ref = { mid: PARENT_FEED, addr: 'author@example.org' };
+    store.ingestMessage(makeMessage({ id: 40, fromId: 11, text: buildReplyText('r', ref) }), CHILD_FEED, true);
+    // The DM copy of that same reply registers a second entry (alias unknown).
+    store.ingestMessage(makeMessage({ id: 41, fromId: 11, text: buildReplyText('r', ref) }), CHILD_DM, false);
+    expect(store.childrenCount(PARENT_FEED)).toBe(2);
+
+    // Alias insertion sweeps the value list, mapping CHILD_DM -> CHILD_FEED and
+    // deduping against the already-present feed entry.
+    store.aliasMid(CHILD_DM, CHILD_FEED);
+    expect(store.replyChildMids(PARENT_FEED)).toEqual([CHILD_FEED]);
+    expect(store.childrenCount(PARENT_FEED)).toBe(1);
+  });
+
+  it('childrenCount counts ALL logical children including one not held locally', () => {
+    const store = createStore(filePath);
+    const ref = { mid: PARENT_FEED, addr: 'author@example.org' };
+    // One child we hold (renderable) and one we only heard referenced.
+    store.ingestMessage(makeMessage({ id: 50, fromId: 11, text: buildReplyText('held', ref) }), CHILD_FEED, true);
+    store.ingestMessage(
+      makeMessage({ id: 51, fromId: 11, text: buildReplyText('grandchild ref', { mid: CHILD_DM, addr: 'x@x' }) }),
+      'grandchild@example.org',
+      true,
+    );
+    // CHILD_DM is referenced as a parent by the grandchild but never itself
+    // ingested — it contributes to CHILD_DM's own children, not PARENT_FEED's.
+    expect(store.childrenCount(PARENT_FEED)).toBe(1);
+    expect(store.replyChildren(PARENT_FEED)).toEqual([50]);
+    // The grandchild is a child of the (unheld) CHILD_DM: counted, not rendered.
+    expect(store.childrenCount(CHILD_DM)).toBe(1);
+    expect(store.replyChildren(CHILD_DM)).toEqual(['grandchild@example.org'].map(() => 51));
+  });
+});
+
 describe('createStore: historical text-twin aliasing during (re)index', () => {
   const ref = { mid: 'orig@example.org', addr: 'author@example.org' };
   // Pre-fix copies are exact text twins: the feed copy and DM copy of a reply
@@ -680,6 +787,42 @@ describe('createStore: schema migration / re-index', () => {
     store.ingestMessage(makeMessage({ id: 5, text: 'hi' }), 'keep@example.org');
     const reloaded = createStore(filePath);
     expect(reloaded.resolveMid('keep@example.org')).toBe(5);
+  });
+
+  it('drops a v1 store\'s replyChildren (msgId value shape) so a re-index rebuilds v2 canonical-mid values', () => {
+    // A v1 store carried replyChildren as parentMid -> child msgIds. The v2
+    // value shape is parentMid -> child CANONICAL mids, so migration must DROP
+    // replyChildren (like every other derived index) for the backfill to
+    // re-derive it; a stale msgId list would otherwise be misread as mids.
+    const v1 = {
+      schemaVersion: 1,
+      midToMsgId: { 'p@x': 1 },
+      msgIdToMid: { 1: 'p@x' },
+      replyChildren: { 'p@x': [2, 3] }, // v1: child MSGIDS
+      boostsByMid: {},
+      ownBoosts: {},
+      ingestedMsgIds: [1],
+      ownMids: ['p@x'],
+      reactions: {},
+      canonicalByMid: {},
+      notifications: [{ id: '1', type: 'follow', createdAt: '2020-01-01T00:00:00.000Z', accountAddr: 'z@x' }],
+      notificationDedupeKeys: [],
+      nextNotificationId: 2,
+      pendingFollowRequests: {},
+    };
+    writeFileSync(filePath, JSON.stringify(v1));
+
+    const store = createStore(filePath);
+    // replyChildren dropped (re-index rebuilds it); notifications preserved.
+    expect(store.childrenCount('p@x')).toBe(0);
+    expect(store.replyChildren('p@x')).toEqual([]);
+    expect(store.replyChildMids('p@x')).toEqual([]);
+    expect(store.listNotifications({})).toHaveLength(1);
+
+    // Version bumped to 2 on disk.
+    const raw = JSON.parse(readFileSync(filePath, 'utf8'));
+    expect(raw.schemaVersion).toBe(2);
+    expect(raw.schemaVersion).toBe(STORE_SCHEMA_VERSION);
   });
 });
 
