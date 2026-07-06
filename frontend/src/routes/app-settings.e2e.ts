@@ -120,6 +120,138 @@ test('real settings route saves through the account update API and reconciles th
 	await expect(page.getByTestId('settings-save-state')).toContainText('Saved');
 });
 
+const avatarUpdatedAccount = {
+	...pleromaFixtures.account,
+	avatar: 'https://pleroma.example/deltanet/avatar/account-1.png',
+	avatar_static: 'https://pleroma.example/deltanet/avatar/account-1.png',
+	header: 'https://pleroma.example/deltanet/header/account-1.png'
+};
+
+const pngBuffer = Buffer.from([
+	0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a
+]);
+
+test('choosing an avatar shows a preview and saves it as multipart form-data', async ({ page }) => {
+	await authenticate(page);
+	await setViewport(page, 'wide');
+
+	let capturedContentType = '';
+	let capturedPostData = '';
+	await page.route('https://pleroma.example/api/v1/accounts/update_credentials', async (route: Route) => {
+		capturedContentType = route.request().headers()['content-type'] ?? '';
+		capturedPostData = route.request().postData() ?? '';
+		await fulfillJson(route, avatarUpdatedAccount);
+	});
+
+	await page.goto('/app/settings');
+
+	await expect(page.getByTestId('avatar-preview')).toHaveCount(0);
+	await page.getByLabel('Choose avatar file').setInputFiles({ name: 'me.png', mimeType: 'image/png', buffer: pngBuffer });
+	await expect(page.getByTestId('avatar-preview')).toBeVisible();
+	await expect(page.getByTestId('settings-save-state')).toContainText('Unsaved changes');
+
+	await page.getByRole('button', { name: 'Save profile settings' }).click();
+	await expect(page.getByTestId('settings-save-state')).toContainText('Saved just now');
+
+	expect(capturedContentType).toContain('multipart/form-data');
+	expect(capturedPostData).toContain('name="avatar"');
+	expect(capturedPostData).toContain('filename="me.png"');
+	expect(capturedPostData).toContain('name="display_name"');
+
+	const storedSession = await page.evaluate(() =>
+		JSON.parse(window.localStorage.getItem('deltanet.session') ?? 'null')
+	);
+	// Avatar URLs are stable per contact id, so the client appends a
+	// cache-busting query param so the new image repaints in-place.
+	expect(storedSession?.account?.avatar).toMatch(
+		/^https:\/\/pleroma\.example\/deltanet\/avatar\/account-1\.png\?_cb=\d+$/
+	);
+
+	await expect(page.getByTestId('avatar-preview')).toHaveCount(0);
+});
+
+test('choosing a banner shows a preview and saves it as multipart form-data', async ({ page }) => {
+	await authenticate(page);
+	await setViewport(page, 'wide');
+
+	let capturedPostData = '';
+	await page.route('https://pleroma.example/api/v1/accounts/update_credentials', async (route: Route) => {
+		capturedPostData = route.request().postData() ?? '';
+		await fulfillJson(route, avatarUpdatedAccount);
+	});
+
+	await page.goto('/app/settings');
+
+	await page.getByLabel('Choose banner file').setInputFiles({ name: 'wide.png', mimeType: 'image/png', buffer: pngBuffer });
+	await expect(page.getByTestId('banner-preview')).toBeVisible();
+
+	await page.getByRole('button', { name: 'Save profile settings' }).click();
+	await expect(page.getByTestId('settings-save-state')).toContainText('Saved just now');
+
+	expect(capturedPostData).toContain('name="header"');
+	expect(capturedPostData).toContain('filename="wide.png"');
+
+	const storedSession = await page.evaluate(() =>
+		JSON.parse(window.localStorage.getItem('deltanet.session') ?? 'null')
+	);
+	expect(storedSession?.account?.header).toMatch(
+		/^https:\/\/pleroma\.example\/deltanet\/header\/account-1\.png\?_cb=\d+$/
+	);
+});
+
+test('a pending avatar choice can be discarded before saving', async ({ page }) => {
+	await authenticate(page);
+	await setViewport(page, 'wide');
+
+	await page.goto('/app/settings');
+
+	await page.getByLabel('Choose avatar file').setInputFiles({ name: 'me.png', mimeType: 'image/png', buffer: pngBuffer });
+	await expect(page.getByTestId('avatar-preview')).toBeVisible();
+
+	await page.getByRole('button', { name: 'Discard avatar' }).click();
+	await expect(page.getByTestId('avatar-preview')).toHaveCount(0);
+});
+
+test('the save request stays JSON when no image files are pending', async ({ page }) => {
+	await authenticate(page);
+	await setViewport(page, 'wide');
+
+	let capturedContentType = '';
+	await page.route('https://pleroma.example/api/v1/accounts/update_credentials', async (route: Route) => {
+		capturedContentType = route.request().headers()['content-type'] ?? '';
+		await fulfillJson(route, updatedAccount);
+	});
+
+	await page.goto('/app/settings');
+	await page.getByRole('textbox', { name: 'Display name' }).fill('dreambyte archive');
+	await page.getByRole('button', { name: 'Save profile settings' }).click();
+	await expect(page.getByTestId('settings-save-state')).toContainText('Saved just now');
+
+	expect(capturedContentType).toContain('application/json');
+});
+
+test('an oversized image shows an error and does not submit', async ({ page }) => {
+	await authenticate(page);
+	await setViewport(page, 'wide');
+
+	let requestCount = 0;
+	await page.route('https://pleroma.example/api/v1/accounts/update_credentials', async (route: Route) => {
+		requestCount += 1;
+		await fulfillJson(route, updatedAccount);
+	});
+
+	await page.goto('/app/settings');
+
+	// 41 MB > COMPOSER_MAX_UPLOAD_BYTES (40 MB).
+	const bigBuffer = Buffer.alloc(41 * 1024 * 1024, 0);
+	await page.getByLabel('Choose avatar file').setInputFiles({ name: 'huge.png', mimeType: 'image/png', buffer: bigBuffer });
+
+	await expect(page.getByTestId('post-control-toast')).toContainText('40 MB');
+	await expect(page.getByTestId('avatar-preview')).toHaveCount(0);
+
+	expect(requestCount).toBe(0);
+});
+
 test('real settings route keeps the draft and shows an error when saving fails', async ({ page }) => {
 	await authenticate(page);
 	await setViewport(page, 'wide');
@@ -160,8 +292,8 @@ test('real settings route stays touch-friendly on mobile', async ({ page }) => {
 	await page.goto('/app/settings');
 
 	await expect(page.getByRole('heading', { name: 'Profile settings' })).toBeVisible();
-	await expect(page.getByRole('button', { name: 'Choose avatar' })).toBeVisible();
-	await expect(page.getByRole('button', { name: 'Choose banner' })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Choose avatar', exact: true })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Choose banner', exact: true })).toBeVisible();
 	await expect(page.getByTestId('right-rail')).toBeHidden();
 
 	const saveBox = await page.getByRole('button', { name: 'Save profile settings' }).boundingBox();

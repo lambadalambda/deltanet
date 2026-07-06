@@ -260,6 +260,11 @@ export type ProfileUpdate = {
 	fields?: PleromaField[];
 };
 
+export type ProfileImageUpdate = {
+	avatar?: File | null;
+	header?: File | null;
+};
+
 export type PleromaChatMessage = {
 	id: string;
 	content?: string | null;

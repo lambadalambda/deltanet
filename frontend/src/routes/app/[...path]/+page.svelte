@@ -238,6 +238,12 @@
 	let settingsSaveRequestId = 0;
 	let profile = $state<ProfileSettings>({ ...defaultProfile });
 	let savedProfile = $state<ProfileSettings>({ ...defaultProfile });
+	let pendingAvatarFile = $state<File | null>(null);
+	let pendingHeaderFile = $state<File | null>(null);
+	let pendingAvatarPreview = $state<string | null>(null);
+	let pendingHeaderPreview = $state<string | null>(null);
+	let avatarFileInput = $state<HTMLInputElement | null>(null);
+	let headerFileInput = $state<HTMLInputElement | null>(null);
 	let homePostSubmitState = $state<'idle' | 'submitting'>('idle');
 	let homePostSubmitError = $state<PleromaRequestErrorView | null>(null);
 	let inlineReplyTarget = $state<InlineReplyTarget | null>(null);
@@ -1376,6 +1382,8 @@
 		...(homeTimelineState.status === 'success' ? homeTimelineState.data.map(postForRebuild) : [])
 	]);
 	const profileBioCount = $derived(`${profile.bio.length} / 160`);
+	const settingsAvatarUrl = $derived(currentSession?.account?.avatar ?? null);
+	const settingsHeaderUrl = $derived(currentSession?.account?.header ?? null);
 	const threadReplyPosts = $derived(threadState.status === 'success' ? threadState.replies : []);
 	const threadReplyCount = $derived(threadState.status === 'success' ? threadPostCount(threadState.replies) : 0);
 	const sortedThreadReplyPosts = $derived(replySort === 'newest' ? [...threadReplyPosts].reverse() : threadReplyPosts);
@@ -1462,6 +1470,61 @@
 		profile = { ...profile, [key]: value };
 		settingsSaveState = 'Unsaved changes';
 	};
+	const clearPendingProfileImage = (kind: 'avatar' | 'header') => {
+		if (kind === 'avatar') {
+			if (pendingAvatarPreview) URL.revokeObjectURL(pendingAvatarPreview);
+			pendingAvatarFile = null;
+			pendingAvatarPreview = null;
+		} else {
+			if (pendingHeaderPreview) URL.revokeObjectURL(pendingHeaderPreview);
+			pendingHeaderFile = null;
+			pendingHeaderPreview = null;
+		}
+	};
+	const pickProfileImage = (kind: 'avatar' | 'header') =>
+		(kind === 'avatar' ? avatarFileInput : headerFileInput)?.click();
+	const handleProfileImageChange = (kind: 'avatar' | 'header', event: Event) => {
+		const input = event.currentTarget as HTMLInputElement;
+		const file = input.files?.[0] ?? null;
+		input.value = '';
+		if (!file || file.size === 0) return;
+		if (file.size > COMPOSER_MAX_UPLOAD_BYTES) {
+			flashPostControl(`Could not attach ${file.name} · 40 MB limit per file.`);
+			return;
+		}
+		const preview = URL.createObjectURL(file);
+		if (kind === 'avatar') {
+			if (pendingAvatarPreview) URL.revokeObjectURL(pendingAvatarPreview);
+			pendingAvatarFile = file;
+			pendingAvatarPreview = preview;
+		} else {
+			if (pendingHeaderPreview) URL.revokeObjectURL(pendingHeaderPreview);
+			pendingHeaderFile = file;
+			pendingHeaderPreview = preview;
+		}
+		settingsSaveState = 'Unsaved changes';
+	};
+	// Avatar/header URLs are stable per contact id, so an in-place src swap to
+	// the same URL wouldn't repaint after an upload. Append a cache-busting
+	// query param so the freshly uploaded image actually shows.
+	const cacheBustAccountImages = (account: PleromaAccount): PleromaAccount => {
+		if (!pendingAvatarFile && !pendingHeaderFile) return account;
+		const bust = (url: string) => {
+			if (!url) return url;
+			const separator = url.includes('?') ? '&' : '?';
+			return `${url}${separator}_cb=${Date.now()}`;
+		};
+		const next: PleromaAccount = { ...account };
+		if (pendingAvatarFile) {
+			next.avatar = bust(account.avatar);
+			next.avatar_static = bust(account.avatar_static);
+		}
+		if (pendingHeaderFile) {
+			next.header = bust(account.header);
+			next.header_static = bust(account.header_static);
+		}
+		return next;
+	};
 	const populateSettingsFromAccount = (account: PleromaAccount) => {
 		const next = profileSettingsFromAccount(account);
 		const pristine = untrack(() => settingsSaveState === 'Saved' || settingsSaveState === 'Saved just now');
@@ -1483,9 +1546,15 @@
 				accessToken: session.accessToken,
 				fetch: window.fetch.bind(window)
 			});
-			const account = await client.updateAccountProfile(profileUpdateFromSettings(profile, session.account));
+			const rawAccount = await client.updateAccountProfile(
+				profileUpdateFromSettings(profile, session.account),
+				{ avatar: pendingAvatarFile, header: pendingHeaderFile }
+			);
 			if (requestId !== settingsSaveRequestId || !isCurrentSessionRequest(requestSessionKey)) return;
 
+			const account = cacheBustAccountImages(rawAccount);
+			clearPendingProfileImage('avatar');
+			clearPendingProfileImage('header');
 			upsertAccountCache([account]);
 			const nextSession = { ...session, account };
 			currentSession = nextSession;
@@ -1509,6 +1578,8 @@
 	};
 	const resetProfile = () => {
 		profile = { ...savedProfile };
+		clearPendingProfileImage('avatar');
+		clearPendingProfileImage('header');
 		settingsSaveState = 'Saved';
 		settingsSaveError = null;
 	};
@@ -4824,8 +4895,32 @@
 						<h1>Profile settings</h1>
 						<p>Manage your profile information and how you appear to others.</p>
 						<div class="settings-save-row"><span data-testid="settings-save-state">{settingsSaveState}</span></div>
-						<div class="upload-row" data-testid="avatar-upload-row"><button type="button" class="btn-secondary">Choose avatar</button><span>96×96px recommended</span></div>
-						<div class="upload-row" data-testid="banner-upload-row"><button type="button" class="btn-secondary">Choose banner</button><span>Wide image recommended</span></div>
+						<div class="upload-row" data-testid="avatar-upload-row">
+							<input bind:this={avatarFileInput} class="sr-only" type="file" accept="image/png,image/jpeg,image/webp,image/gif" aria-label="Choose avatar file" onchange={(event) => handleProfileImageChange('avatar', event)} />
+							{#if pendingAvatarPreview}
+								<img class="upload-preview" data-testid="avatar-preview" src={pendingAvatarPreview} alt="Selected avatar preview" />
+							{:else if settingsAvatarUrl}
+								<img class="upload-preview" data-testid="avatar-current" src={settingsAvatarUrl} alt="Current avatar" />
+							{/if}
+							<button type="button" class="btn-secondary" onclick={() => pickProfileImage('avatar')}>Choose avatar</button>
+							{#if pendingAvatarPreview}
+								<button type="button" class="btn-secondary" onclick={() => clearPendingProfileImage('avatar')}>Discard avatar</button>
+							{/if}
+							<span>96×96px recommended</span>
+						</div>
+						<div class="upload-row" data-testid="banner-upload-row">
+							<input bind:this={headerFileInput} class="sr-only" type="file" accept="image/png,image/jpeg,image/webp,image/gif" aria-label="Choose banner file" onchange={(event) => handleProfileImageChange('header', event)} />
+							{#if pendingHeaderPreview}
+								<img class="upload-preview upload-preview-wide" data-testid="banner-preview" src={pendingHeaderPreview} alt="Selected banner preview" />
+							{:else if settingsHeaderUrl}
+								<img class="upload-preview upload-preview-wide" data-testid="banner-current" src={settingsHeaderUrl} alt="Current banner" />
+							{/if}
+							<button type="button" class="btn-secondary" onclick={() => pickProfileImage('header')}>Choose banner</button>
+							{#if pendingHeaderPreview}
+								<button type="button" class="btn-secondary" onclick={() => clearPendingProfileImage('header')}>Discard banner</button>
+							{/if}
+							<span>Wide image recommended</span>
+						</div>
 						<div class="field">
 							<label class="field-label" for="display-name">Display name</label>
 							<input id="display-name" class="input" value={profile.displayName} oninput={(event) => updateProfile('displayName', event.currentTarget.value)} />

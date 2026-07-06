@@ -1,4 +1,22 @@
 
+## 2026-07-06 — Avatar/banner upload wiring (settings)
+
+Wired the settings page "Choose avatar"/"Choose banner" buttons to real file
+pickers (accept png/jpeg/webp/gif). Selecting a file shows an object-URL
+preview in the upload row (replacing the current image) with a Discard button;
+size-guarded by `COMPOSER_MAX_UPLOAD_BYTES` (40 MB) with the standard toast.
+
+`updateAccountProfile(profile, images?)` now branches: when an avatar/header
+File is pending it sends ONE multipart `PATCH update_credentials` carrying the
+files plus display_name/note/fields as form fields; otherwise the existing JSON
+path is untouched. Same http layer (auth header + error normalization). On
+success the returned account's avatar/header URLs get a `?_cb=<ts>` param
+appended (avatar URL is stable per contact id, so an in-place swap wouldn't
+repaint otherwise), then session/cache state updates as before. TDD: 5 new
+Playwright cases in app-settings.e2e.ts (avatar+banner multipart, discard,
+JSON-only unchanged, oversized rejected). Full test (319) + check green. Issue
+`profile-avatar-banner-upload-ui` archived.
+
 ## 2026-07-06 — DeltaNet release package
 
 Retooled the PleromaNet fork as **DeltaNet** (frontend/) and verified the

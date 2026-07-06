@@ -19,6 +19,7 @@ import type {
 	PleromaChatMessage,
 	NotificationQuery,
 	PleromaSuggestion,
+	ProfileImageUpdate,
 	ProfileUpdate,
 	SearchQuery,
 	StatusCreateRequest,
@@ -120,6 +121,35 @@ const profileUpdateBody = (profile: ProfileUpdate) => ({
 	hide_followers_count: profile.hideFollowersCount,
 	fields_attributes: profile.fields
 });
+
+const appendMultipartScalar = (form: FormData, key: string, value: unknown) => {
+	if (value === undefined || value === null) return;
+	form.set(key, typeof value === 'boolean' ? String(value) : String(value));
+};
+
+// Multipart variant of the profile update, used when avatar/header File
+// uploads are pending. Mirrors profileUpdateBody's keys as form fields so the
+// daemon's single update_credentials handler receives the text fields and the
+// files in one request.
+const profileUpdateMultipart = (profile: ProfileUpdate, images: ProfileImageUpdate) => {
+	const form = new FormData();
+	appendMultipartScalar(form, 'display_name', profile.displayName);
+	appendMultipartScalar(form, 'note', profile.note);
+	appendMultipartScalar(form, 'locked', profile.locked);
+	appendMultipartScalar(form, 'bot', profile.bot);
+	appendMultipartScalar(form, 'discoverable', profile.discoverable);
+	appendMultipartScalar(form, 'hide_followers_count', profile.hideFollowersCount);
+	(profile.fields ?? []).forEach((field, index) => {
+		form.set(`fields_attributes[${index}][name]`, field.name);
+		form.set(`fields_attributes[${index}][value]`, field.value);
+	});
+	if (images.avatar) form.set('avatar', images.avatar, images.avatar.name);
+	if (images.header) form.set('header', images.header, images.header.name);
+	return form;
+};
+
+const hasProfileImages = (images?: ProfileImageUpdate): images is ProfileImageUpdate =>
+	Boolean(images && (images.avatar || images.header));
 
 const statusCreateForm = (input: StatusCreateRequest) => {
 	const form = new URLSearchParams({ status: input.status });
@@ -291,13 +321,20 @@ export const createPleromaClient = (config: ClientConfig) => {
 				auth: 'required'
 			}),
 
-		updateAccountProfile: (profile: ProfileUpdate) =>
-			http.request<PleromaAccount>({
-				method: 'PATCH',
-				path: '/api/v1/accounts/update_credentials',
-				body: profileUpdateBody(profile),
-				auth: 'required'
-			}),
+		updateAccountProfile: (profile: ProfileUpdate, images?: ProfileImageUpdate) =>
+			hasProfileImages(images)
+				? http.request<PleromaAccount>({
+						method: 'PATCH',
+						path: '/api/v1/accounts/update_credentials',
+						multipart: profileUpdateMultipart(profile, images),
+						auth: 'required'
+					})
+				: http.request<PleromaAccount>({
+						method: 'PATCH',
+						path: '/api/v1/accounts/update_credentials',
+						body: profileUpdateBody(profile),
+						auth: 'required'
+					}),
 
 		followAccount: (id: string) =>
 			http.request<PleromaRelationship>({

@@ -1422,6 +1422,18 @@ a { color: inherit; text-decoration: none; }
 }
 .settings-actions button,
 .settings-panel .upload-row button { min-height: 40px; }
+.upload-preview {
+	width: 48px;
+	height: 48px;
+	border-radius: 6px;
+	object-fit: cover;
+	border: 1px solid var(--border);
+	background: var(--panel-2);
+}
+.upload-preview-wide {
+	width: 96px;
+	height: 48px;
+}
 .thread-view { overflow: hidden; }
 .thread-head-title {
 	display: flex;
