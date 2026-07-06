@@ -1,6 +1,6 @@
-# PleromaNet
+# DeltaNet
 
-PleromaNet is a new frontend for Pleroma focused on a reduced, refined interface. The visual design source file is now represented by the implementation plan in `meta/issues.md`.
+DeltaNet is the frontend for the deltanet daemon, speaking the Pleroma/Mastodon client API, focused on a reduced, refined interface. The visual design source file is now represented by the implementation plan in `meta/issues.md`.
 
 ## Status
 
@@ -92,4 +92,4 @@ pnpm preview
 
 ## API Reference
 
-PleromaNet targets Pleroma directly and can rely on Pleroma-specific features being present. Pleroma API documentation is available at https://api.pleroma.social/.
+DeltaNet targets the Pleroma-flavored client API directly and can rely on Pleroma-specific features being present. Pleroma API documentation is available at https://api.pleroma.social/.

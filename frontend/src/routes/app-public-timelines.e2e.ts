@@ -32,9 +32,9 @@ const authenticate = async (page: Page) => {
 			onclose: ((event: Event) => void) | null;
 			close: () => void;
 		};
-		const testWindow = window as typeof window & { __pleromanetSockets?: MockSocket[] };
-		if (!testWindow.__pleromanetSockets) {
-			testWindow.__pleromanetSockets = [];
+		const testWindow = window as typeof window & { __deltanetSockets?: MockSocket[] };
+		if (!testWindow.__deltanetSockets) {
+			testWindow.__deltanetSockets = [];
 			const MockWebSocket = function (url: string) {
 				const socket: MockSocket = {
 					url,
@@ -47,14 +47,14 @@ const authenticate = async (page: Page) => {
 						this.closeCalled = true;
 					}
 				};
-				testWindow.__pleromanetSockets?.push(socket);
+				testWindow.__deltanetSockets?.push(socket);
 				return socket;
 			} as unknown as new (url: string) => MockSocket;
 
 			Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockWebSocket });
 		}
 
-		window.localStorage.setItem('pleromanet.session', JSON.stringify(storedSession));
+		window.localStorage.setItem('deltanet.session', JSON.stringify(storedSession));
 	}, session);
 };
 
@@ -86,14 +86,14 @@ const mockAppPublicTimeline = async (page: Page, handler: (route: Route, url: UR
 };
 
 const streamSocketUrls = async (page: Page) => page.evaluate(() => {
-	const testWindow = window as typeof window & { __pleromanetSockets?: Array<{ url: string }> };
-	return testWindow.__pleromanetSockets?.map((socket) => socket.url) ?? [];
+	const testWindow = window as typeof window & { __deltanetSockets?: Array<{ url: string }> };
+	return testWindow.__deltanetSockets?.map((socket) => socket.url) ?? [];
 });
 
 const streamSockets = async (page: Page, stream: 'public' | 'public:local') => page.evaluate((streamName) => {
 	type MockSocket = { url: string; closeCalled: boolean };
-	const testWindow = window as typeof window & { __pleromanetSockets?: MockSocket[] };
-	return (testWindow.__pleromanetSockets ?? [])
+	const testWindow = window as typeof window & { __deltanetSockets?: MockSocket[] };
+	return (testWindow.__deltanetSockets ?? [])
 		.filter((socket) => new URL(socket.url).searchParams.get('stream') === streamName)
 		.map((socket) => ({ url: socket.url, closeCalled: socket.closeCalled }));
 }, stream);
@@ -101,8 +101,8 @@ const streamSockets = async (page: Page, stream: 'public' | 'public:local') => p
 const emitStreamUpdate = async (page: Page, stream: 'public' | 'public:local', status: unknown) => {
 	await page.evaluate(({ streamName, nextStatus }) => {
 		type MockSocket = { url: string; onmessage: ((event: { data: string }) => void) | null };
-		const testWindow = window as typeof window & { __pleromanetSockets?: MockSocket[] };
-		const socket = testWindow.__pleromanetSockets?.find((candidate) => new URL(candidate.url).searchParams.get('stream') === streamName);
+		const testWindow = window as typeof window & { __deltanetSockets?: MockSocket[] };
+		const socket = testWindow.__deltanetSockets?.find((candidate) => new URL(candidate.url).searchParams.get('stream') === streamName);
 		socket?.onmessage?.({ data: JSON.stringify({ event: 'update', payload: JSON.stringify(nextStatus) }) });
 	}, { streamName: stream, nextStatus: status });
 };
@@ -110,8 +110,8 @@ const emitStreamUpdate = async (page: Page, stream: 'public' | 'public:local', s
 const emitStreamError = async (page: Page, stream: 'public' | 'public:local') => {
 	await page.evaluate((streamName) => {
 		type MockSocket = { url: string; onerror: ((event: Event) => void) | null };
-		const testWindow = window as typeof window & { __pleromanetSockets?: MockSocket[] };
-		const socket = testWindow.__pleromanetSockets?.find((candidate) => new URL(candidate.url).searchParams.get('stream') === streamName);
+		const testWindow = window as typeof window & { __deltanetSockets?: MockSocket[] };
+		const socket = testWindow.__deltanetSockets?.find((candidate) => new URL(candidate.url).searchParams.get('stream') === streamName);
 		socket?.onerror?.(new Event('error'));
 	}, stream);
 };

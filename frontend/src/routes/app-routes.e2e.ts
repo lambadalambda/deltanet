@@ -26,14 +26,14 @@ const alternateSession = {
 const authenticate = async (page: Page) => {
 	await mockRightRailApis(page);
 	await page.addInitScript((storedSession) => {
-		window.localStorage.setItem('pleromanet.session', JSON.stringify(storedSession));
+		window.localStorage.setItem('deltanet.session', JSON.stringify(storedSession));
 	}, session);
 };
 
 const authenticateAsAlternateAccount = async (page: Page) => {
 	await mockRightRailApis(page);
 	await page.addInitScript((storedSession) => {
-		window.localStorage.setItem('pleromanet.session', JSON.stringify(storedSession));
+		window.localStorage.setItem('deltanet.session', JSON.stringify(storedSession));
 	}, alternateSession);
 };
 
@@ -165,7 +165,7 @@ test('real app header uses the authenticated account identity', async ({ page })
 
 test('real app hydrates profile data for existing token-only sessions', async ({ page }) => {
 	await page.addInitScript((storedSession) => {
-		window.localStorage.setItem('pleromanet.session', JSON.stringify(storedSession));
+		window.localStorage.setItem('deltanet.session', JSON.stringify(storedSession));
 	}, {
 		instanceUrl: session.instanceUrl,
 		accessToken: session.accessToken,
@@ -188,7 +188,7 @@ test('real app hydrates profile data for existing token-only sessions', async ({
 	const profileMini = page.getByTestId('profile-mini');
 	await expect(profileMini).toContainText('quiet admin');
 	await expect(profileMini).toContainText('@quietadmin@pleroma.example');
-	expect(await page.evaluate(() => JSON.parse(window.localStorage.getItem('pleromanet.session') ?? '{}').account?.display_name)).toBe('quiet admin');
+	expect(await page.evaluate(() => JSON.parse(window.localStorage.getItem('deltanet.session') ?? '{}').account?.display_name)).toBe('quiet admin');
 });
 
 test('real app right rail keeps timeline and explore card stacks', async ({ page }) => {
@@ -217,7 +217,7 @@ test('app route guard revalidates when session disappears during client navigati
 	await page.goto('/app/home');
 	await expect(page.getByTestId('app-header')).toBeVisible();
 
-	await page.evaluate(() => window.localStorage.removeItem('pleromanet.session'));
+	await page.evaluate(() => window.localStorage.removeItem('deltanet.session'));
 	await page.getByTestId('left-sidebar').getByRole('link', { name: 'Explore' }).click();
 
 	await expect(page).toHaveURL('/');
@@ -304,7 +304,7 @@ test('real app user menu switches themes and closes with escape', async ({ page 
 		await expect(menu).toContainText(label);
 	}
 	await expect(menu.locator('.user-menu-badge')).toHaveText('2');
-	await expect(menu).toContainText('PleromaNet™');
+	await expect(menu).toContainText('DeltaNet™');
 	await page.getByRole('button', { name: 'Simoun' }).click();
 	await expect(page.locator('html')).toHaveAttribute('data-theme', 'simoun');
 	await expect(menu).toBeVisible();
@@ -320,7 +320,7 @@ test('real app user menu disables profile navigation until token-only sessions h
 		resolveCredentials = resolve;
 	});
 	await page.addInitScript((storedSession) => {
-		window.localStorage.setItem('pleromanet.session', JSON.stringify(storedSession));
+		window.localStorage.setItem('deltanet.session', JSON.stringify(storedSession));
 	}, {
 		instanceUrl: session.instanceUrl,
 		accessToken: session.accessToken,
@@ -368,7 +368,7 @@ test('real app user menu opens profile, settings, and signs out', async ({ page 
 	await page.getByRole('button', { name: 'quiet admin account menu' }).click();
 	await page.getByTestId('user-menu').getByRole('button', { name: 'Sign out' }).click();
 	await expect(page).toHaveURL('/');
-	expect(await page.evaluate(() => window.localStorage.getItem('pleromanet.session'))).toBeNull();
+	expect(await page.evaluate(() => window.localStorage.getItem('deltanet.session'))).toBeNull();
 });
 
 test('mobile real app shell opens drawer and details sheet', async ({ page }) => {

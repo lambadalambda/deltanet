@@ -49,7 +49,7 @@
 		...samplePost,
 		id: 'banner',
 		name: 'dreambyte',
-		handle: '@dreambyte@pleromanet.social',
+		handle: '@dreambyte@deltanet.example',
 		avClass: '',
 		avBanner: 'sunset',
 		body: '🤍',
@@ -70,7 +70,7 @@
 		...samplePost,
 		id: 'focused',
 		fullTime: '4:18 PM · May 11, 2026',
-		source: 'PleromaNet™ Web',
+		source: 'DeltaNet™ Web',
 		views: '12.4K',
 		bookmarks: 24,
 	};
@@ -104,7 +104,7 @@
 						<button type="button" class="menu-btn" aria-label="Menu">
 							<svg viewBox="0 0 24 24" fill="none" style="width:18px;height:18px" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg>
 						</button>
-						<div class="brand-name mobile-brand-name">PleromaNet<sup>™</sup></div>
+						<div class="brand-name mobile-brand-name">DeltaNet<sup>™</sup></div>
 						<button type="button" class="icon-btn" aria-label="Notifications">
 							<Icon name="bell" width={18} height={18} />
 							<span class="badge">3</span>
@@ -131,7 +131,7 @@
 						<div class="drawer-head">
 							<div class="drawer-brand">
 								<div class="brand-mark"><Icon name="sparkBig" /></div>
-								<div class="brand-name mobile-brand-name">PleromaNet<sup>™</sup></div>
+								<div class="brand-name mobile-brand-name">DeltaNet<sup>™</sup></div>
 							</div>
 							<button type="button" class="drawer-close" aria-label="Close drawer">
 								<svg viewBox="0 0 24 24" fill="none" style="width:18px;height:18px" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg>

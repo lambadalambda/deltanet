@@ -489,17 +489,17 @@ test('OAuth boundary registers apps, builds redirects, parses callbacks, and sto
 	const scopes = ['read', 'write', 'follow'] as const;
 	const app = await registerOAuthApp({
 		instanceUrl: 'https://pleroma.example',
-		clientName: 'PleromaNet',
+		clientName: 'DeltaNet',
 		redirectUri,
 		scopes,
-		website: 'https://pleromanet.test',
+		website: 'https://deltanet.example',
 		fetch: fetchImpl
 	});
 
 	expect(app.clientId).toBe('client-id');
 	expect(requests[0].method).toBe('POST');
 	expectPath(requests[0], '/api/v1/apps');
-	expect(requests[0].body).toContain('client_name=PleromaNet');
+	expect(requests[0].body).toContain('client_name=DeltaNet');
 	expect(requests[0].body).toContain('scopes=read+write+follow');
 
 	const authorizeUrl = buildAuthorizationUrl({
@@ -560,7 +560,7 @@ test('OAuth boundary registers apps, builds redirects, parses callbacks, and sto
 		createdAt: 1700000001000
 	});
 	expect(readPleromaAuthState(storage)).toMatchObject({ status: 'authenticated' });
-	expect(storage.getItem('pleromanet.session')).not.toContain('password');
+	expect(storage.getItem('deltanet.session')).not.toContain('password');
 	signOutPleroma(storage);
 	expect(readPleromaAuthState(storage)).toEqual({ status: 'unauthenticated' });
 

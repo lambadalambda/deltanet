@@ -139,14 +139,14 @@
 </script>
 
 <svelte:head>
-	<title>PleromaNet · Public Timeline</title>
+	<title>DeltaNet · Public Timeline</title>
 </svelte:head>
 
 <AttachmentLightboxHost />
 
 <main class="public-route-shell">
 	<section class="card public-panel">
-		<div class="app-page-kicker">PleromaNet public</div>
+		<div class="app-page-kicker">DeltaNet public</div>
 		<h1>Public timeline</h1>
 		<p>Read local and federated public posts without signing in.</p>
 		<div class="tabs" role="tablist" aria-label="Public timeline sections">

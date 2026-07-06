@@ -14,7 +14,7 @@ const session = {
 
 const authenticate = async (page: Page) => {
 	await page.addInitScript((storedSession) => {
-		window.localStorage.setItem('pleromanet.session', JSON.stringify(storedSession));
+		window.localStorage.setItem('deltanet.session', JSON.stringify(storedSession));
 	}, session);
 };
 

@@ -34,11 +34,11 @@ const authenticate = async (page: Page) => {
 				close: () => void;
 			};
 		const testWindow = window as typeof window & {
-			__pleromanetSockets?: MockSocket[];
+			__deltanetSockets?: MockSocket[];
 		};
 
-		if (!testWindow.__pleromanetSockets) {
-			testWindow.__pleromanetSockets = [];
+		if (!testWindow.__deltanetSockets) {
+			testWindow.__deltanetSockets = [];
 			const MockWebSocket = function (url: string) {
 				const socket: MockSocket = {
 					url,
@@ -50,14 +50,14 @@ const authenticate = async (page: Page) => {
 						this.closeCalled = true;
 					}
 				};
-				testWindow.__pleromanetSockets?.push(socket);
+				testWindow.__deltanetSockets?.push(socket);
 				return socket;
 			} as unknown as new (url: string) => MockSocket;
 
 			Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockWebSocket });
 		}
 
-		window.localStorage.setItem('pleromanet.session', JSON.stringify(storedSession));
+		window.localStorage.setItem('deltanet.session', JSON.stringify(storedSession));
 	}, session);
 };
 
@@ -71,7 +71,7 @@ const authenticateWithThrowingWebSocket = async (page: Page) => {
 			throw new Error('socket blocked');
 		};
 		Object.defineProperty(window, 'WebSocket', { configurable: true, value: ThrowingWebSocket });
-		window.localStorage.setItem('pleromanet.session', JSON.stringify(storedSession));
+		window.localStorage.setItem('deltanet.session', JSON.stringify(storedSession));
 	}, session);
 };
 
@@ -132,8 +132,8 @@ const statusWithText = (id: string, text: string) => ({
 const emitStreamUpdate = async (page: Page, status: unknown) => {
 	await page.evaluate((nextStatus) => {
 		type MockSocket = { onmessage: ((event: { data: string }) => void) | null };
-		const testWindow = window as typeof window & { __pleromanetSockets?: MockSocket[] };
-		const socket = testWindow.__pleromanetSockets?.at(-1);
+		const testWindow = window as typeof window & { __deltanetSockets?: MockSocket[] };
+		const socket = testWindow.__deltanetSockets?.at(-1);
 		socket?.onmessage?.({ data: JSON.stringify({ event: 'update', payload: JSON.stringify(nextStatus) }) });
 	}, status);
 };
@@ -141,8 +141,8 @@ const emitStreamUpdate = async (page: Page, status: unknown) => {
 const emitStreamError = async (page: Page) => {
 	await page.evaluate(() => {
 		type MockSocket = { onerror: ((event: Event) => void) | null };
-		const testWindow = window as typeof window & { __pleromanetSockets?: MockSocket[] };
-		const socket = testWindow.__pleromanetSockets?.at(-1);
+		const testWindow = window as typeof window & { __deltanetSockets?: MockSocket[] };
+		const socket = testWindow.__deltanetSockets?.at(-1);
 		socket?.onerror?.(new Event('error'));
 	});
 };
@@ -1442,7 +1442,7 @@ test('home timeline clears stale pending actions after session changes', async (
 	await expect.poll(() => favoriteAuthorizations.join('|')).toContain('Bearer access-token');
 
 	await page.evaluate((storedSession) => {
-		window.localStorage.setItem('pleromanet.session', JSON.stringify(storedSession));
+		window.localStorage.setItem('deltanet.session', JSON.stringify(storedSession));
 	}, nextSession);
 	await page.getByRole('link', { name: 'Explore' }).first().click();
 	await expect(page).toHaveURL('/app/explore');
@@ -1601,7 +1601,7 @@ test('home timeline post menu copies raw post JSON for bug reports', async ({ pa
 			configurable: true,
 			value: {
 				writeText: async (text: string) => {
-					window.localStorage.setItem('pleromanet.copied-post-json', text);
+					window.localStorage.setItem('deltanet.copied-post-json', text);
 				}
 			}
 		});
@@ -1617,7 +1617,7 @@ test('home timeline post menu copies raw post JSON for bug reports', async ({ pa
 	await post.getByRole('button', { name: 'More post actions' }).click();
 	await post.getByRole('menuitem', { name: 'Copy post JSON' }).click();
 
-	const copied = await page.evaluate(() => window.localStorage.getItem('pleromanet.copied-post-json'));
+	const copied = await page.evaluate(() => window.localStorage.getItem('deltanet.copied-post-json'));
 	expect(copied).not.toBeNull();
 	expect(JSON.parse(copied ?? '')).toMatchObject({
 		id: 'status-1',
@@ -2179,8 +2179,8 @@ test('home timeline opens a user stream and queues streamed posts behind the ind
 	const list = page.getByTestId('home-timeline-list');
 	await expect(list).toContainText('stable existing post');
 	expect(await page.evaluate(() => {
-		const testWindow = window as typeof window & { __pleromanetSockets?: Array<{ url: string }> };
-		return testWindow.__pleromanetSockets?.[0]?.url;
+		const testWindow = window as typeof window & { __deltanetSockets?: Array<{ url: string }> };
+		return testWindow.__deltanetSockets?.[0]?.url;
 	})).toBe('wss://pleroma.example/api/v1/streaming/?stream=user&access_token=access-token');
 
 	await emitStreamUpdate(page, statusWithText('status-stream', 'fresh streamed post'));
@@ -2195,8 +2195,8 @@ test('home timeline opens a user stream and queues streamed posts behind the ind
 	await page.getByRole('link', { name: 'Explore' }).first().click();
 	await expect(page.getByRole('heading', { name: 'Explore the network' })).toBeVisible();
 	expect(await page.evaluate(() => {
-		const testWindow = window as typeof window & { __pleromanetSockets?: Array<{ closeCalled: boolean }> };
-		return testWindow.__pleromanetSockets?.[0]?.closeCalled;
+		const testWindow = window as typeof window & { __deltanetSockets?: Array<{ closeCalled: boolean }> };
+		return testWindow.__deltanetSockets?.[0]?.closeCalled;
 	})).toBe(true);
 });
 
@@ -2226,7 +2226,7 @@ test('home timeline fallback backfills gaps behind streamed posts', async ({ pag
 
 	await emitStreamUpdate(page, statusWithText('status-3', 'streamed newest post'));
 	await expect(page.getByRole('button', { name: '1 new posts' })).toBeVisible();
-	await page.evaluate(() => window.dispatchEvent(new Event('pleromanet:check-home-timeline')));
+	await page.evaluate(() => window.dispatchEvent(new Event('deltanet:check-home-timeline')));
 	await expect.poll(() => requestedSinceIds).toEqual([null, 'status-1']);
 
 	await page.getByRole('button', { name: /\d+ new posts/ }).click();
@@ -2276,8 +2276,8 @@ test('home timeline stream errors run a fallback check without dropping loaded p
 	await page.getByRole('button', { name: '1 new posts' }).click();
 	await expect(list).toContainText('fresh post after stream error');
 	expect(await page.evaluate(() => {
-		const testWindow = window as typeof window & { __pleromanetSockets?: Array<{ closeCalled: boolean }> };
-		return testWindow.__pleromanetSockets?.[0]?.closeCalled;
+		const testWindow = window as typeof window & { __deltanetSockets?: Array<{ closeCalled: boolean }> };
+		return testWindow.__deltanetSockets?.[0]?.closeCalled;
 	})).toBe(true);
 });
 
@@ -2300,15 +2300,15 @@ test('home timeline ignores initial responses after leaving home while loading',
 	await page.getByRole('link', { name: 'Explore' }).first().click();
 	await expect(page.getByRole('heading', { name: 'Explore the network' })).toBeVisible();
 	const socketCountAfterNavigation = await page.evaluate(() => {
-		const testWindow = window as typeof window & { __pleromanetSockets?: unknown[] };
-		return testWindow.__pleromanetSockets?.length ?? 0;
+		const testWindow = window as typeof window & { __deltanetSockets?: unknown[] };
+		return testWindow.__deltanetSockets?.length ?? 0;
 	});
 
 	releaseRequest();
 	await expect.poll(() => responseFulfilled).toBe(true);
 	expect(await page.evaluate(() => {
-		const testWindow = window as typeof window & { __pleromanetSockets?: unknown[] };
-		return testWindow.__pleromanetSockets?.length ?? 0;
+		const testWindow = window as typeof window & { __deltanetSockets?: unknown[] };
+		return testWindow.__deltanetSockets?.length ?? 0;
 	})).toBe(socketCountAfterNavigation);
 });
 
@@ -2341,7 +2341,7 @@ test('home timeline empty-stream fallback refreshes without a stream-only cursor
 	const list = page.getByTestId('home-timeline-list');
 	await expect(list).toContainText('streamed empty newest post');
 
-	await page.evaluate(() => window.dispatchEvent(new Event('pleromanet:check-home-timeline')));
+	await page.evaluate(() => window.dispatchEvent(new Event('deltanet:check-home-timeline')));
 	await expect.poll(() => requestedSinceIds).toEqual([null, null]);
 	await expect(list).toContainText('missed empty gap post');
 	const renderedStatusIds = await page.locator('[data-status-id]').evaluateAll((nodes) => nodes.slice(0, 2).map((node) => node.getAttribute('data-status-id')));
@@ -2374,7 +2374,7 @@ test('home timeline fallback trigger shows new-post indicator, prepends on activ
 	const scrollBefore = await page.evaluate(() => window.scrollY);
 	expect(scrollBefore).toBeGreaterThan(0);
 
-	await page.evaluate(() => window.dispatchEvent(new Event('pleromanet:check-home-timeline')));
+	await page.evaluate(() => window.dispatchEvent(new Event('deltanet:check-home-timeline')));
 	const indicator = page.getByTestId('timeline-header-actions').getByRole('button', { name: '1 new posts' });
 	await expect(indicator).toBeVisible();
 	await expect(list).not.toContainText('fresh new post from fallback check');
@@ -2411,12 +2411,12 @@ test('home timeline new-post check errors keep the timeline usable and recover o
 	const list = page.getByTestId('home-timeline-list');
 	await expect(list).toContainText('stable existing post');
 
-	await page.evaluate(() => window.dispatchEvent(new Event('pleromanet:check-home-timeline')));
+	await page.evaluate(() => window.dispatchEvent(new Event('deltanet:check-home-timeline')));
 	await expect.poll(() => checkAttempts).toBe(1);
 	await expect(list).toContainText('stable existing post');
 	await expect(page.getByText('Pleroma server error')).toHaveCount(0);
 
-	await page.evaluate(() => window.dispatchEvent(new Event('pleromanet:check-home-timeline')));
+	await page.evaluate(() => window.dispatchEvent(new Event('deltanet:check-home-timeline')));
 	await expect(page.getByRole('button', { name: '1 new posts' })).toBeVisible();
 	await page.getByRole('button', { name: '1 new posts' }).click();
 	await expect(list).toContainText('fresh post after retry');
@@ -2449,17 +2449,17 @@ test('home timeline ignores auth errors from stale new-post checks after the ses
 	await setViewport(page, 'desktop');
 	await page.goto('/app/home');
 	await expect(page.getByTestId('home-timeline-list')).toContainText('stable existing post');
-	await page.evaluate(() => window.dispatchEvent(new Event('pleromanet:check-home-timeline')));
+	await page.evaluate(() => window.dispatchEvent(new Event('deltanet:check-home-timeline')));
 	await checkStarted;
 	await page.evaluate((storedSession) => {
-		window.localStorage.setItem('pleromanet.session', JSON.stringify(storedSession));
+		window.localStorage.setItem('deltanet.session', JSON.stringify(storedSession));
 	}, nextSession);
 	await page.getByRole('link', { name: 'Explore' }).first().click();
 	await expect(page.getByRole('heading', { name: 'Explore the network' })).toBeVisible();
 
 	releaseCheck();
 	await expect(page).toHaveURL('/app/explore');
-	expect(await page.evaluate(() => JSON.parse(window.localStorage.getItem('pleromanet.session') ?? '{}').accessToken)).toBe('fresh-token');
+	expect(await page.evaluate(() => JSON.parse(window.localStorage.getItem('deltanet.session') ?? '{}').accessToken)).toBe('fresh-token');
 });
 
 test('home timeline renders empty state from mocked API response', async ({ page }) => {
@@ -2896,7 +2896,7 @@ test('home timeline post menu copies the status link', async ({ page }) => {
 	await page.addInitScript(() => {
 		Object.defineProperty(navigator, 'clipboard', {
 			configurable: true,
-			value: { writeText: async (text: string) => { window.localStorage.setItem('pleromanet.copied-link', text); } }
+			value: { writeText: async (text: string) => { window.localStorage.setItem('deltanet.copied-link', text); } }
 		});
 	});
 	await mockHomeTimeline(page, async (route) => {
@@ -2911,7 +2911,7 @@ test('home timeline post menu copies the status link', async ({ page }) => {
 	await post.getByRole('menuitem', { name: 'Copy link to post' }).click();
 
 	await expect(page.getByTestId('post-control-toast')).toContainText('Link copied');
-	const copied = await page.evaluate(() => window.localStorage.getItem('pleromanet.copied-link'));
+	const copied = await page.evaluate(() => window.localStorage.getItem('deltanet.copied-link'));
 	expect(copied).toBe('https://pleroma.example/notice/status-link');
 });
 

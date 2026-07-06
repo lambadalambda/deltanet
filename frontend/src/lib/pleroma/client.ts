@@ -66,7 +66,7 @@ const emptyTimelinePagination = (): TimelinePagination => ({ next: null, previou
 
 const cursorFromUrl = (href: string): TimelineCursor | null => {
 	try {
-		const url = new URL(href, 'https://pleromanet.invalid');
+		const url = new URL(href, 'https://deltanet.invalid');
 		const cursor = {
 			maxId: url.searchParams.get('max_id') ?? undefined,
 			minId: url.searchParams.get('min_id') ?? undefined,

@@ -14,7 +14,7 @@ const session = {
 
 const authenticate = async (page: Page, recents: string[] = []) => {
 	await page.addInitScript(({ storedSession, storedRecents }) => {
-		window.localStorage.setItem('pleromanet.session', JSON.stringify(storedSession));
+		window.localStorage.setItem('deltanet.session', JSON.stringify(storedSession));
 		if (storedRecents.length > 0) window.localStorage.setItem('pn-search-recents', JSON.stringify(storedRecents));
 	}, { storedSession: session, storedRecents: recents });
 };
@@ -96,7 +96,7 @@ test('header search opens the full search page with people and post results', as
 	await setViewport(page, 'desktop');
 	await page.goto('/app/home');
 
-	await page.getByRole('combobox', { name: 'Search PleromaNet' }).fill('slow web');
+	await page.getByRole('combobox', { name: 'Search DeltaNet' }).fill('slow web');
 	await page.keyboard.press('Enter');
 
 	await expect(page).toHaveURL(/\/app\/search\?q=slow\+web$/);
@@ -122,7 +122,7 @@ test('header search shows live dropdown results and dismisses with Escape', asyn
 	await setViewport(page, 'desktop');
 	await page.goto('/app/home');
 
-	await page.getByRole('combobox', { name: 'Search PleromaNet' }).fill('slow web');
+	await page.getByRole('combobox', { name: 'Search DeltaNet' }).fill('slow web');
 
 	const dropdown = page.getByTestId('header-search-dropdown');
 	await expect(dropdown).toContainText('People');
@@ -141,13 +141,13 @@ test('header search dropdown mouse clicks open results instead of submitting sea
 	await setViewport(page, 'desktop');
 	await page.goto('/app/home');
 
-	await page.getByRole('combobox', { name: 'Search PleromaNet' }).fill('slow web');
+	await page.getByRole('combobox', { name: 'Search DeltaNet' }).fill('slow web');
 	await page.getByTestId('header-search-dropdown').getByRole('option', { name: /gridwave/ }).click();
 
 	await expect(page).toHaveURL(/\/app\/profiles\/gridwave%40retro\.social$/);
 
 	await page.goto('/app/home');
-	await page.getByRole('combobox', { name: 'Search PleromaNet' }).fill('slow web');
+	await page.getByRole('combobox', { name: 'Search DeltaNet' }).fill('slow web');
 	await page.getByTestId('header-search-dropdown').getByRole('option', { name: /the slow web is people/ }).click();
 
 	await expect(page).toHaveURL(/\/app\/thread\/status-search$/);
@@ -175,7 +175,7 @@ test('search avatars fall back when remote avatar images fail', async ({ page })
 
 	await setViewport(page, 'desktop');
 	await page.goto('/app/home');
-	await page.getByRole('combobox', { name: 'Search PleromaNet' }).fill('sleeping instance');
+	await page.getByRole('combobox', { name: 'Search DeltaNet' }).fill('sleeping instance');
 
 	const dropdown = page.getByTestId('header-search-dropdown');
 	await expect(dropdown.locator('.se-dd-av.avatar-fallback').first()).toBeVisible();
@@ -196,7 +196,7 @@ test('header search dropdown supports arrow navigation and Enter activation', as
 	await setViewport(page, 'desktop');
 	await page.goto('/app/home');
 
-	await page.getByRole('combobox', { name: 'Search PleromaNet' }).fill('slow web');
+	await page.getByRole('combobox', { name: 'Search DeltaNet' }).fill('slow web');
 
 	const dropdown = page.getByTestId('header-search-dropdown');
 	const accountRow = dropdown.getByRole('option', { name: /gridwave/ }).first();
@@ -221,7 +221,7 @@ test('header search dropdown Tab refines the query with the selected handle', as
 	await setViewport(page, 'desktop');
 	await page.goto('/app/home');
 
-	const input = page.getByRole('combobox', { name: 'Search PleromaNet' });
+	const input = page.getByRole('combobox', { name: 'Search DeltaNet' });
 	await input.fill('slow web');
 	const accountRow = page.getByTestId('header-search-dropdown').getByRole('option', { name: /gridwave/ }).first();
 	await expect(accountRow).toBeVisible();
@@ -241,7 +241,7 @@ test('header search dropdown closes when clicking outside', async ({ page }) => 
 	await setViewport(page, 'desktop');
 	await page.goto('/app/home');
 
-	await page.getByRole('combobox', { name: 'Search PleromaNet' }).fill('slow web');
+	await page.getByRole('combobox', { name: 'Search DeltaNet' }).fill('slow web');
 	const dropdown = page.getByTestId('header-search-dropdown');
 	await expect(dropdown).toBeVisible();
 
@@ -264,11 +264,11 @@ test('header search ignores stale live results after clearing input', async ({ p
 	await setViewport(page, 'desktop');
 	await page.goto('/app/home');
 
-	const input = page.getByRole('combobox', { name: 'Search PleromaNet' });
+	const input = page.getByRole('combobox', { name: 'Search DeltaNet' });
 	await input.fill('slow web');
 	await expect.poll(() => Boolean(deferredSearch.release)).toBe(true);
 	await input.fill('');
-	await expect(page.getByTestId('header-search-dropdown')).toContainText('Search across PleromaNet');
+	await expect(page.getByTestId('header-search-dropdown')).toContainText('Search across DeltaNet');
 
 	deferredSearch.release?.();
 	await page.waitForTimeout(50);
@@ -281,7 +281,7 @@ test('header search shows and clears recent queries', async ({ page }) => {
 	await setViewport(page, 'desktop');
 	await page.goto('/app/home');
 
-	const input = page.getByRole('combobox', { name: 'Search PleromaNet' });
+	const input = page.getByRole('combobox', { name: 'Search DeltaNet' });
 	await input.focus();
 	const dropdown = page.getByTestId('header-search-dropdown');
 	await expect(dropdown).toContainText('Recent');
@@ -293,7 +293,7 @@ test('header search shows and clears recent queries', async ({ page }) => {
 	await expect(dropdown).toContainText('gridwave');
 
 	await dropdown.getByRole('button', { name: 'Clear all' }).click();
-	await expect(dropdown).toContainText('Search across PleromaNet');
+	await expect(dropdown).toContainText('Search across DeltaNet');
 	await expect(dropdown).not.toContainText('gridwave');
 });
 

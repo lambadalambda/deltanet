@@ -10,7 +10,7 @@
 
 ## Project
 
-PleromaNet is a new frontend for Pleroma with a reduced, refined visual style. The current design handoff is captured as implementation issues under `meta/issues.md` and should guide UI work.
+DeltaNet is the frontend for the deltanet daemon, speaking the Pleroma/Mastodon client API, with a reduced, refined visual style. The current design handoff is captured as implementation issues under `meta/issues.md` and should guide UI work.
 
 ## Core Rules
 
@@ -46,7 +46,7 @@ PleromaNet is a new frontend for Pleroma with a reduced, refined visual style. T
 
 - API documentation: https://api.pleroma.social/
 - Target Pleroma directly and assume Pleroma-specific features are present.
-- Do not add Mastodon-compatibility abstractions unless they serve a concrete PleromaNet need.
+- Do not add Mastodon-compatibility abstractions unless they serve a concrete DeltaNet need.
 - Prefer typed, isolated API client code once the application scaffold exists.
 - Keep API-facing tests independent from a live backend unless explicitly running integration tests.
 - Mock Pleroma HTTP, WebSocket, and media upload endpoints in default tests.

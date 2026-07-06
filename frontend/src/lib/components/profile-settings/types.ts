@@ -13,9 +13,9 @@ export type ProfileSettings = {
 export const createDefaultProfileSettings = (): ProfileSettings => ({
 	displayName: 'dreambyte',
 	username: 'dreambyte',
-	instance: 'pleromanet.social',
+	instance: 'deltanet.example',
 	bio: 'living in a soft world',
-	website: 'https://pleromanet.social/@dreambyte',
+	website: 'https://deltanet.example/@dreambyte',
 	location: 'soft web district',
 	discoverable: true,
 	indexable: false,

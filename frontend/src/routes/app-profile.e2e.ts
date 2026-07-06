@@ -127,7 +127,7 @@ const authenticate = async (page: Page) => {
 	await mockRightRailApis(page);
 	await page.route('https://pleroma.example/api/v1/notifications**', async (route) => fulfillJson(route, []));
 	await page.addInitScript((storedSession) => {
-		window.localStorage.setItem('pleromanet.session', JSON.stringify(storedSession));
+		window.localStorage.setItem('deltanet.session', JSON.stringify(storedSession));
 	}, session);
 };
 
@@ -291,7 +291,7 @@ test('profile navigation uses cached timeline account and refreshes existing pos
 	const post = page.getByTestId('home-timeline-list').locator('.post').first();
 	await expect(post).toContainText('cached.soft old');
 	releaseNewerTimeline();
-	await page.evaluate(() => window.dispatchEvent(new CustomEvent('pleromanet:check-home-timeline')));
+	await page.evaluate(() => window.dispatchEvent(new CustomEvent('deltanet:check-home-timeline')));
 	await expect(post).toContainText('cached.soft updated');
 	await expect(page.getByTestId('timeline-header-actions').getByRole('button', { name: '1 new posts' })).toBeVisible();
 	await post.getByRole('link', { name: '@cached.soft@kolektiva.social' }).click();
@@ -595,7 +595,7 @@ test('profile route refreshes token-only own locked profiles after account hydra
 		await fulfillJson(route, pleromaFixtures.timelines.home);
 	});
 	await page.addInitScript((storedSession) => {
-		window.localStorage.setItem('pleromanet.session', JSON.stringify(storedSession));
+		window.localStorage.setItem('deltanet.session', JSON.stringify(storedSession));
 	}, {
 		instanceUrl: session.instanceUrl,
 		accessToken: session.accessToken,
@@ -712,7 +712,7 @@ test('profile follow signs out and redirects when unauthorized', async ({ page }
 	await page.getByTestId('profile-view').getByRole('button', { name: 'Follow', exact: true }).click();
 
 	await page.waitForURL('/');
-	const storedSession = await page.evaluate(() => window.localStorage.getItem('pleromanet.session'));
+	const storedSession = await page.evaluate(() => window.localStorage.getItem('deltanet.session'));
 	expect(storedSession).toBeNull();
 });
 

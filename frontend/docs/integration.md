@@ -1,6 +1,6 @@
 # Integration Tests
 
-PleromaNet keeps Dockerized Pleroma checks opt-in. Default commands such as `pnpm test`, `pnpm run test:e2e`, and `mise run test` only run mocked, deterministic Playwright tests.
+DeltaNet keeps Dockerized Pleroma checks opt-in. Default commands such as `pnpm test`, `pnpm run test:e2e`, and `mise run test` only run mocked, deterministic Playwright tests.
 
 ## Backend Version
 

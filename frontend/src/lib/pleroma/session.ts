@@ -2,8 +2,8 @@ import type { PendingPleromaOAuth, PleromaAuthState, PleromaSession } from './ty
 
 export type PleromaStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 
-export const PLEROMA_SESSION_KEY = 'pleromanet.session';
-export const PLEROMA_PENDING_OAUTH_KEY = 'pleromanet.oauth.pending';
+export const PLEROMA_SESSION_KEY = 'deltanet.session';
+export const PLEROMA_PENDING_OAUTH_KEY = 'deltanet.oauth.pending';
 export const PENDING_OAUTH_TTL_MS = 10 * 60 * 1000;
 
 export const createMemoryPleromaStorage = (): PleromaStorage => {

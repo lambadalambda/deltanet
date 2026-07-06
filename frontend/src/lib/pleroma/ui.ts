@@ -953,7 +953,7 @@ export const normalizePleromaRequestError = (error: unknown): PleromaRequestErro
 		return {
 			kind: 'request',
 			title: 'Request failed',
-			message: error instanceof Error ? error.message : 'PleromaNet could not complete this request.',
+			message: error instanceof Error ? error.message : 'DeltaNet could not complete this request.',
 			retryable: true,
 			reauthRequired: false
 		};

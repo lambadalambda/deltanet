@@ -185,7 +185,7 @@
 	const typeRows: TypeRow[] = [
 		{ family: 'var(--serif)', sample: 'Soft hertz, slow web', meta: '--serif · Cormorant Garamond · headings, brand wordmark' },
 		{ family: 'var(--sans)', sample: 'The quick brown fox jumps over the lazy dog.', meta: '--sans · Inter · body, UI' },
-		{ family: 'var(--mono)', sample: 'PLEROMANET / v2.4.58 / @dreambyte@pleromanet.social', meta: '--mono · JetBrains Mono · captions, eyebrows, technical' }
+		{ family: 'var(--mono)', sample: 'DELTANET / v2.4.58 / @dreambyte@deltanet.example', meta: '--mono · JetBrains Mono · captions, eyebrows, technical' }
 	];
 	const SAMPLE_AUDIO_SRC = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA=';
 
@@ -248,7 +248,7 @@
 		{ shortcode: 'blobcat', url: 'samples/cat-door.webp', pack: 'blobcats' },
 		{ shortcode: 'blobfox', url: 'samples/cats-pair.webp', pack: 'blobcats' },
 		{ shortcode: 'blobmoon', url: 'samples/cat-bank.webp', pack: 'blobcats' },
-		{ shortcode: 'slowweb', url: 'samples/falco.png', pack: 'pleromanet' }
+		{ shortcode: 'slowweb', url: 'samples/falco.png', pack: 'deltanet' }
 	];
 	const DS_SHORTCODE_QUERY = 'bl';
 	const DS_SHORTCODE_EMOJI = DS_CUSTOM_EMOJI.filter((emoji) => emoji.shortcode.startsWith(DS_SHORTCODE_QUERY));
@@ -273,7 +273,7 @@
 	const PHOTOS3_POST: DemoPostData = {
 		...SAMPLE_POST, id: '3', name: 'sysadmin', handle: '@root@pleroma.social',
 		avClass: 'av-pc-old',
-		body: "Backup your data. Hug your cat. Update PleromaNet™.",
+		body: "Backup your data. Hug your cat. Update DeltaNet™.",
 		attachments: [
 			{ kind: 'photo', src: 'samples/cat-door.webp', alt: '' },
 			{ kind: 'photo', src: 'samples/cat-bank.webp', alt: '' },
@@ -293,7 +293,7 @@
 		attachments: [{ kind: 'audio', title: 'after the storm (demo)', byline: 'kestrel · live take · 2026', duration: '4:18', start: 0.28, cover: 'samples/encardia-99.png' }],
 	};
 	const BANNER_POST: DemoPostData = {
-		...SAMPLE_POST, id: '6', name: 'dreambyte', handle: '@dreambyte@pleromanet.social',
+		...SAMPLE_POST, id: '6', name: 'dreambyte', handle: '@dreambyte@deltanet.example',
 		avClass: '', avBanner: 'sunset',
 		body: "🤍",
 	};
@@ -346,7 +346,7 @@
 			...SAMPLE_POST,
 			id: 'focused',
 			fullTime: '4:18 PM · May 11, 2026',
-			source: 'PleromaNet™ Web',
+			source: 'DeltaNet™ Web',
 			views: '12.4K',
 			bookmarks: 24,
 		},
@@ -503,7 +503,7 @@
 </script>
 
 <svelte:head>
-	<title>PleromaNet · Design System</title>
+	<title>DeltaNet · Design System</title>
 </svelte:head>
 
 <AttachmentLightboxHost />
@@ -518,7 +518,7 @@
 					</svg>
 				</div>
 				<div>
-					<div class="brand-name ds-brand-title">PleromaNet<sup>™</sup></div>
+					<div class="brand-name ds-brand-title">DeltaNet<sup>™</sup></div>
 					<div class="ds-brand-subtitle">Design system · v2.4.58</div>
 				</div>
 			</div>
@@ -541,7 +541,7 @@
 					</button>
 				{/each}
 			</div>
-			<a class="ds-app-link" href="PleromaNet.html">Open app →</a>
+			<a class="ds-app-link" href="DeltaNet.html">Open app →</a>
 		</div>
 	</header>
 
@@ -775,7 +775,7 @@
 						<div class="ds-spec">
 							<div class="ds-spec-stage padded">
 								<select class="select">
-									<option>@pleromanet.social</option>
+									<option>@deltanet.example</option>
 									<option>@kolektiva.social</option>
 								</select>
 							</div>
@@ -788,7 +788,7 @@
 							<div class="ds-spec-stage padded">
 								<div class="split-row">
 									<input class="input" value="dreambyte" />
-									<select class="select"><option>@pleromanet.social</option></select>
+									<select class="select"><option>@deltanet.example</option></select>
 								</div>
 							</div>
 							<div class="ds-spec-foot">
@@ -2250,7 +2250,7 @@
 
 			<footer class="ds-foot">
 				<div>End of system · everything else is composed from what's above.</div>
-				<div>PleromaNet™ Design System · v2.4.58 · {new Date().getFullYear()}</div>
+				<div>DeltaNet™ Design System · v2.4.58 · {new Date().getFullYear()}</div>
 			</footer>
 		</main>
 	</div>

@@ -21,7 +21,7 @@ const authenticate = async (page: Page) => {
 		await fulfillJson(route, pleromaFixtures.customEmojis);
 	});
 	await page.addInitScript((storedSession) => {
-		window.localStorage.setItem('pleromanet.session', JSON.stringify(storedSession));
+		window.localStorage.setItem('deltanet.session', JSON.stringify(storedSession));
 	}, session);
 };
 
@@ -1008,7 +1008,7 @@ test('real thread route ignores stale status responses after moving to a no-id t
 	await expect(page.getByText('Thread unavailable')).toBeVisible();
 
 	releaseStatus();
-	await expect(page.getByText('PleromaNet needs a status id to load a thread.')).toBeVisible();
+	await expect(page.getByText('DeltaNet needs a status id to load a thread.')).toBeVisible();
 	await expect(page.getByTestId('focused-post')).toHaveCount(0);
 });
 

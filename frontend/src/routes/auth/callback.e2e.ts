@@ -14,7 +14,7 @@ const createPendingOAuth = () => ({
 const seedPendingOAuth = async (page: import('@playwright/test').Page) => {
 	await page.goto('/');
 	await page.evaluate((pending) => {
-		window.sessionStorage.setItem('pleromanet.oauth.pending', JSON.stringify(pending));
+		window.sessionStorage.setItem('deltanet.oauth.pending', JSON.stringify(pending));
 	}, createPendingOAuth());
 };
 
@@ -48,15 +48,15 @@ test('OAuth callback exchanges code and stores token without passwords', async (
 	await page.goto('/auth/callback?code=oauth-code&state=oauth-state');
 
 	await expect(page.getByRole('heading', { name: 'Signed in to pleroma.example' })).toBeVisible();
-	await expect(page.getByText('PleromaNet stored an OAuth token from your server.')).toBeVisible();
-	await expect(page.getByRole('link', { name: 'Open PleromaNet' })).toHaveAttribute('href', '/app/home');
+	await expect(page.getByText('DeltaNet stored an OAuth token from your server.')).toBeVisible();
+	await expect(page.getByRole('link', { name: 'Open DeltaNet' })).toHaveAttribute('href', '/app/home');
 	await expect(page.locator('input[type="password"]')).toHaveCount(0);
 
-	const session = await page.evaluate(() => window.localStorage.getItem('pleromanet.session'));
+	const session = await page.evaluate(() => window.localStorage.getItem('deltanet.session'));
 	expect(session).toContain('access-token');
 	expect(session).not.toContain('password');
-	await expect.poll(() => page.evaluate(() => JSON.parse(window.localStorage.getItem('pleromanet.session') ?? '{}').account?.display_name)).toBe('quiet admin');
-	await expect(page.evaluate(() => window.sessionStorage.getItem('pleromanet.oauth.pending'))).resolves.toBeNull();
+	await expect.poll(() => page.evaluate(() => JSON.parse(window.localStorage.getItem('deltanet.session') ?? '{}').account?.display_name)).toBe('quiet admin');
+	await expect(page.evaluate(() => window.sessionStorage.getItem('deltanet.oauth.pending'))).resolves.toBeNull();
 });
 
 test('OAuth callback keeps the token when account enrichment fails', async ({ page }) => {
@@ -84,10 +84,10 @@ test('OAuth callback keeps the token when account enrichment fails', async ({ pa
 	await page.goto('/auth/callback?code=oauth-code&state=oauth-state');
 
 	await expect(page.getByRole('heading', { name: 'Signed in to pleroma.example' })).toBeVisible();
-	const session = await page.evaluate(() => JSON.parse(window.localStorage.getItem('pleromanet.session') ?? '{}'));
+	const session = await page.evaluate(() => JSON.parse(window.localStorage.getItem('deltanet.session') ?? '{}'));
 	expect(session.accessToken).toBe('access-token');
 	expect(session.account).toBeUndefined();
-	await expect(page.evaluate(() => window.sessionStorage.getItem('pleromanet.oauth.pending'))).resolves.toBeNull();
+	await expect(page.evaluate(() => window.sessionStorage.getItem('deltanet.oauth.pending'))).resolves.toBeNull();
 });
 
 test('OAuth callback surfaces cancelled and missing pending states', async ({ page }) => {
@@ -98,7 +98,7 @@ test('OAuth callback surfaces cancelled and missing pending states', async ({ pa
 	await expect(page.getByRole('heading', { name: 'Authorization was cancelled' })).toBeVisible();
 	await expect(page.getByText('The server declined')).toBeVisible();
 	await expect(page.getByRole('link', { name: 'Return to sign in' })).toHaveAttribute('href', '/#oauth');
-	await expect(page.evaluate(() => window.sessionStorage.getItem('pleromanet.oauth.pending'))).resolves.toBeNull();
+	await expect(page.evaluate(() => window.sessionStorage.getItem('deltanet.oauth.pending'))).resolves.toBeNull();
 
 	await page.goto('/auth/callback?code=oauth-code&state=oauth-state');
 	await expect(page.getByRole('heading', { name: 'No pending Pleroma authorization' })).toBeVisible();
@@ -110,5 +110,5 @@ test('OAuth callback clears pending auth when the code is missing', async ({ pag
 	await page.goto('/auth/callback?state=oauth-state');
 
 	await expect(page.getByRole('heading', { name: 'Authorization code was missing' })).toBeVisible();
-	await expect(page.evaluate(() => window.sessionStorage.getItem('pleromanet.oauth.pending'))).resolves.toBeNull();
+	await expect(page.evaluate(() => window.sessionStorage.getItem('deltanet.oauth.pending'))).resolves.toBeNull();
 });

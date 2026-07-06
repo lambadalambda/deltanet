@@ -18,7 +18,7 @@ const updatedAccount = {
 		{ name: 'home', value: 'small web', verified_at: null },
 		{
 			name: 'Website',
-			value: '<a href="https://pleromanet.social/~dreambyte">pleromanet.social/~dreambyte</a>',
+			value: '<a href="https://deltanet.example/~dreambyte">deltanet.example/~dreambyte</a>',
 			verified_at: null
 		},
 		{ name: 'Location', value: 'low orbit', verified_at: null }
@@ -28,7 +28,7 @@ const updatedAccount = {
 		note: 'keeping the lights low',
 		fields: [
 			{ name: 'home', value: 'small web' },
-			{ name: 'Website', value: 'https://pleromanet.social/~dreambyte' },
+			{ name: 'Website', value: 'https://deltanet.example/~dreambyte' },
 			{ name: 'Location', value: 'low orbit' }
 		]
 	}
@@ -36,7 +36,7 @@ const updatedAccount = {
 
 const authenticate = async (page: Page) => {
 	await page.addInitScript((storedSession) => {
-		window.localStorage.setItem('pleromanet.session', JSON.stringify(storedSession));
+		window.localStorage.setItem('deltanet.session', JSON.stringify(storedSession));
 	}, session);
 };
 
@@ -83,7 +83,7 @@ test('real settings route saves through the account update API and reconciles th
 	const rail = page.getByTestId('right-rail');
 
 	await page.getByRole('textbox', { name: 'Display name' }).fill('dreambyte archive');
-	await page.getByRole('textbox', { name: 'Website' }).fill('https://pleromanet.social/~dreambyte');
+	await page.getByRole('textbox', { name: 'Website' }).fill('https://deltanet.example/~dreambyte');
 	await page.getByRole('textbox', { name: 'Location' }).fill('low orbit');
 	await page.getByRole('switch', { name: 'Show follower count' }).click();
 
@@ -101,14 +101,14 @@ test('real settings route saves through the account update API and reconciles th
 		hide_followers_count: true,
 		fields_attributes: [
 			{ name: 'home', value: 'small web' },
-			{ name: 'Website', value: 'https://pleromanet.social/~dreambyte' },
+			{ name: 'Website', value: 'https://deltanet.example/~dreambyte' },
 			{ name: 'Location', value: 'low orbit' }
 		]
 	});
 
 	await expect(page.getByRole('button', { name: 'dreambyte archive account menu' })).toBeVisible();
 	const storedSession = await page.evaluate(() =>
-		JSON.parse(window.localStorage.getItem('pleromanet.session') ?? 'null')
+		JSON.parse(window.localStorage.getItem('deltanet.session') ?? 'null')
 	);
 	expect(storedSession?.account?.display_name).toBe('dreambyte archive');
 
@@ -116,7 +116,7 @@ test('real settings route saves through the account update API and reconciles th
 	await expect(page.getByTestId('settings-save-state')).toContainText('Unsaved changes');
 	await page.getByRole('button', { name: 'Reset profile settings' }).click();
 	await expect(page.getByRole('textbox', { name: 'Display name' })).toHaveValue('dreambyte archive');
-	await expect(page.getByRole('textbox', { name: 'Website' })).toHaveValue('https://pleromanet.social/~dreambyte');
+	await expect(page.getByRole('textbox', { name: 'Website' })).toHaveValue('https://deltanet.example/~dreambyte');
 	await expect(page.getByTestId('settings-save-state')).toContainText('Saved');
 });
 
@@ -150,7 +150,7 @@ test('real settings route signs out and redirects when the save is unauthorized'
 	await page.getByRole('button', { name: 'Save profile settings' }).click();
 
 	await page.waitForURL('/');
-	const storedSession = await page.evaluate(() => window.localStorage.getItem('pleromanet.session'));
+	const storedSession = await page.evaluate(() => window.localStorage.getItem('deltanet.session'));
 	expect(storedSession).toBeNull();
 });
 

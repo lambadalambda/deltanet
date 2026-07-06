@@ -5,7 +5,7 @@ test('shows converted canonical design-system sections and switches themes', asy
 	await setViewport(page, 'desktop');
 	await page.goto('/design-system');
 
-	await expect(page).toHaveTitle('PleromaNet · Design System');
+	await expect(page).toHaveTitle('DeltaNet · Design System');
 	await expect(page.getByRole('heading', { name: 'Foundations' })).toBeVisible();
 	await expect(page.getByRole('heading', { name: 'Iconography' })).toBeVisible();
 	await expect(page.getByRole('heading', { name: 'Controls' })).toBeVisible();
@@ -143,13 +143,13 @@ test('renders canonical surface and right-rail card specimens', async ({ page })
 	await expect(surfaces.getByText('ShortcutsCard')).toBeVisible();
 	await expect(surfaces.getByRole('button', { name: /Compose new post/ })).toBeVisible();
 	await expect(surfaces.getByText('InstanceStatus')).toBeVisible();
-	await expect(surfaces.getByText('pleromanet.social', { exact: true })).toBeVisible();
+	await expect(surfaces.getByText('deltanet.example', { exact: true })).toBeVisible();
 	await expect(surfaces.getByText('QuickSearchCard')).toBeVisible();
 	await expect(surfaces.getByRole('button', { name: /Search hashtags/ })).toBeVisible();
 	await expect(surfaces.getByText('FooterCard')).toBeVisible();
-	await expect(surfaces.getByText('PLEROMANET™ 2.4.58')).toBeVisible();
+	await expect(surfaces.getByText('DELTANET™ 2.4.58')).toBeVisible();
 	await expect(surfaces.getByText('ProfilePreviewCard')).toBeVisible();
-	await expect(surfaces.getByText('@dreambyte@pleromanet.social')).toBeVisible();
+	await expect(surfaces.getByText('@dreambyte@deltanet.example')).toBeVisible();
 	await expect(surfaces.getByText('ProfileTipsCard')).toBeVisible();
 	await expect(surfaces.getByText('Your avatar will be shown at 96×96px.')).toBeVisible();
 
@@ -185,7 +185,7 @@ test('renders canonical mobile phone previews', async ({ page }) => {
 	await expect(mobile.getByText('Drawer · left side menu')).toBeVisible();
 	await expect(mobile.getByText('Thread · ancestor + focused')).toBeVisible();
 	await expect(mobile.locator('.ds-phone')).toHaveCount(3);
-	await expect(mobile.getByText('PleromaNet™').first()).toBeVisible();
+	await expect(mobile.getByText('DeltaNet™').first()).toBeVisible();
 	await expect(mobile.getByRole('button', { name: /^Explore/ })).toBeVisible();
 	await expect(mobile.getByRole('button', { name: /^Alerts/ })).toContainText('3');
 	await expect(mobile.getByText('@dreambyte@pleroma.social')).toBeVisible();
