@@ -1,0 +1,9 @@
+node_modules/
+dist/
+# Delta Chat account databases and blobs
+data/
+# chatmail credentials — never commit
+accounts.local.json
+.env
+.env.*
+test-results/
