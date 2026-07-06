@@ -1,6 +1,6 @@
 import { startDeltaChat } from '@deltachat/stdio-rpc-server';
 import type { T } from '@deltachat/jsonrpc-client';
-import type { PostOptions, TimelineQuery, Transport } from './types.js';
+import type { PostOptions, ProfileUpdate, TimelineQuery, Transport } from './types.js';
 import { initialOf } from '../mastodon/entities.js';
 
 const DC_CONTACT_ID_SELF = 1;
@@ -268,6 +268,10 @@ export const openTransport = async (
     }
     return cachedDisplayName;
   };
+  /** Force the next `selfDisplayName()` to re-read `displayname` from config. */
+  const invalidateSelfDisplayName = (): void => {
+    cachedDisplayName = undefined;
+  };
 
   /** Same trick as self(): the SELF contact's displayName is a placeholder ("Me"). */
   const withSelfDisplayName = (msg: T.Message, displayname: string | null): T.Message =>
@@ -426,6 +430,21 @@ export const openTransport = async (
       return displayname ? { ...contact, displayName: displayname } : contact;
     },
 
+    updateProfile: async (updates: ProfileUpdate) => {
+      // Map only the keys present in `updates` to their DC config keys.
+      // `selfavatar: null` clears the avatar. Setting `selfavatar` to a path
+      // makes core import (copy) the file into its blob store, so the source
+      // file need not outlive this call.
+      const config: Record<string, string | null> = {};
+      if (updates.displayName !== undefined) config['displayname'] = updates.displayName;
+      if (updates.bio !== undefined) config['selfstatus'] = updates.bio;
+      if (updates.avatarPath !== undefined) config['selfavatar'] = updates.avatarPath;
+      if (Object.keys(config).length > 0) await rpc.batchSetConfig(accountId, config);
+      // The self display name is cached (self()/timeline/contactBadge read it);
+      // drop it so the change is visible on the very next read.
+      invalidateSelfDisplayName();
+    },
+
     timeline: async ({ limit, maxId, minId }: TimelineQuery) => {
       const chatIds = await feedChatIds();
       const perChat = await Promise.all(
@@ -510,6 +529,13 @@ export const openTransport = async (
     },
 
     avatarPath: async (contactId) => {
+      // SELF: the raw contact's profileImage lags a freshly-set selfavatar in
+      // some core versions, so read the authoritative `selfavatar` config
+      // (which points at the blob DC copied the uploaded file into) directly.
+      if (contactId === DC_CONTACT_ID_SELF) {
+        const selfavatar = await rpc.getConfig(accountId, 'selfavatar').catch(() => null);
+        if (selfavatar) return selfavatar;
+      }
       const contact = await rpc.getContact(accountId, contactId).catch(() => null);
       return contact?.profileImage ?? null;
     },

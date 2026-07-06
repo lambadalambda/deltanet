@@ -173,7 +173,16 @@ const ctx: AppContext = {
 const staticDir = existsSync(STATIC_DIR) ? STATIC_DIR : undefined;
 if (staticDir) console.log(`serving static frontend from ${staticDir}`);
 
-const app = createApp(ctx, { baseUrl: BASE_URL, staticDir, store, upgradeWebSocket, hub });
+const app = createApp(ctx, {
+  baseUrl: BASE_URL,
+  staticDir,
+  store,
+  upgradeWebSocket,
+  hub,
+  // Profile-editing persists the uploaded avatar + SELF header banner here so
+  // they survive restarts; resolved absolute since DATA_DIR may be relative.
+  dataDir: resolve(process.cwd(), DATA_DIR),
+});
 
 // `@hono/node-server`'s v2 websocket support is just `serve({ ..., websocket:
 // { server } })` with a `ws.WebSocketServer` created in `noServer: true` mode

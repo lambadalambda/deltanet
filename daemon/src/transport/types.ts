@@ -16,8 +16,25 @@ export type PostOptions = {
  * What the Mastodon API layer needs from the federation transport.
  * Kept narrow so the API server can be unit-tested with a fake.
  */
+/** Profile fields settable via the Mastodon `update_credentials` endpoint. */
+export type ProfileUpdate = {
+  /** → `displayname` config. */
+  displayName?: string;
+  /** → `selfstatus` config (the account bio/note). May be empty to clear it. */
+  bio?: string;
+  /** → `selfavatar` config; `null` clears the avatar. A path is imported into DC's blob store. */
+  avatarPath?: string | null;
+};
+
 export interface Transport {
   self(): Promise<T.Contact>;
+  /**
+   * Apply self-config profile changes (`displayname`/`selfstatus`/`selfavatar`),
+   * setting only the keys present in `updates`. Invalidates any cached self
+   * display name so subsequent `self()`/timeline/`contactBadge` reads reflect
+   * the change immediately.
+   */
+  updateProfile(updates: ProfileUpdate): Promise<void>;
   /** Feed messages across all subscribed feeds, newest first. */
   timeline(query: TimelineQuery): Promise<T.Message[]>;
   message(msgId: number): Promise<T.Message | null>;

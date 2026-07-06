@@ -35,3 +35,26 @@ The frontend's existing settings page speaks
   after posting once, shows up on a follower's node (name, avatar, bio).
 - Unit tests: update_credentials happy path (fields + avatar file),
   cache invalidation, header stored/served for self.
+
+## Current Status (2026-07-06)
+
+Implemented in the daemon. `PATCH /api/v1/accounts/update_credentials` accepts
+both JSON (what the frontend currently sends: `display_name`, `note`) and
+multipart form-data (`avatar`, `header` File uploads — forward-looking, the
+frontend's "Choose avatar"/"Choose banner" buttons aren't wired to uploads
+yet). `display_name`→`displayname`, `note`→`selfstatus` (federate),
+`avatar`→`selfavatar` (DC imports into blobs; also persisted under the data
+dir), `header` stored locally + served for SELF via `/deltanet/header/:id`
+(non-self ids get the default gradient; headers don't federate). Cached self
+display name is invalidated on update. Blank `display_name`→422, empty
+`note`→clears bio, non-image avatar/header→422.
+
+Unit-tested (`daemon/tests/server.test.ts`): happy path (name+note), avatar
+upload sets transport path + serves via avatar route, header stored+served for
+self, 422 cases, cache invalidation via verify_credentials, account mapping
+points at the per-contact header route. `pnpm test` + `pnpm check` green.
+
+Not done here: frontend wiring of the avatar/header file inputs; live
+federation verification (avatar/bio appearing on a follower's node after a
+post) — acceptance criteria to confirm via integration/manual once the
+frontend uploads land. Not archived.

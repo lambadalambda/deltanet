@@ -14,7 +14,10 @@ const BASE = 'http://localhost:4030';
 const BOB = makeContact({ id: 11, address: 'zbie604yz@nine.testrun.org', displayName: 'bob' });
 
 const makeFakeTransport = () => {
-  const self = makeContact();
+  let self = makeContact();
+  // Mirror of the SELF selfavatar config the real transport would set; lets
+  // avatarPath(1) reflect a freshly-uploaded avatar the way DC's blob does.
+  let selfAvatarPath: string | null = null;
   const messages: T.Message[] = [
     makeMessage({ id: 10, text: 'oldest', timestamp: 1751800000 }),
     makeMessage({ id: 11, text: 'middle', timestamp: 1751800100 }),
@@ -37,12 +40,19 @@ const makeFakeTransport = () => {
   const dms: Array<{ contactId: number; text: string; quotedText?: string }> = [];
   const deleted: number[] = [];
   const unfollowed: number[] = [];
+  const profileUpdates: Array<{ displayName?: string; bio?: string; avatarPath?: string | null }> = [];
   const following: { contactId: number; chatId: number; name: string; addr: string }[] = [
     { contactId: 11, chatId: 200, name: "bob's feed", addr: BOB.address },
   ];
   const followerHandlers = new Set<(contactId: number) => void>();
   const transport: Transport = {
     self: async () => self,
+    updateProfile: async (updates) => {
+      profileUpdates.push({ ...updates });
+      if (updates.displayName !== undefined) self = { ...self, displayName: updates.displayName };
+      if (updates.bio !== undefined) self = { ...self, status: updates.bio };
+      if (updates.avatarPath !== undefined) selfAvatarPath = updates.avatarPath;
+    },
     timeline: async ({ limit, maxId, minId }: TimelineQuery) =>
       messages
         .filter((m) => (maxId === undefined || m.id < maxId) && (minId === undefined || m.id > minId))
@@ -75,7 +85,7 @@ const makeFakeTransport = () => {
       if (handle === BOB.address.toLowerCase()) return 11;
       return null;
     },
-    avatarPath: async () => null,
+    avatarPath: async (id) => (id === 1 ? selfAvatarPath : null),
     contactBadge: async (id) =>
       id === 1 ? { initial: 'A', color: '#ff0000' } : null,
     blobPath: async () => null,
@@ -111,7 +121,7 @@ const makeFakeTransport = () => {
   const emitFollower = (contactId: number) => {
     for (const handler of followerHandlers) handler(contactId);
   };
-  return { transport, messages, posts, dms, deleted, unfollowed, following, mids, emitFollower };
+  return { transport, messages, posts, dms, deleted, unfollowed, following, mids, emitFollower, profileUpdates };
 };
 
 /** A context that's already configured with a fixed fake transport. */
@@ -325,6 +335,136 @@ describe('deltanet: default images', () => {
     const res = await makeApp().request('/deltanet/avatar/999');
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('image/svg+xml');
+  });
+});
+
+describe('PATCH /api/v1/accounts/update_credentials', () => {
+  it('updates display_name and note (JSON body) and returns the fresh account with stats', async () => {
+    const { transport, profileUpdates } = makeFakeTransport();
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+
+    const res = await app.request('/api/v1/accounts/update_credentials', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ display_name: 'quiet admin', note: 'no ads, ever' }),
+    });
+    expect(res.status).toBe(200);
+    const account = await res.json() as any;
+
+    // recorded the mapped update
+    expect(profileUpdates).toHaveLength(1);
+    expect(profileUpdates[0]).toMatchObject({ displayName: 'quiet admin', bio: 'no ads, ever' });
+    expect(profileUpdates[0]).not.toHaveProperty('avatarPath');
+
+    // response carries the updated values + verify_credentials-shaped stats
+    expect(account.display_name).toBe('quiet admin');
+    expect(account.note).toBe('<p>no ads, ever</p>');
+    expect(account.source.note).toBe('no ads, ever');
+    expect(account.followers_count).toBe(3);
+    expect(account.following_count).toBe(2);
+    expect(account.statuses_count).toBe(7);
+
+    // subsequent verify_credentials reflects the change (cache invalidated)
+    const verify = await (await app.request('/api/v1/accounts/verify_credentials')).json() as any;
+    expect(verify.display_name).toBe('quiet admin');
+  });
+
+  it('accepts an empty note to clear the bio', async () => {
+    const { transport, profileUpdates } = makeFakeTransport();
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const res = await app.request('/api/v1/accounts/update_credentials', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note: '' }),
+    });
+    expect(res.status).toBe(200);
+    expect(profileUpdates[0]).toMatchObject({ bio: '' });
+  });
+
+  it('422s a blank display_name', async () => {
+    const { transport, profileUpdates } = makeFakeTransport();
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const res = await app.request('/api/v1/accounts/update_credentials', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ display_name: '   ' }),
+    });
+    expect(res.status).toBe(422);
+    expect(profileUpdates).toHaveLength(0);
+  });
+
+  it('accepts a multipart avatar upload and sets the transport avatar path', async () => {
+    const { transport, profileUpdates } = makeFakeTransport();
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+
+    const form = new FormData();
+    form.append('display_name', 'pic haver');
+    form.append('avatar', new File(['fakepngbytes'], 'me.png', { type: 'image/png' }));
+    const res = await app.request('/api/v1/accounts/update_credentials', { method: 'PATCH', body: form });
+    expect(res.status).toBe(200);
+
+    expect(profileUpdates).toHaveLength(1);
+    expect(profileUpdates[0]?.avatarPath).toBeTypeOf('string');
+
+    // SELF avatar now serves the uploaded file's bytes via the avatar route
+    const avatarRes = await app.request('/deltanet/avatar/1');
+    expect(avatarRes.status).toBe(200);
+    expect(await avatarRes.text()).toBe('fakepngbytes');
+  });
+
+  it('422s a non-image avatar upload', async () => {
+    const { transport, profileUpdates } = makeFakeTransport();
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const form = new FormData();
+    form.append('avatar', new File(['nope'], 'notes.txt', { type: 'text/plain' }));
+    const res = await app.request('/api/v1/accounts/update_credentials', { method: 'PATCH', body: form });
+    expect(res.status).toBe(422);
+    expect(profileUpdates).toHaveLength(0);
+  });
+
+  it('stores an uploaded header and serves it for SELF via the per-contact route', async () => {
+    const { transport } = makeFakeTransport();
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+
+    const form = new FormData();
+    form.append('header', new File(['bannerbytes'], 'banner.png', { type: 'image/png' }));
+    const res = await app.request('/api/v1/accounts/update_credentials', { method: 'PATCH', body: form });
+    expect(res.status).toBe(200);
+
+    const headerRes = await app.request('/deltanet/header/1');
+    expect(headerRes.status).toBe(200);
+    expect(await headerRes.text()).toBe('bannerbytes');
+  });
+
+  it('returns 401 when unconfigured', async () => {
+    const app = createApp(makeUnconfiguredCtx(), { baseUrl: BASE });
+    const res = await app.request('/api/v1/accounts/update_credentials', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ display_name: 'x' }),
+    });
+    expect(res.status).toBe(401);
+  });
+});
+
+describe('deltanet: per-contact header route', () => {
+  it('serves the default gradient for a non-self contact id', async () => {
+    const res = await makeApp().request('/deltanet/header/11');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('image/svg+xml');
+    expect(await res.text()).toContain('<svg');
+  });
+
+  it('serves the default gradient for SELF when no header has been uploaded', async () => {
+    const res = await makeApp().request('/deltanet/header/1');
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('<svg');
+  });
+
+  it('account mapping points header/header_static at the per-contact route', async () => {
+    const account = await (await makeApp().request('/api/v1/accounts/verify_credentials')).json() as any;
+    expect(account.header).toBe(`${BASE}/deltanet/header/1`);
+    expect(account.header_static).toBe(`${BASE}/deltanet/header/1`);
   });
 });
 

@@ -1,3 +1,7 @@
+import { randomUUID } from 'node:crypto';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Hono, type Context, type Next } from 'hono';
 import { cors } from 'hono/cors';
 import { serveStatic } from '@hono/node-server/serve-static';
@@ -59,6 +63,13 @@ export type ServerOptions = {
   upgradeWebSocket?: UpgradeWebSocket;
   /** Streaming hub live messages/notifications are broadcast through; see `./streaming.ts`. Required iff `upgradeWebSocket` is provided. */
   hub?: StreamingHub;
+  /**
+   * Absolute path to the account's data directory. Profile-editing writes the
+   * uploaded avatar (before handing its path to the transport, which imports
+   * it into DC's blob store) and the SELF header banner here, so both survive
+   * a daemon restart. Defaults to an ephemeral scratch dir (fine for tests).
+   */
+  dataDir?: string;
 };
 
 /**
@@ -83,13 +94,37 @@ const intParam = (value: string | undefined): number | undefined => {
   return Number.isFinite(parsed) ? parsed : undefined;
 };
 
+/** A unique scratch dir for profile assets when no real data dir is provided (tests). */
+const profileScratchDir = (): string => join(tmpdir(), `deltanet-profile-${randomUUID()}`);
+
+/** File extension (with dot) for an uploaded image, from its mime; '.png' fallback. */
+const imageExt = (mime: string): string =>
+  mime === 'image/jpeg' ? '.jpg' : mime === 'image/webp' ? '.webp' : mime === 'image/gif' ? '.gif' : '.png';
+
 export const createApp = (
   ctx: AppContext,
-  { baseUrl, staticDir, store: injectedStore, upgradeWebSocket, hub }: ServerOptions,
+  { baseUrl, staticDir, store: injectedStore, upgradeWebSocket, hub, dataDir }: ServerOptions,
 ) => {
   const app = new Hono();
   const mediaStore = createMediaStore();
   const store: Store = injectedStore ?? createStore(ephemeralStorePath());
+  // Where profile-editing persists the uploaded avatar + SELF header banner.
+  // Falls back to a per-process scratch dir so tests need no real data dir.
+  const profileDir = dataDir ?? profileScratchDir();
+  const headerPath = join(profileDir, 'header.png');
+
+  /**
+   * Persist an uploaded profile image under the data dir and return its path.
+   * The avatar is written here (not os tmpdir) so the file survives long
+   * enough for DC to import it, and — since we keep it — remains a stable
+   * on-disk artifact independent of DC's blob store.
+   */
+  const persistProfileImage = async (file: File, name: 'avatar'): Promise<string> => {
+    await mkdir(profileDir, { recursive: true });
+    const path = join(profileDir, `${name}${imageExt(file.type)}`);
+    await writeFile(path, new Uint8Array(await file.arrayBuffer()));
+    return path;
+  };
 
   // Shared status/notification JSON mapping (see ./mapping.ts) — the same
   // instance's `toStatus`/`ownAddr` (with its request-lifetime cache) backs
@@ -242,15 +277,72 @@ export const createApp = (
 
   // --- Accounts -----------------------------------------------------------
 
-  app.get('/api/v1/accounts/verify_credentials', requireTransport, async (c) => {
-    const transport = c.get('transport');
+  /** The full self account JSON (self contact + real stats), as both verify_credentials and update_credentials return. */
+  const selfAccountJson = async (transport: Transport) => {
     const [self, stats] = await Promise.all([transport.self(), transport.stats()]);
-    return c.json({
+    return {
       ...contactToAccount(self, baseUrl),
       followers_count: stats.followers,
       following_count: stats.following,
       statuses_count: stats.statuses,
-    });
+    };
+  };
+
+  app.get('/api/v1/accounts/verify_credentials', requireTransport, async (c) =>
+    c.json(await selfAccountJson(c.get('transport'))),
+  );
+
+  // Profile editing (Mastodon update_credentials). The frontend currently
+  // sends this as JSON (display_name/note), but the endpoint also accepts
+  // multipart form-data so avatar/header File uploads work — hono's parseBody
+  // yields File objects for those (same as /api/v1/media). `display_name`
+  // maps to DC `displayname`, `note` to `selfstatus` (both federate in
+  // outgoing message headers); the avatar is persisted under the data dir and
+  // set as `selfavatar` (DC imports it into its blob store). `header` has no
+  // DC equivalent — it's stored locally and served for SELF only.
+  app.patch('/api/v1/accounts/update_credentials', requireTransport, async (c) => {
+    const transport = c.get('transport');
+    const contentType = c.req.header('content-type') ?? '';
+    const body = contentType.includes('json')
+      ? ((await c.req.json().catch(() => ({}))) as Record<string, unknown>)
+      : ((await c.req.parseBody()) as Record<string, unknown>);
+
+    const updates: Parameters<Transport['updateProfile']>[0] = {};
+
+    if (body['display_name'] !== undefined) {
+      const displayName = String(body['display_name']);
+      // A blank display name is rejected: unlike note, an empty name would
+      // leave the account effectively nameless everywhere it federates.
+      if (displayName.trim() === '') {
+        return c.json({ error: "Validation failed: display_name can't be blank" }, 422);
+      }
+      updates.displayName = displayName;
+    }
+
+    // `note` may be empty — that's a valid "clear my bio".
+    if (body['note'] !== undefined) updates.bio = String(body['note']);
+
+    const avatar = body['avatar'];
+    if (avatar instanceof File) {
+      if (!isSupportedImageMime(avatar.type)) {
+        return c.json({ error: 'Validation failed: avatar must be an image' }, 422);
+      }
+      updates.avatarPath = await persistProfileImage(avatar, 'avatar');
+    }
+
+    const header = body['header'];
+    if (header instanceof File) {
+      if (!isSupportedImageMime(header.type)) {
+        return c.json({ error: 'Validation failed: header must be an image' }, 422);
+      }
+      // Headers don't federate (no DC equivalent) — stored at a fixed path so
+      // the per-contact header route can serve it back for SELF.
+      await mkdir(profileDir, { recursive: true });
+      await writeFile(headerPath, new Uint8Array(await header.arrayBuffer()));
+    }
+
+    await transport.updateProfile(updates);
+    return c.json(await selfAccountJson(transport));
   });
 
   const relationshipFor = (following: boolean, id: number): MastodonRelationship => ({
@@ -613,11 +705,25 @@ export const createApp = (
     return c.body(svg, 200, { 'Content-Type': 'image/svg+xml' });
   });
 
-  // Path keeps the .png extension the account entities advertise; content is
-  // an SVG banner, which browsers happily render regardless of extension.
-  app.get('/deltanet/header.png', (c) =>
-    c.body(headerSvg(), 200, { 'Content-Type': 'image/svg+xml' }),
-  );
+  const gradientHeader = (c: Context) =>
+    c.body(headerSvg(), 200, { 'Content-Type': 'image/svg+xml' });
+
+  // Per-contact header banner. Only SELF (contact id 1) can have a stored
+  // custom header (uploaded via update_credentials, kept locally — headers
+  // don't federate); every other contact id gets the generated gradient.
+  app.get('/deltanet/header/:contactId', async (c) => {
+    const contactId = Number(c.req.param('contactId'));
+    if (contactId === DC_CONTACT_ID_SELF) {
+      const { readFile } = await import('node:fs/promises');
+      const data = await readFile(headerPath).catch(() => null);
+      if (data) return new Response(new Uint8Array(data));
+    }
+    return gradientHeader(c);
+  });
+
+  // Back-compat alias for the old single global header route (still the
+  // default gradient) so any cached URLs / synthesized accounts keep working.
+  app.get('/deltanet/header.png', gradientHeader);
 
   app.get('/deltanet/blob/:msgId', requireTransport, async (c) =>
     serveFile(await c.get('transport').blobPath(Number(c.req.param('msgId'))), c),

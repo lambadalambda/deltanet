@@ -837,3 +837,61 @@ frontend doesn't special-case it. Files: `daemon/src/mastodon/entities.ts`,
 `daemon/src/mapping.ts`, `daemon/tests/entities.test.ts`,
 `daemon/tests/server.test.ts`. `pnpm test` (403 tests) and `pnpm check`
 green.
+
+## Profile editing (`meta/issues/profile-editing.md`)
+
+Implemented `PATCH /api/v1/accounts/update_credentials`, backed by Delta Chat
+self-config. `display_name` → `displayname`, `note` → `selfstatus` (both
+federate in outgoing message headers), `avatar` file → `selfavatar`. Header
+uploads are stored locally and served for SELF only (no DC equivalent — they
+don't federate).
+
+**Frontend contract (read-only inspection of `../frontend`).** The settings
+save (`updateAccountProfile` in `src/lib/pleroma/client.ts`) submits **JSON**
+(`Content-Type: application/json`), not multipart: `profileUpdateBody` sends
+`display_name`, `note`, `locked`, `bot`, `discoverable`,
+`hide_followers_count`, `fields_attributes`. It reads back the full
+`PleromaAccount` (`display_name`, `source.note`, `note`, `discoverable`,
+`pleroma.hide_followers_count`, `fields`). The "Choose avatar"/"Choose banner"
+buttons exist in the settings UI (`routes/app/[...path]/+page.svelte`) but are
+**not yet wired** to any upload. So the endpoint accepts JSON *and* multipart
+form-data (hono `parseBody` yields `File` objects for `avatar`/`header`, same
+as `/api/v1/media`) — the avatar/header paths are forward-looking for when the
+frontend wires those buttons.
+
+**Does DC copy selfavatar into blobs?** Yes. Delta Chat core imports the
+avatar file into its blob store on `setConfig('selfavatar', path)` (the config
+docs and `SelfavatarChanged`/`AccountsItemChanged` events confirm selfavatar is
+a managed asset, and `Contact.profileImage` for SELF resolves to the imported
+blob). A temp source file would therefore suffice — but per the issue we still
+persist the uploaded avatar under the account data dir (not os tmpdir) so it
+survives a restart as a stable on-disk artifact. `avatarPath(SELF)` special-
+cases contact id 1 to read the `selfavatar` config directly (authoritative,
+avoids any lag in the raw contact's `profileImage`).
+
+**Cache invalidation.** `openTransport`'s `cachedDisplayName` (read by
+`self()`/timeline mapping/`contactBadge`) is dropped via a new
+`invalidateSelfDisplayName()` at the end of `updateProfile`, so a name change
+is visible on the very next read.
+
+**Header route.** Replaced the single global `/deltanet/header.png` with
+per-contact `/deltanet/header/:contactId`: SELF (id 1) serves the stored
+`<dataDir>/header.png` if present, else the generated gradient; every other id
+gets the gradient. `contactToAccount` now points `header`/`header_static` at
+`/deltanet/header/:id`. Kept `/deltanet/header.png` as a gradient alias so old
+URLs / `synthesizeAccount` (still references it) don't break. `dataDir` is
+threaded through `ServerOptions` from `main.ts` (which knows `DATA_DIR`,
+resolved absolute); tests fall back to a per-process scratch dir.
+
+Validation: blank `display_name` → 422; empty `note` is allowed (clears bio);
+non-image `avatar`/`header` → 422 (same mime check as `media.ts`).
+
+Files: `daemon/src/transport/types.ts` (`ProfileUpdate` type +
+`updateProfile`), `daemon/src/transport/deltachat.ts` (`updateProfile`,
+`invalidateSelfDisplayName`, SELF-aware `avatarPath`),
+`daemon/src/mastodon/entities.ts` (header URLs), `daemon/src/server.ts`
+(endpoint, `selfAccountJson` helper, per-contact header route, `dataDir`
+option, avatar/header persistence), `daemon/src/main.ts` (`dataDir` wiring),
+`daemon/tests/server.test.ts` (fake transport `updateProfile` + recorder, new
+update_credentials/header suites). `pnpm test` (413 tests) and `pnpm check`
+green. Did not run `pnpm test:integration` (per task instructions).
