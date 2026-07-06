@@ -15,3 +15,5 @@
 - [x] [Profile editing (name, bio, avatar)](issues/profile-editing.md)
 - [x] [Follow-back via invite-request convention](issues/follow-back-invite-request.md)
 - [x] [Emoji normalization (withdrawn — by design)](issues/emoji-normalization.md)
+- [x] [Dual-copy identity split: canonical-mid unification](issues/canonical-mid-unification.md)
+- [x] [Thread ancestor/descendant rows do not render reactions](issues/thread-rows-reactions.md)
