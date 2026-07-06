@@ -1,20 +1,26 @@
 import { expect, test, type Page } from '@playwright/test';
-import { expectNoHorizontalOverflow, setViewport } from '../test/playwright';
+import { expectNoHorizontalOverflow, fulfillJson, setViewport } from '../test/playwright';
 
-const mockOAuthAppRegistration = async (page: Page, server: string) => {
+const mockDeltanetStatus = async (page: Page, body: { configured: boolean; address: string | null }) => {
+	await page.route('**/api/deltanet/status', async (route) => {
+		await fulfillJson(route, body);
+	});
+};
+
+const mockOAuthAppRegistration = async (page: Page, origin: string) => {
 	let body = '';
-	await page.route(`https://${server}/api/v1/apps`, async (route) => {
+	await page.route(`${origin}/api/v1/apps`, async (route) => {
 		body = route.request().postData() ?? '';
 		await route.fulfill({
 			status: 200,
 			contentType: 'application/json',
 			body: JSON.stringify({
-				id: `${server}-app`,
-				name: 'PleromaNet',
-				website: 'http://localhost:4173',
-				redirect_uri: 'http://localhost:4173/auth/callback',
-				client_id: `${server}-client`,
-				client_secret: `${server}-secret`
+				id: `${origin}-app`,
+				name: 'DeltaNet',
+				website: origin,
+				redirect_uri: `${origin}/auth/callback`,
+				client_id: `${origin}-client`,
+				client_secret: `${origin}-secret`
 			})
 		});
 	});
@@ -22,134 +28,142 @@ const mockOAuthAppRegistration = async (page: Page, server: string) => {
 	return () => body;
 };
 
-test('signed-out landing explains OAuth handoff and avoids passwords', async ({ page }) => {
+test('signed-out landing explains the encrypted-email federation model and avoids passwords', async ({ page }) => {
 	await setViewport(page, 'desktop');
+	await mockDeltanetStatus(page, { configured: true, address: null });
 	await page.goto('/');
 
-	await expect(page.getByRole('banner')).toContainText('PleromaNet');
+	await expect(page.getByRole('banner')).toContainText('DeltaNet');
 	await expect(page.getByRole('link', { name: 'Browse public' })).toHaveAttribute('href', '/public');
 	await expect(page.getByRole('link', { name: 'Open public timeline' })).toHaveAttribute('href', '/public');
-	await expect(page.getByRole('link', { name: 'Federation log' })).toHaveAttribute('href', '/public');
 	await expect(page.getByRole('heading', { name: /A quieter corner of the social web/ })).toBeVisible();
-	await expect(page.getByText('no algorithm, no ads, no scraping')).toBeVisible();
-	await expect(page.getByText('PleromaNet never sees your password')).toBeVisible();
+	await expect(page.getByText(/encrypted email/i).first()).toBeVisible();
+	await expect(page.getByText(/chatmail/i).first()).toBeVisible();
+	await expect(page.getByText(/invite link/i).first()).toBeVisible();
+	await expect(page.getByText('DeltaNet never sees your password')).toBeVisible();
 	await expect(page.locator('input[type="password"]')).toHaveCount(0);
-	await expect(page.getByRole('heading', { name: /The federated timeline/ })).toBeVisible();
-	await expect(page.getByRole('heading', { name: 'Things we ask of each other.' })).toBeVisible();
 	await expectNoHorizontalOverflow(page);
 });
 
-test('selects recent server, prepares OAuth redirect, and cancels pending auth', async ({ page }) => {
+test('home server field defaults to the current origin and is tucked behind an advanced affordance', async ({ page }) => {
 	await setViewport(page, 'desktop');
-	const appRegistrationBody = await mockOAuthAppRegistration(page, 'retro.social');
+	await mockDeltanetStatus(page, { configured: true, address: null });
 	await page.goto('/');
 
 	await expect(page.getByRole('tab', { name: 'Sign in' })).toHaveAttribute('aria-selected', 'true');
-	await page.getByRole('button', { name: 'Recent servers' }).click();
-	await page.getByRole('option', { name: /retro.social/ }).click();
-
-	await expect(page.getByRole('textbox', { name: 'Your home server' })).toHaveValue('retro.social');
-	await expect(page.getByRole('button', { name: 'Continue to retro.social' })).toBeEnabled();
-	await expect(page.getByText('Authorize on retro.social')).toBeVisible();
-
-	await page.getByRole('button', { name: 'Continue to retro.social' }).click();
-	await expect(page.getByText('Redirecting to retro.social')).toBeVisible();
-	await expect(page.getByText('Your server will ask you to authorize PleromaNet')).toBeVisible();
-	const authorizationLink = page.getByRole('link', { name: 'Open retro.social authorization' });
-	await expect(authorizationLink).toHaveAttribute('href', /^https:\/\/retro\.social\/oauth\/authorize\?/);
-	expect(appRegistrationBody()).toContain('client_name=PleromaNet');
-	expect(appRegistrationBody()).toContain('scopes=read+write+follow');
-
-	const pending = await page.evaluate(() =>
-		JSON.parse(window.sessionStorage.getItem('pleromanet.oauth.pending') ?? 'null')
-	);
-	expect(pending).toMatchObject({
-		instanceUrl: 'https://retro.social',
-		clientId: 'retro.social-client',
-		state: expect.any(String)
-	});
-	const authorizationUrl = new URL((await authorizationLink.getAttribute('href')) ?? '');
-	expect(authorizationUrl.searchParams.get('client_id')).toBe('retro.social-client');
-	expect(authorizationUrl.searchParams.get('state')).toBe(pending.state);
-	await expect(page.evaluate(() => window.localStorage.getItem('pleromanet.oauth.pending'))).resolves.toBeNull();
-
-	await page.getByRole('button', { name: 'Cancel redirect' }).click();
-	await expect(page.getByRole('textbox', { name: 'Your home server' })).toHaveValue('retro.social');
-	await expect(page.getByText('PleromaNet never sees your password')).toBeVisible();
-	await expect(page.evaluate(() => window.sessionStorage.getItem('pleromanet.oauth.pending'))).resolves.toBeNull();
+	await expect(page.getByRole('textbox', { name: 'Your home server' })).toHaveCount(0);
+	await page.getByRole('button', { name: /advanced/i }).click();
+	await expect(page.getByRole('textbox', { name: 'Your home server' })).toHaveValue(new URL(page.url()).origin);
 	await expectNoHorizontalOverflow(page);
 });
 
-test('cancelled OAuth setup cannot restore pending auth after registration resolves', async ({ page }) => {
+test('status configured:true defaults to sign in and starts the OAuth redirect on this origin', async ({ page }) => {
 	await setViewport(page, 'desktop');
-	let releaseRegistration: () => void = () => {};
-	let registrationStarted: () => void = () => {};
-	const registrationRelease = new Promise<void>((resolve) => {
-		releaseRegistration = resolve;
-	});
-	const registrationSeen = new Promise<void>((resolve) => {
-		registrationStarted = resolve;
-	});
+	await mockDeltanetStatus(page, { configured: true, address: null });
+	await page.goto('/');
+	const origin = new URL(page.url()).origin;
+	const appRegistrationBody = await mockOAuthAppRegistration(page, origin);
 
-	await page.route('https://retro.social/api/v1/apps', async (route) => {
-		registrationStarted();
-		await registrationRelease;
-		await route.fulfill({
-			status: 200,
-			contentType: 'application/json',
-			body: JSON.stringify({
-				id: 'retro.social-app',
-				name: 'PleromaNet',
-				redirect_uri: 'http://localhost:4173/auth/callback',
-				client_id: 'retro.social-client',
-				client_secret: 'retro.social-secret'
-			})
+	await expect(page.getByRole('tab', { name: 'Sign in' })).toHaveAttribute('aria-selected', 'true');
+	await page.getByRole('button', { name: 'Continue' }).click();
+
+	await expect(page.getByText(`Redirecting to ${origin}`)).toBeVisible();
+	const authorizationLink = page.getByRole('link', { name: /Open .*authorization/ });
+	await expect(authorizationLink).toHaveAttribute('href', new RegExp(`^${origin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/oauth/authorize\\?`));
+	expect(appRegistrationBody()).toContain('client_name=DeltaNet');
+
+	const pending = await page.evaluate(() => JSON.parse(window.sessionStorage.getItem('deltanet.oauth.pending') ?? 'null'));
+	expect(pending).toMatchObject({ instanceUrl: origin, clientId: `${origin}-client`, state: expect.any(String) });
+
+	await page.getByRole('button', { name: 'Cancel redirect' }).click();
+	await expect(page.getByText('DeltaNet never sees your password')).toBeVisible();
+});
+
+test('status configured:false defaults to the create-account tab', async ({ page }) => {
+	await setViewport(page, 'desktop');
+	await mockDeltanetStatus(page, { configured: false, address: null });
+	await page.goto('/');
+
+	await expect(page.getByRole('tab', { name: 'Create account' })).toHaveAttribute('aria-selected', 'true');
+});
+
+test('signup happy path registers the account and continues into OAuth sign-in', async ({ page }) => {
+	await setViewport(page, 'desktop');
+	await mockDeltanetStatus(page, { configured: false, address: null });
+	await page.goto('/');
+	const origin = new URL(page.url()).origin;
+	await mockOAuthAppRegistration(page, origin);
+
+	let signupBody: unknown;
+	await page.route('**/api/deltanet/signup', async (route) => {
+		signupBody = JSON.parse(route.request().postData() ?? '{}');
+		await fulfillJson(route, {
+			account: { acct: 'quietfox@nine.testrun.org' }
 		});
 	});
 
-	await page.goto('/');
-	await page.getByRole('button', { name: 'Recent servers' }).click();
-	await page.getByRole('option', { name: /retro.social/ }).click();
-	await page.getByRole('button', { name: 'Continue to retro.social' }).click();
-	await registrationSeen;
-	await page.getByRole('button', { name: 'Cancel redirect' }).click();
-	releaseRegistration();
-	await page.waitForTimeout(50);
+	await expect(page.getByRole('tab', { name: 'Create account' })).toHaveAttribute('aria-selected', 'true');
+	await page.getByRole('textbox', { name: 'Display name' }).fill('Quiet Fox');
+	await page.getByRole('button', { name: 'Create account' }).click();
 
-	await expect(page.getByRole('link', { name: 'Open retro.social authorization' })).toHaveCount(0);
-	await expect(page.evaluate(() => window.sessionStorage.getItem('pleromanet.oauth.pending'))).resolves.toBeNull();
+	await expect(page.getByText('quietfox@nine.testrun.org')).toBeVisible();
+	expect(signupBody).toMatchObject({ display_name: 'Quiet Fox' });
+
+	await expect(page.getByText(`Redirecting to ${origin}`)).toBeVisible();
+	const authorizationLink = page.getByRole('link', { name: /Open .*authorization/ });
+	await expect(authorizationLink).toHaveAttribute('href', /\/oauth\/authorize\?/);
 });
 
-test('create account flow gates redirect behind code of conduct agreement', async ({ page }) => {
+test('signup lets the relay be changed behind an advanced affordance, defaulting to nine.testrun.org', async ({ page }) => {
 	await setViewport(page, 'desktop');
-	await mockOAuthAppRegistration(page, 'spacebear.net');
+	await mockDeltanetStatus(page, { configured: false, address: null });
 	await page.goto('/');
 
-	await page.getByRole('tab', { name: 'Create account' }).click();
+	await page.getByRole('button', { name: /advanced/i }).click();
+	await expect(page.getByRole('textbox', { name: /relay/i })).toHaveValue('https://nine.testrun.org');
+	await expect(page.getByText(/mail relay hosting your address/i)).toBeVisible();
+});
+
+test('signup 409 tells the user this node already has an account and switches to sign in', async ({ page }) => {
+	await setViewport(page, 'desktop');
+	await mockDeltanetStatus(page, { configured: false, address: null });
+	await page.goto('/');
+
+	await page.route('**/api/deltanet/signup', async (route) => {
+		await fulfillJson(route, { error: 'already configured' }, 409);
+	});
+
+	await page.getByRole('textbox', { name: 'Display name' }).fill('Quiet Fox');
+	await page.getByRole('button', { name: 'Create account' }).click();
+
+	await expect(page.getByText(/already has an account/i)).toBeVisible();
+	await expect(page.getByRole('tab', { name: 'Sign in' })).toHaveAttribute('aria-selected', 'true');
+});
+
+test('signup 422 surfaces a validation error on the display name field', async ({ page }) => {
+	await setViewport(page, 'desktop');
+	await mockDeltanetStatus(page, { configured: false, address: null });
+	await page.goto('/');
+
+	await page.route('**/api/deltanet/signup', async (route) => {
+		await fulfillJson(route, { error: 'display_name is invalid' }, 422);
+	});
+
+	await page.getByRole('textbox', { name: 'Display name' }).fill('x');
+	await page.getByRole('button', { name: 'Create account' }).click();
+
+	await expect(page.getByText('display_name is invalid')).toBeVisible();
 	await expect(page.getByRole('tab', { name: 'Create account' })).toHaveAttribute('aria-selected', 'true');
-	await expect(page.getByRole('button', { name: 'Continue to pleromanet.social' })).toBeDisabled();
-
-	await page.getByRole('button', { name: /spacebear.net/ }).click();
-	await expect(page.getByText("spacebear.net's Code of Conduct")).toBeVisible();
-	await expect(page.getByRole('button', { name: 'Continue to spacebear.net' })).toBeDisabled();
-
-	await page.getByRole('checkbox', { name: /I'm 16\+/ }).check();
-	await expect(page.getByRole('button', { name: 'Continue to spacebear.net' })).toBeEnabled();
-	await page.getByRole('button', { name: 'Continue to spacebear.net' }).click();
-	await expect(page.getByText('Redirecting to spacebear.net')).toBeVisible();
-	await expect(page.getByRole('link', { name: 'Open spacebear.net authorization' })).toHaveAttribute(
-		'href',
-		/^https:\/\/spacebear\.net\/oauth\/authorize\?/
-	);
 });
 
 test('signed-out landing remains usable on mobile', async ({ page }) => {
 	await setViewport(page, 'mobile');
+	await mockDeltanetStatus(page, { configured: true, address: null });
 	await page.goto('/');
 
 	await expect(page.getByRole('heading', { name: /A quieter corner of the social web/ })).toBeVisible();
 	await expect(page.getByRole('tab', { name: 'Sign in' })).toBeVisible();
-	await expect(page.getByRole('button', { name: 'Continue to pleromanet.social' })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Continue' })).toBeVisible();
 	await expect(page.getByRole('link', { name: 'Browse public' })).toBeVisible();
 	await expectNoHorizontalOverflow(page);
 });

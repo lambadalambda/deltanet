@@ -3,66 +3,61 @@
 	import {
 		buildAuthorizationUrl,
 		createOAuthState,
+		defaultDeltanetInstanceUrl,
+		DELTANET_DEFAULT_RELAY,
+		fetchDeltanetStatus,
 		registerOAuthApp,
 		readPleromaSession,
+		signupDeltanet,
 		storePendingOAuth
 	} from '$lib/pleroma';
 	import type { PendingPleromaOAuth, PleromaScope } from '$lib/pleroma';
 	import Icon from '$lib/rebuild/Icon.svelte';
+	import { env } from '$env/dynamic/public';
 	import { onMount } from 'svelte';
 
 	type AuthMode = 'signin' | 'signup';
-	type AuthStep = 'enter' | 'redirect';
-	type RecentServer = {
-		domain: string;
-		description: string;
-		swatch: string;
-		last?: string;
-	};
+	type AuthStep = 'enter' | 'signup-success' | 'redirect';
 
 	const scopes = ['read', 'write', 'follow'] as const satisfies readonly PleromaScope[];
-	const recentServers: RecentServer[] = [
-		{ domain: 'pleromanet.social', description: 'General · Cream', swatch: '#a48bd9', last: 'You · 2h ago' },
-		{ domain: 'retro.social', description: 'Vintage tech · Open', swatch: '#7dc4be', last: 'gridwave · last week' },
-		{ domain: 'kolektiva.social', description: 'Mutual aid · Curated', swatch: '#e7a8c9' },
-		{ domain: 'spacebear.net', description: 'Astronomy · Friendly', swatch: '#e0b97a' }
-	];
 
 	let mode = $state<AuthMode>('signin');
 	let authStep = $state<AuthStep>('enter');
-	let instance = $state('pleromanet.social');
-	let showInstancePicker = $state(false);
-	let agreedToServerRules = $state(false);
+	let instance = $state('');
+	let showAdvanced = $state(false);
 	let authorizationUrl = $state('');
 	let authError = $state('');
 	let authAttempt = 0;
+
+	let displayName = $state('');
+	let relay = $state(DELTANET_DEFAULT_RELAY);
+	let signupPending = $state(false);
+	let signupError = $state('');
+	let signupAddress = $state('');
 
 	const selectedInstanceUrl = $derived((() => {
 		const trimmed = instance.trim().replace(/\/$/, '');
 		return /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
 	})());
-	const continueDisabled = $derived(!instance.trim() || (mode === 'signup' && !agreedToServerRules));
+	const continueDisabled = $derived(!instance.trim());
+	const signupDisabled = $derived(!displayName.trim() || signupPending);
 
 	const selectMode = (nextMode: AuthMode) => {
 		mode = nextMode;
-	authStep = 'enter';
+		authStep = 'enter';
 		authError = '';
 		authorizationUrl = '';
-		showInstancePicker = false;
-	};
-	const selectInstance = (domain: string) => {
-		instance = domain;
-		showInstancePicker = false;
+		signupError = '';
 	};
 	const cancelRedirect = () => {
 		authAttempt += 1;
 		authStep = 'enter';
 		authError = '';
 		authorizationUrl = '';
-		sessionStorage.removeItem('pleromanet.oauth.pending');
+		sessionStorage.removeItem('deltanet.oauth.pending');
 	};
 	const startOAuth = async () => {
-		if (continueDisabled) return;
+		if (!instance.trim()) return;
 
 		const attempt = authAttempt + 1;
 		authAttempt = attempt;
@@ -74,7 +69,7 @@
 		try {
 			const app = await registerOAuthApp({
 				instanceUrl: selectedInstanceUrl,
-				clientName: 'PleromaNet',
+				clientName: 'DeltaNet',
 				redirectUri,
 				scopes,
 				website: window.location.origin,
@@ -105,29 +100,82 @@
 			authorizationUrl = url;
 		} catch (error) {
 			if (attempt !== authAttempt) return;
-			authError = error instanceof Error ? error.message : 'Could not start OAuth with this server.';
+			authError = error instanceof Error ? error.message : 'Could not start OAuth with this node.';
+		}
+	};
+
+	const submitSignup = async () => {
+		if (signupDisabled) return;
+
+		signupPending = true;
+		signupError = '';
+		try {
+			const result = await signupDeltanet({
+				instanceUrl: selectedInstanceUrl,
+				displayName: displayName.trim(),
+				relay: relay.trim() || undefined,
+				fetch: window.fetch.bind(window)
+			});
+			signupAddress = result.acct;
+			authStep = 'signup-success';
+			signupPending = false;
+			await new Promise((resolve) => window.setTimeout(resolve, 900));
+			if (authStep !== 'signup-success') return;
+			void startOAuth();
+		} catch (error) {
+			signupPending = false;
+			if (error && typeof error === 'object' && 'kind' in error) {
+				const typed = error as { kind: string; message: string };
+				if (typed.kind === 'conflict') {
+					selectMode('signin');
+					signupError = '';
+					authError = typed.message;
+					return;
+				}
+
+				signupError = typed.message;
+				return;
+			}
+
+			signupError = error instanceof Error ? error.message : 'Could not create an account on this node.';
 		}
 	};
 
 	onMount(() => {
-		if (readPleromaSession(localStorage)) goto('/app/home');
+		if (readPleromaSession(localStorage)) {
+			goto('/app/home');
+			return;
+		}
+
+		instance = defaultDeltanetInstanceUrl({
+			windowOrigin: window.location.origin,
+			publicInstanceUrl: env.PUBLIC_PLEROMA_INSTANCE_URL
+		});
+
+		void (async () => {
+			try {
+				const status = await fetchDeltanetStatus({ instanceUrl: instance, fetch: window.fetch.bind(window) });
+				mode = status.configured ? 'signin' : 'signup';
+			} catch {
+				// Default to sign-in if status can't be read; the field is still editable.
+			}
+		})();
 	});
 </script>
 
 <svelte:head>
-	<title>PleromaNet · Landing</title>
+	<title>DeltaNet · Landing</title>
 </svelte:head>
 
 <div class="signedout">
-	<header class="so-header" aria-label="PleromaNet landing">
+	<header class="so-header" aria-label="DeltaNet landing">
 		<div class="so-shell so-header-inner">
-			<a class="so-brand" href="/" aria-label="PleromaNet home">
+			<a class="so-brand" href="/" aria-label="DeltaNet home">
 				<span class="brand-mark"><Icon name="sparkBig" /></span>
-				<span class="brand-name">PleromaNet<sup>TM</sup></span>
+				<span class="brand-name">DeltaNet<sup>TM</sup></span>
 			</a>
 			<nav class="so-nav" aria-label="Public links">
 				<a href="/public">Browse public</a>
-				<a href="/public">Federation log</a>
 				<a href="/design-system">Design system</a>
 			</nav>
 			<a class="so-mini-cta" href="/public">Open public timeline</a>
@@ -137,17 +185,17 @@
 	<section class="so-hero">
 		<div class="so-shell so-hero-grid">
 			<div class="so-copy">
-				<div class="so-eyebrow"><span></span> Est. 2017 · Federated network · Pleroma first</div>
+				<div class="so-eyebrow"><span></span> Your node · Encrypted email federation</div>
 				<h1>A quieter corner of the social web.</h1>
-				<p class="so-lede">PleromaNet is a federation of small, human-run servers with no algorithm, no ads, no scraping. You bring your voice. We keep the lights on.</p>
-				<div class="so-stats" aria-label="Network statistics">
-					<div><strong>12,847</strong><span>Active accounts</span></div>
-					<div><strong>94</strong><span>Federated instances</span></div>
-					<div><strong>3.2M</strong><span>Posts this month</span></div>
+				<p class="so-lede">DeltaNet is your own single-user node. It federates over encrypted email instead of ActivityPub: your identity is an email address on a chatmail relay, posts are delivered end-to-end encrypted, and following someone means joining their feed with an invite link. Servers only ever see ciphertext — never your posts, never your contacts.</p>
+				<div class="so-stats" aria-label="How it works">
+					<div><strong>1</strong><span>Account, this node</span></div>
+					<div><strong>e2e</strong><span>Encrypted delivery</span></div>
+					<div><strong>0</strong><span>Servers that can read you</span></div>
 				</div>
 			</div>
 
-			<section id="oauth" class="so-auth" aria-label="Pleroma authorization">
+			<section id="oauth" class="so-auth" aria-label="DeltaNet sign-in and account creation">
 				<div class="so-auth-tabs" role="tablist" aria-label="Authentication mode">
 					<button type="button" role="tab" aria-selected={mode === 'signin'} class:active={mode === 'signin'} onclick={() => selectMode('signin')}>Sign in</button>
 					<button type="button" role="tab" aria-selected={mode === 'signup'} class:active={mode === 'signup'} onclick={() => selectMode('signup')}>Create account</button>
@@ -155,54 +203,66 @@
 
 				{#if authStep === 'enter' && mode === 'signin'}
 					<div class="so-auth-body">
-						<p class="so-blurb">PleromaNet uses your home server to sign you in. Enter where your account lives and we will redirect you there to authorize.</p>
-						<div class="so-field">
-							<label for="instance">Your home server</label>
-							<div class="so-input-wrap">
-								<span>https://</span>
-								<input id="instance" aria-label="Your home server" value={instance} oninput={(event) => (instance = event.currentTarget.value)} placeholder="your.instance" />
-								<button type="button" class="so-picker-btn" aria-expanded={showInstancePicker} onclick={() => (showInstancePicker = !showInstancePicker)}>Recent servers</button>
-							</div>
-							{#if showInstancePicker}
-								<div class="so-instance-pop" role="listbox" aria-label="Recent servers">
-									{#each recentServers as server}
-										<button type="button" role="option" aria-selected={instance === server.domain} class="so-instance-opt" class:sel={instance === server.domain} onclick={() => selectInstance(server.domain)}>
-											<span class="so-swatch" style:background={server.swatch}></span>
-											<span><strong>{server.domain}</strong><small>{server.last ?? server.description}</small></span>
-										</button>
-									{/each}
+						<p class="so-blurb">Sign in to your node. DeltaNet redirects you there to authorize — no password is ever entered here.</p>
+						{#if authError}
+							<p class="so-error">{authError}</p>
+						{/if}
+						<button type="button" class="so-advanced-toggle" aria-expanded={showAdvanced} onclick={() => (showAdvanced = !showAdvanced)}>{showAdvanced ? 'Hide advanced' : 'Advanced: change home server'}</button>
+						{#if showAdvanced}
+							<div class="so-field">
+								<label for="instance">Your home server</label>
+								<div class="so-input-wrap">
+									<input id="instance" aria-label="Your home server" value={instance} oninput={(event) => (instance = event.currentTarget.value)} placeholder="http://localhost:4030" />
 								</div>
-							{/if}
-						</div>
-						<button type="button" class="so-cta" disabled={continueDisabled} onclick={startOAuth}>Continue to {instance || 'server'}</button>
-						<div class="so-chain">Enter server · Authorize on {instance || 'server'} · Return here</div>
-						<p class="so-footnote">PleromaNet never sees your password. Authorization is granted by your home server via OAuth.</p>
+							</div>
+						{/if}
+						<button type="button" class="so-cta" disabled={continueDisabled} onclick={startOAuth}>Continue</button>
+						<p class="so-footnote">DeltaNet never sees your password. Authorization is granted by your node via OAuth.</p>
 					</div>
 				{:else if authStep === 'enter' && mode === 'signup'}
 					<div class="so-auth-body">
-						<p class="so-blurb">Choose a server. Each one has its own community, rules, and moderators; you can move later and keep your follows.</p>
-						<div class="so-server-list">
-							{#each recentServers as server}
-								<button type="button" class="so-server-card" class:sel={instance === server.domain} onclick={() => selectInstance(server.domain)}>
-									<span class="so-swatch" style:background={server.swatch}></span>
-									<span><strong>{server.domain}</strong><small>{server.description}</small></span>
-								</button>
-							{/each}
+						<p class="so-blurb">Create the account for this node. You'll be assigned an email address on a chatmail relay — that's your identity on the network.</p>
+						{#if signupError}
+							<p class="so-error">{signupError}</p>
+						{/if}
+						<div class="so-field">
+							<label for="display-name">Display name</label>
+							<div class="so-input-wrap">
+								<input id="display-name" aria-label="Display name" value={displayName} oninput={(event) => (displayName = event.currentTarget.value)} placeholder="Quiet Fox" />
+							</div>
 						</div>
-						<label class="so-check">
-							<input type="checkbox" bind:checked={agreedToServerRules} />
-							<span>I'm 16+ and I've read <strong>{instance}</strong>'s Code of Conduct.</span>
-						</label>
-						<button type="button" class="so-cta" disabled={continueDisabled} onclick={startOAuth}>Continue to {instance}</button>
-						<p class="so-footnote">New accounts on <strong>{instance}</strong> are reviewed manually, usually within 24 hours.</p>
+						<button type="button" class="so-advanced-toggle" aria-expanded={showAdvanced} onclick={() => (showAdvanced = !showAdvanced)}>{showAdvanced ? 'Hide advanced' : 'Advanced: relay & home server'}</button>
+						{#if showAdvanced}
+							<div class="so-field">
+								<label for="relay">Relay</label>
+								<div class="so-input-wrap">
+									<input id="relay" aria-label="Relay" value={relay} oninput={(event) => (relay = event.currentTarget.value)} placeholder={DELTANET_DEFAULT_RELAY} />
+								</div>
+								<p class="so-hint">This is the mail relay hosting your address.</p>
+							</div>
+							<div class="so-field">
+								<label for="signup-instance">Your home server</label>
+								<div class="so-input-wrap">
+									<input id="signup-instance" aria-label="Your home server" value={instance} oninput={(event) => (instance = event.currentTarget.value)} placeholder="http://localhost:4030" />
+								</div>
+							</div>
+						{/if}
+						<button type="button" class="so-cta" disabled={signupDisabled} onclick={submitSignup}>{signupPending ? 'Creating account…' : 'Create account'}</button>
+						<p class="so-footnote">Your address lives on the relay above. You can change it later.</p>
+					</div>
+				{:else if authStep === 'signup-success'}
+					<div class="so-auth-body so-redirect">
+						<h2>Account created</h2>
+						<p>Your address is <strong>{signupAddress}</strong>.</p>
+						<div class="so-chain" role="status">Continuing into sign-in...</div>
 					</div>
 				{:else}
 					<div class="so-auth-body so-redirect">
 						<div class="so-redirect-mark"><span class="brand-mark"><Icon name="sparkBig" /></span><Icon name="arrow" /><span class="so-globe"><Icon name="globe" /></span></div>
-						<h2>Redirecting to {instance}</h2>
-						<p>Your server will ask you to authorize PleromaNet. We will bring you right back.</p>
+						<h2>Redirecting to {selectedInstanceUrl}</h2>
+						<p>Your node will ask you to authorize DeltaNet. We will bring you right back.</p>
 						{#if authorizationUrl}
-							<a class="so-cta so-auth-link" href={authorizationUrl}>Open {instance} authorization</a>
+							<a class="so-cta so-auth-link" href={authorizationUrl}>Open {selectedInstanceUrl} authorization</a>
 						{:else if authError}
 							<p class="so-error">{authError}</p>
 						{:else}
@@ -217,9 +277,9 @@
 
 	<section class="so-band" aria-label="Principles">
 		<div class="so-shell so-band-inner">
-			<div><span>01</span><strong>No ads. No algorithm.</strong><p>A reverse-chronological timeline of the people you follow. That is it.</p></div>
-			<div><span>02</span><strong>You own your follows.</strong><p>Move servers and bring your social graph with you. ActivityPub all the way down.</p></div>
-			<div><span>03</span><strong>Run by humans.</strong><p>Real moderators with names and faces. Funded by members, not advertisers.</p></div>
+			<div><span>01</span><strong>Servers only see ciphertext.</strong><p>Posts are encrypted end-to-end before they ever leave this node. No relay, no admin, can read your feed.</p></div>
+			<div><span>02</span><strong>Your identity is an email address.</strong><p>No usernames tied to a platform. Your address lives on a chatmail relay you choose.</p></div>
+			<div><span>03</span><strong>Following is an invite link.</strong><p>No public firehose to search. Share a link, or receive one, to join a feed.</p></div>
 		</div>
 	</section>
 
@@ -270,25 +330,16 @@
 	.so-field label { display: block; margin-bottom: 6px; font-family: var(--mono); font-size: 9.5px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
 	.so-input-wrap { display: flex; align-items: stretch; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--panel-2); }
 	.so-input-wrap:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-	.so-input-wrap > span { padding: 11px 4px 11px 12px; color: var(--muted); font-size: 14px; }
-	.so-input-wrap input { min-width: 0; flex: 1; padding: 11px 10px 11px 0; border: 0; outline: 0; background: transparent; font-size: 14px; }
-	.so-picker-btn { padding: 0 12px; border-left: 1px solid var(--border); background: var(--accent-soft-2); color: var(--accent-ink); font-size: 12px; white-space: nowrap; }
-	.so-instance-pop { position: absolute; top: calc(100% + 6px); right: 0; left: 0; z-index: 20; padding: 4px; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--panel); box-shadow: 0 12px 30px rgba(28, 32, 70, 0.1); }
-	.so-instance-opt, .so-server-card { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px; border-radius: 4px; text-align: left; }
-	.so-instance-opt:hover, .so-instance-opt.sel, .so-server-card:hover, .so-server-card.sel { background: var(--accent-soft-2); }
-	.so-swatch { width: 18px; height: 18px; flex-shrink: 0; border: 1px solid var(--border); border-radius: 50%; }
-	.so-instance-opt span:last-child, .so-server-card span:last-child { min-width: 0; }
-	.so-instance-opt strong, .so-server-card strong { display: block; color: var(--ink); font-size: 13px; }
-	.so-instance-opt small, .so-server-card small { display: block; margin-top: 1px; color: var(--muted); font-size: 11px; }
+	.so-input-wrap input { min-width: 0; flex: 1; padding: 11px 12px; border: 0; outline: 0; background: transparent; font-size: 14px; }
+	.so-advanced-toggle { margin: 4px 0 14px; color: var(--muted); font-size: 12px; text-decoration: underline; text-underline-offset: 2px; }
+	.so-advanced-toggle:hover { color: var(--accent-ink); }
+	.so-hint { margin: 6px 0 0; color: var(--muted); font-size: 11px; line-height: 1.4; }
 	.so-cta { display: inline-flex; align-items: center; justify-content: center; width: 100%; min-height: 42px; padding: 11px 16px; border: 1px solid var(--accent-ink); border-radius: 4px; background: var(--accent-ink); color: white; font-weight: 700; }
 	.so-cta:hover { background: var(--ink); border-color: var(--ink); }
 	.so-cta:disabled { cursor: not-allowed; opacity: 0.55; background: var(--muted-2); border-color: var(--muted-2); }
 	.so-auth-link { text-decoration: none; }
 	.so-chain { margin-top: 14px; font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
 	.so-footnote { margin: 14px 0 0; color: var(--muted); font-size: 11.5px; line-height: 1.5; }
-	.so-server-list { display: grid; gap: 8px; margin-bottom: 14px; }
-	.so-check { display: flex; align-items: flex-start; gap: 8px; margin: 8px 0 12px; color: var(--ink-2); font-size: 12.5px; line-height: 1.45; }
-	.so-check input { margin-top: 2px; accent-color: var(--accent-ink); }
 	.so-redirect { text-align: center; }
 	.so-redirect-mark { display: flex; align-items: center; justify-content: center; gap: 18px; margin-bottom: 16px; color: var(--muted); }
 	.so-redirect-mark .brand-mark, .so-globe { width: 42px; height: 42px; }
@@ -297,7 +348,7 @@
 	.so-redirect p { margin: 0 auto 16px; max-width: 34ch; color: var(--muted); }
 	.so-cancel { margin-top: 14px; color: var(--muted); font-size: 12px; }
 	.so-cancel:hover { color: var(--accent-ink); }
-	.so-error { color: var(--bad); }
+	.so-error { color: var(--bad); margin: 0 0 14px; font-size: 12.5px; }
 	.so-band { padding: 30px 0; background: var(--ink); color: var(--panel); }
 	.so-band-inner { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 28px; }
 	.so-band span { display: block; margin-bottom: 8px; font-family: var(--mono); font-size: 10px; letter-spacing: 0.18em; color: rgba(255,255,255,0.5); }
@@ -327,8 +378,6 @@
 		.so-mini-cta { display: none; }
 		.so-hero { padding-top: 28px; }
 		.so-auth-body { padding: 18px; }
-		.so-input-wrap { flex-wrap: wrap; }
-		.so-picker-btn { width: 100%; min-height: 36px; border-top: 1px solid var(--border); border-left: 0; }
 		.so-peek { display: block; }
 		.so-peek a { display: inline-block; margin-top: 18px; }
 	}
