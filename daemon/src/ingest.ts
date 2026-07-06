@@ -8,7 +8,7 @@
  */
 import type { T } from '@deltachat/jsonrpc-client';
 import { parseMarkers, parseReaction } from './protocol.js';
-import type { Store } from './store.js';
+import type { Notification, Store } from './store.js';
 
 const DC_CONTACT_ID_SELF = 1;
 const FAVOURITE_EMOJI = '❤';
@@ -28,12 +28,20 @@ const FAVOURITE_EMOJI = '❤';
  *   side effects here — the favourite/react endpoints apply our own
  *   reactions to the store directly instead of relying on ingesting our
  *   own outgoing control DM.
+ *
+ * Returns the notifications actually created (i.e. not dedupe no-ops) —
+ * `Store.addNotification` already reports this per-call via its `| null`
+ * return, so this just collects the non-null results. Live ingestion
+ * (`main.ts`) uses this to broadcast exactly the newly-derived notifications
+ * over the streaming hub without a separate before/after diff against
+ * `listNotifications`.
  */
-export const deriveOnIngest = (store: Store, msg: T.Message, mid: string): void => {
-  if (msg.fromId === DC_CONTACT_ID_SELF) return;
+export const deriveOnIngest = (store: Store, msg: T.Message, mid: string): Notification[] => {
+  if (msg.fromId === DC_CONTACT_ID_SELF) return [];
 
   const accountAddr = msg.sender.address;
   const accountContactId = msg.fromId;
+  const created: Notification[] = [];
 
   const reaction = parseReaction(msg.text);
   if (reaction) {
@@ -46,7 +54,7 @@ export const deriveOnIngest = (store: Store, msg: T.Message, mid: string): void 
     if (reaction.kind === 'react' && store.isOwnMid(reaction.mid)) {
       const statusMsgId = store.resolveMid(reaction.mid) ?? undefined;
       const isFavourite = reaction.emoji === FAVOURITE_EMOJI;
-      store.addNotification({
+      const notification = store.addNotification({
         type: isFavourite ? 'favourite' : 'pleroma:emoji_reaction',
         accountAddr,
         accountContactId,
@@ -59,29 +67,34 @@ export const deriveOnIngest = (store: Store, msg: T.Message, mid: string): void 
         // dedupe against each other.
         dedupeEmoji: reaction.emoji,
       });
+      if (notification) created.push(notification);
     }
-    return;
+    return created;
   }
 
   const parsed = parseMarkers(msg.text);
 
   if (parsed.reply && store.isOwnMid(parsed.reply.mid)) {
-    store.addNotification({
+    const notification = store.addNotification({
       type: 'mention',
       accountAddr,
       accountContactId,
       statusMsgId: msg.id,
       dedupeMid: parsed.reply.mid,
     });
+    if (notification) created.push(notification);
   }
 
   if (parsed.boost && store.isOwnMid(parsed.boost.mid)) {
-    store.addNotification({
+    const notification = store.addNotification({
       type: 'reblog',
       accountAddr,
       accountContactId,
       statusMsgId: msg.id,
       dedupeMid: parsed.boost.mid,
     });
+    if (notification) created.push(notification);
   }
+
+  return created;
 };

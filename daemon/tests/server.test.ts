@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import type { Context } from 'hono';
+import type { UpgradeWebSocket, WSEvents } from 'hono/ws';
 import type { T } from '@deltachat/jsonrpc-client';
 import { createApp, type AppContext } from '../src/server.js';
 import type { TimelineQuery, Transport } from '../src/transport/types.js';
 import { createStore, ephemeralStorePath } from '../src/store.js';
 import { buildReplyText } from '../src/protocol.js';
+import { createStreamingHub, type StreamingSocket } from '../src/streaming.js';
 import { makeContact, makeMessage } from './entities.test.js';
 
 const BASE = 'http://localhost:4030';
@@ -1042,5 +1045,86 @@ describe('unconfigured mastodon endpoints', () => {
     });
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: 'not configured' });
+  });
+});
+
+describe('GET /api/v1/streaming: route registration', () => {
+  /**
+   * A minimal fake satisfying `hono/ws`'s `UpgradeWebSocket` first overload
+   * (`(createEvents) => MiddlewareHandler`) without a real websocket upgrade
+   * — Hono's fetch-based `app.request()` test helper can't drive an actual
+   * `Upgrade: websocket` handshake (see DEVLOG). Calling `createEvents(c)`
+   * lets this test exercise `server.ts`'s route wiring — including that it
+   * reaches the real streaming hub via `createStreamingEvents` — end to end,
+   * then immediately invokes `onOpen`/`onClose` against a fake
+   * `StreamingSocket` and returns a plain 200 so the request resolves.
+   */
+  const makeFakeUpgradeWebSocket = (onOpened?: (socket: StreamingSocket) => void): UpgradeWebSocket =>
+    ((createEvents: (c: Context) => WSEvents | Promise<WSEvents>) =>
+      async (c: Context) => {
+        const events = await createEvents(c);
+        const fakeSocket: StreamingSocket & { sent: string[] } = {
+          sent: [],
+          send(data: string) {
+            this.sent.push(data);
+          },
+        };
+        events.onOpen?.(new Event('open'), fakeSocket as any);
+        onOpened?.(fakeSocket); // hook to broadcast while still registered, before onClose below
+        events.onClose?.(new CloseEvent('close'), fakeSocket as any);
+        return c.body(JSON.stringify({ sent: fakeSocket.sent }), 200);
+      }) as unknown as UpgradeWebSocket;
+
+  it('is absent (404s) when upgradeWebSocket/hub are not provided to createApp', async () => {
+    const app = makeApp();
+    const res = await app.request('/api/v1/streaming');
+    expect(res.status).toBe(404);
+  });
+
+  it('registers both the bare path and the trailing-slash variant when wired', async () => {
+    const hub = createStreamingHub();
+    const app = createApp(makeConfiguredCtx(makeFakeTransport().transport), {
+      baseUrl: BASE,
+      upgradeWebSocket: makeFakeUpgradeWebSocket(),
+      hub,
+    });
+
+    for (const path of ['/api/v1/streaming', '/api/v1/streaming/']) {
+      const res = await app.request(`${path}?stream=user`);
+      expect(res.status).toBe(200);
+    }
+  });
+
+  it('registers the requesting socket with the hub for the requested stream', async () => {
+    const hub = createStreamingHub();
+    // Broadcast to 'public' while the socket is still registered (between
+    // onOpen and onClose), proving the route wired the real query-parsed
+    // stream name through to `hub.register` rather than some fixed default.
+    const app = createApp(makeConfiguredCtx(makeFakeTransport().transport), {
+      baseUrl: BASE,
+      upgradeWebSocket: makeFakeUpgradeWebSocket(() => hub.broadcastUpdate({ id: 'x' }, 999)),
+      hub,
+    });
+
+    const res = await app.request('/api/v1/streaming?stream=public');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { sent: string[] };
+    expect(body.sent).toHaveLength(1);
+    expect(JSON.parse(body.sent[0]!).stream).toEqual(['public']);
+  });
+
+  it('defaults to the "user" stream (no ?stream= param), which receives notifications', async () => {
+    const hub = createStreamingHub();
+    const app = createApp(makeConfiguredCtx(makeFakeTransport().transport), {
+      baseUrl: BASE,
+      upgradeWebSocket: makeFakeUpgradeWebSocket(() => hub.broadcastNotification({ id: 'n' })),
+      hub,
+    });
+
+    // Default stream (no ?stream=) is 'user' — notifications DO reach it.
+    const res = await app.request('/api/v1/streaming');
+    const body = (await res.json()) as { sent: string[] };
+    expect(body.sent).toHaveLength(1);
+    expect(JSON.parse(body.sent[0]!).event).toBe('notification');
   });
 });

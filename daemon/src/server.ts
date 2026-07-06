@@ -1,17 +1,15 @@
 import { Hono, type Context, type Next } from 'hono';
 import { cors } from 'hono/cors';
 import { serveStatic } from '@hono/node-server/serve-static';
+import type { UpgradeWebSocket, WSEvents } from 'hono/ws';
 import type { T } from '@deltachat/jsonrpc-client';
 import {
   avatarPlaceholderSvg,
   contactToAccount,
   headerSvg,
-  messageToStatus,
-  synthesizeAccount,
   timelineLinkHeader,
   type MastodonRelationship,
   type MastodonStatus,
-  type StatusResolver,
 } from './mastodon/entities.js';
 import type { Transport } from './transport/types.js';
 import { createMediaStore, isSupportedImageMime } from './media.js';
@@ -25,6 +23,8 @@ import {
 } from './protocol.js';
 import { createStore, ephemeralStorePath, type Store } from './store.js';
 import { deriveOnIngest } from './ingest.js';
+import { createStatusMapper, mapNotification } from './mapping.js';
+import { createStreamingEvents, type StreamingHub } from './streaming.js';
 
 const DC_CONTACT_ID_SELF = 1;
 const FAVOURITE_EMOJI = '❤';
@@ -46,6 +46,19 @@ export type ServerOptions = {
    * ephemeral (scratch-file-backed) store, which is fine for tests.
    */
   store?: Store;
+  /**
+   * Enables `GET /api/v1/streaming` (+ trailing-slash alias) when both this
+   * and `hub` are provided. Hono's node-server `upgradeWebSocket` helper
+   * (see `main.ts`, which also wires the `ws.WebSocketServer` into `serve`'s
+   * `websocket.server` option — that half lives outside `createApp` since it
+   * needs the real HTTP server instance `serve()` returns). Optional so
+   * `createApp` stays usable in tests/contexts with no real websocket
+   * transport (the hub logic itself is unit-tested directly against
+   * `./streaming.ts`, no `ws` involved).
+   */
+  upgradeWebSocket?: UpgradeWebSocket;
+  /** Streaming hub live messages/notifications are broadcast through; see `./streaming.ts`. Required iff `upgradeWebSocket` is provided. */
+  hub?: StreamingHub;
 };
 
 /**
@@ -70,30 +83,21 @@ const intParam = (value: string | undefined): number | undefined => {
   return Number.isFinite(parsed) ? parsed : undefined;
 };
 
-export const createApp = (ctx: AppContext, { baseUrl, staticDir, store: injectedStore }: ServerOptions) => {
+export const createApp = (
+  ctx: AppContext,
+  { baseUrl, staticDir, store: injectedStore, upgradeWebSocket, hub }: ServerOptions,
+) => {
   const app = new Hono();
   const mediaStore = createMediaStore();
   const store: Store = injectedStore ?? createStore(ephemeralStorePath());
 
-  // Cached per-request-cycle-ish: cleared whenever the transport identity
-  // could plausibly change (it can't, in practice, within one createApp
-  // lifetime) — simple in-memory cache of our own address for `favourited`/
-  // `me` flags, refreshed lazily from whichever transport call needs it.
-  let ownAddrCache: string | null = null;
-  const ownAddr = async (transport: Transport): Promise<string> => {
-    if (ownAddrCache === null) ownAddrCache = (await transport.self()).address;
-    return ownAddrCache;
-  };
-
-  const resolver: StatusResolver = {
-    resolveMid: (mid) => store.resolveMid(mid),
-    childrenCount: (mid) => store.childrenCount(mid),
-    boostCount: (mid) => store.boostCount(mid),
-    isOwnBoost: (mid) => store.isOwnBoost(mid),
-    midForMsgId: (msgId) => store.midForMsgId(msgId),
-    reactionTallies: (mid) => store.reactionTallies(mid),
-    ownAddr: () => ownAddrCache,
-  };
+  // Shared status/notification JSON mapping (see ./mapping.ts) — the same
+  // instance's `toStatus`/`ownAddr` (with its request-lifetime cache) backs
+  // every REST handler below, and `main.ts`'s live-ingestion path builds its
+  // own instance over the same `store` so streamed frames use identical
+  // mapping logic.
+  const mapper = createStatusMapper(store, baseUrl);
+  const { toStatus } = mapper;
 
   /**
    * Ingest a message into the store, tolerating a transport that can't
@@ -113,22 +117,6 @@ export const createApp = (ctx: AppContext, { baseUrl, staticDir, store: injected
     } catch (err) {
       console.error('ingest failed (non-fatal):', err);
     }
-  };
-
-  /** Map a message to a status, resolving reply/boost markers via the store, embedding boosted messages by re-fetching them from the transport. */
-  const toStatus = async (
-    transport: Transport,
-    msg: T.Message,
-    description: string | null = null,
-  ): Promise<MastodonStatus> => {
-    await ownAddr(transport); // warm the cache the resolver reads synchronously
-    const parsed = parseMarkers(msg.text);
-    let boostedMsg: T.Message | null = null;
-    if (parsed.boost) {
-      const boostedMsgId = store.resolveMid(parsed.boost.mid);
-      if (boostedMsgId !== null) boostedMsg = await transport.message(boostedMsgId);
-    }
-    return messageToStatus(msg, baseUrl, description, resolver, () => boostedMsg);
   };
 
   app.use(
@@ -205,6 +193,31 @@ export const createApp = (ctx: AppContext, { baseUrl, staticDir, store: injected
   );
 
   app.post('/oauth/revoke', (c) => c.json({}));
+
+  // --- Streaming (Mastodon websocket API) ----------------------------------
+  //
+  // `stream` (default 'user') and `access_token` (accepted unconditionally,
+  // consistent with the single-user auth model — see requireTransport)
+  // match the frontend's `buildPleromaStreamingUrl`
+  // (../frontend/src/lib/pleroma/streaming.ts). Registered under both
+  // '/api/v1/streaming' and the trailing-slash variant the frontend actually
+  // connects to. All the fan-out/dedupe/keepalive logic lives in
+  // `createStreamingEvents` (./streaming.ts, unit-tested with fake sockets —
+  // a real websocket upgrade can't be driven through Hono's `app.request()`
+  // test helper, so keeping this handler a one-line adapter is what makes
+  // the actual registration/cleanup behavior testable at all); this handler
+  // only wires the real `WSContext` through.
+  if (upgradeWebSocket && hub) {
+    // `createStreamingEvents` is typed against a narrow, hub-only
+    // `StreamingWsContext` (see ./streaming.ts) so it's testable with plain
+    // fakes; hono's real `WSContext.raw` is `unknown` (it's generic over the
+    // adapter), so this cast is the one place that ties the two together.
+    const streamingHandler = upgradeWebSocket(
+      (c) => createStreamingEvents(hub, c.req.query('stream')) as unknown as WSEvents,
+    );
+    app.get('/api/v1/streaming', streamingHandler);
+    app.get('/api/v1/streaming/', streamingHandler);
+  }
 
   // --- Instance -----------------------------------------------------------
 
@@ -483,7 +496,7 @@ export const createApp = (ctx: AppContext, { baseUrl, staticDir, store: injected
     if (!mid) return c.json({ error: 'cannot resolve message id to react to' }, 422);
     await ingest(transport, target);
 
-    const myAddr = await ownAddr(transport);
+    const myAddr = await mapper.ownAddr(transport);
     if (action === 'react') store.applyReaction(mid, myAddr, emoji);
     else store.retractReaction(mid, myAddr, emoji);
 
@@ -621,27 +634,9 @@ export const createApp = (ctx: AppContext, { baseUrl, staticDir, store: injected
       sinceId: c.req.query('since_id'),
     });
     const mapped = await Promise.all(
-      notifications.map(async (n) => {
-        const contact = n.accountContactId !== undefined ? await transport.contact(n.accountContactId) : null;
-        const account = contact
-          ? contactToAccount(contact, baseUrl)
-          : synthesizeAccount(null, n.accountAddr, baseUrl);
-        const status =
-          n.statusMsgId !== undefined
-            ? await (async () => {
-                const msg = await transport.message(n.statusMsgId!);
-                return msg ? toStatus(transport, msg, mediaStore.descriptionForMessage(msg.id)) : null;
-              })()
-            : null;
-        return {
-          id: n.id,
-          type: n.type,
-          created_at: n.createdAt,
-          account,
-          status,
-          ...(n.emoji !== undefined ? { emoji: n.emoji } : {}),
-        };
-      }),
+      notifications.map((n) =>
+        mapNotification(n, transport, mapper, baseUrl, (msgId) => mediaStore.descriptionForMessage(msgId)),
+      ),
     );
     return c.json(mapped);
   });

@@ -227,6 +227,61 @@ describe('backfill order-independence (two-pass ingest/derive)', () => {
   });
 });
 
+describe('deriveOnIngest: return value (newly created notifications)', () => {
+  it('returns the created notification for a fresh mention', () => {
+    seedOwnMessage();
+    const ref = { mid: OWN_MID, addr: 'self@example.org' };
+    const msg = makeMessage({ id: 2, fromId: 11, text: buildReplyText('nice!', ref), sender: { address: BOB } as any });
+
+    const created = deriveOnIngest(store, msg, 'reply-mid@example.org');
+
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({ type: 'mention', accountAddr: BOB, statusMsgId: 2 });
+  });
+
+  it('returns an empty array when nothing was derived (no reply/boost/reaction markers)', () => {
+    const msg = makeMessage({ id: 2, fromId: 11, text: 'just a plain post', sender: { address: BOB } as any });
+    expect(deriveOnIngest(store, msg, 'plain-mid@example.org')).toEqual([]);
+  });
+
+  it('returns an empty array when the target mid is not our own', () => {
+    const ref = { mid: 'not-ours@example.org', addr: 'other@example.org' };
+    const msg = makeMessage({ id: 2, fromId: 11, text: buildReplyText('nice!', ref), sender: { address: BOB } as any });
+    expect(deriveOnIngest(store, msg, 'reply-mid@example.org')).toEqual([]);
+  });
+
+  it('returns an empty array on a dedupe no-op (same reply seen twice)', () => {
+    seedOwnMessage();
+    const ref = { mid: OWN_MID, addr: 'self@example.org' };
+    const msg = makeMessage({ id: 2, fromId: 11, text: buildReplyText('nice!', ref), sender: { address: BOB } as any });
+
+    expect(deriveOnIngest(store, msg, 'reply-mid@example.org')).toHaveLength(1);
+    expect(deriveOnIngest(store, msg, 'reply-mid@example.org')).toEqual([]);
+  });
+
+  it('returns an empty array for SELF-authored messages', () => {
+    seedOwnMessage();
+    const ref = { mid: OWN_MID, addr: 'self@example.org' };
+    const msg = makeMessage({ id: 2, fromId: 1, text: buildReplyText('nice!', ref) });
+    expect(deriveOnIngest(store, msg, 'self-reply-mid@example.org')).toEqual([]);
+  });
+
+  it('returns an empty array for a reaction retraction (never notifies)', () => {
+    seedOwnMessage();
+    store.applyReaction(OWN_MID, BOB, '❤');
+    const msg = makeMessage({ id: 5, fromId: 11, text: buildUnreactionText('❤', OWN_MID), sender: { address: BOB } as any });
+    expect(deriveOnIngest(store, msg, 'unreact-mid@example.org')).toEqual([]);
+  });
+
+  it('returns the created favourite notification for a heart reaction', () => {
+    seedOwnMessage();
+    const msg = makeMessage({ id: 4, fromId: 11, text: buildReactionText('❤', OWN_MID), sender: { address: BOB } as any });
+    const created = deriveOnIngest(store, msg, 'react-mid@example.org');
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({ type: 'favourite', accountAddr: BOB, statusMsgId: 1 });
+  });
+});
+
 describe('deriveOnIngest: SELF messages never notify', () => {
   it('ignores a reply-shaped message authored by SELF', () => {
     seedOwnMessage();

@@ -671,3 +671,151 @@ switches on `phase`), `daemon/tests/ingest.test.ts` (two new tests),
 `pnpm test:integration` this round (several minutes, and live daemons are
 running against real chatmail data — out of scope for this fix, and exactly
 the risk this task closes off).
+
+## 2026-07-06 — Mastodon streaming websocket (live updates/notifications)
+
+Implemented `meta/issues/streaming-websocket.md`: `GET /api/v1/streaming`
+(+ trailing-slash) upgrades to a websocket and streams `update`/
+`notification` frames for live feed activity, matching the frontend's
+existing (already-wired, previously dark) streaming client exactly.
+
+**Read the frontend first (read-only, no changes)**:
+`frontend/src/lib/pleroma/streaming.ts`. Connects to
+`new URL('/api/v1/streaming/', origin)` (note: trailing slash) with
+`?stream=<user|public|public:local>&access_token=<token>` (`URLSearchParams`
+percent-encodes the `:` in `public:local`). `parsePleromaStreamingMessage`
+does `JSON.parse` on the raw frame expecting a top-level `{event, payload}`
+object, then `JSON.parse`s `payload` a *second time* (it's a JSON string,
+not an object) to get the actual status/notification. Only `event ===
+'update'` (mapped to `.status`, gated by a structural `isPleromaStatusPayload`
+type guard) and `event === 'notification'` (`.status` optional) are ever
+acted on; anything else is parsed but silently ignored by the page. The
+client reads no top-level `stream` field at all — so the Mastodon-standard
+`{"stream":[...], "event", "payload"}` shape the issue asks for is a strict
+superset of what this frontend needs, and matching it exactly costs nothing
+extra. No ping/pong or reconnect logic lives in the client itself (that's in
+the page, flat 60s-interval reconnect) — this only matters for how
+aggressively the server needs to keep the connection alive, not for frame
+shape.
+
+**`src/streaming.ts` (new)**: `createStreamingHub()` — `register(socket,
+streams)` (returns an unregister fn), `unregister(socket)`,
+`broadcastUpdate(statusJson, msgId)` (to `user`+`public`+`public:local`
+subscribers, deduped: a bounded FIFO of the last 1000 streamed msgIds so a
+`MsgsChanged` re-fire for the same message — see `deltachat.ts`'s
+`IncomingMsg`+`MsgsChanged` double-subscription — never streams a status
+twice), `broadcastNotification(notificationJson)` (`user` subscribers only).
+Sockets are accepted through a minimal structural `StreamingSocket` type
+(`{send(data: string), readyState?: number}`) — no `ws` import anywhere in
+this file, so the hub is fully unit-testable with plain object fakes.
+Frames: `JSON.stringify({stream: [<stream>], event, payload:
+JSON.stringify(payloadObj)})`, matching the frontend's double-JSON-decode
+exactly.
+
+Also in this file (not `server.ts`): `resolveStreamName` (pure `stream`
+query-param -> `StreamName` mapping, default `'user'`) and
+`createStreamingEvents(hub, streamParam)`, which builds the
+`{onOpen, onClose, onError}` triple `hono/ws`'s `upgradeWebSocket` helper
+wants — including the ws-level keepalive ping (`setInterval` every 30s on
+`ws.raw.ping()`, best-effort/try-catched, cleared on close/error alongside
+unregistering from the hub). Pulled these out of `server.ts`'s route
+registration deliberately: Hono's `app.request()` fetch-based test helper
+cannot drive a real `Upgrade: websocket` handshake (confirmed by reading
+`@hono/node-server`'s `upgradeWebSocket` implementation — it gates on
+`env[WAIT_FOR_WEBSOCKET_SYMBOL]`, only ever populated by a real
+`http.Server`'s `'upgrade'` event), so anything left inside the route
+handler closure would be untestable without a real HTTP+ws round trip.
+Keeping `server.ts`'s handler a one-line adapter
+(`upgradeWebSocket((c) => createStreamingEvents(hub, c.req.query('stream')))`)
+means the actual registration/keepalive/cleanup behavior is unit-tested
+directly against `createStreamingEvents` with a fake socket instead.
+
+**`src/mapping.ts` (new)**: factored `server.ts`'s inline `resolver`/
+`ownAddr`/`toStatus` closures out into `createStatusMapper(store, baseUrl)`,
+and the `GET /api/v1/notifications` handler's inline notification-JSON
+builder out into `mapNotification(n, transport, mapper, baseUrl,
+mediaDescriptionFor)`. `server.ts` now calls both instead of defining its
+own copies — required so `main.ts`'s live-ingestion path can map a freshly
+ingested message/notification to the *exact* same JSON shape the REST
+endpoints return, per the issue's "no divergent JSON shapes" requirement,
+without duplicating the mapping logic. One known small gap: live-streamed
+statuses for a freshly-uploaded image never carry alt-text
+(`mediaDescriptionFor` is `() => null` in `main.ts`), because `mediaStore`
+lives inside `createApp`'s closure and isn't plumbed out (would mean
+changing `createApp`'s return shape, touching all 36 existing call sites).
+Self-heals on the client's next REST poll, which does have `mediaStore`
+access — acceptable for a best-effort live nicety.
+
+**`src/ingest.ts`**: `deriveOnIngest` now returns `Notification[]` — the
+notifications actually created (not dedupe no-ops), by collecting
+`Store.addNotification`'s existing `| null` per-call return instead of
+discarding it. Chosen (per the issue) as the least invasive way for
+`main.ts` to know exactly which notifications are new after a live ingest,
+without a separate before/after diff against `listNotifications`. Existing
+callers (`server.ts`'s `ingest()`, `main.ts`'s old `ingestOnMessage`, all of
+`ingest.test.ts`) call it as a bare statement and are unaffected by the
+signature change.
+
+**`src/main.ts`**: `ingestOnMessage` now branches on `phase === 'combined'`
+(live events + ordinary timeline/message loads) to additionally map+broadcast
+after the existing store/derive bookkeeping — never for the `'index'`/
+`'derive'` startup-backfill phases, so backfill stays silent as required.
+For a feed message (`isFeedMessage`), maps it via the shared `mapper.toStatus`
+and calls `hub.broadcastUpdate`. For each notification `deriveOnIngest`
+returns, maps it via `mapNotification` and calls `hub.broadcastNotification`.
+`notifyFollower` (the `SecurejoinInviterProgress` handler) does the same for
+follow notifications. All of this is wrapped in try/catch — streaming is
+best-effort and must never make ingestion itself fail. If `transport` hasn't
+been assigned yet (the same startup-backfill race `mid`-passing already
+works around for indexing, see the fix above) a live event during that
+narrow window is simply not streamed rather than crashing — acceptable,
+since indexing/derivation (the load-bearing half) still happens
+unconditionally.
+
+**Websocket transport wiring**: added `ws`+`@types/ws` as dependencies. The
+issue's writeup mentioned `@hono/node-server/ws`/`createNodeWebSocket`
+(the *old*, `@hono/node-server`-v1-era API, which lives in a *separate*
+package, `@hono/node-ws`, whose peer dependency pins `@hono/node-server
+^1.19.11` — incompatible with this repo's `^2.0.8`). Checked
+`node_modules/@hono/node-server`'s actual shipped `.d.mts`: v2 exports
+`upgradeWebSocket` directly from its root, no `injectWebSocket` step at all
+— just `serve({fetch, websocket: {server}})` with a `ws.WebSocketServer({
+noServer: true})` (confirmed against the package's own README). No
+`pnpm-workspace.yaml` build-approval changes were needed (`ws` has no
+postinstall script). `server.ts`'s `ServerOptions` grew optional
+`upgradeWebSocket`/`hub` fields; the streaming route (both `/api/v1/streaming`
+and the trailing-slash form) is only registered when both are present, so
+`createApp`'s existing 36 call sites (none of which pass these) are
+unaffected. `main.ts` wires real ones in and calls
+`serve({..., websocket: {server: wss}})`.
+
+Manually smoke-tested end to end: booted `main.ts` unconfigured (no account)
+and confirmed via `curl` with real `Upgrade: websocket` handshake headers
+that `GET /api/v1/streaming?stream=user&access_token=x` returns a genuine
+`HTTP/1.1 101 Switching Protocols` with matching `Sec-WebSocket-Accept` —
+proving the `upgradeWebSocket`/`WebSocketServer`/`serve` wiring is correct
+end-to-end, not just type-checked.
+
+New unit tests: `tests/streaming.test.ts` (26 tests — frame format/double-
+JSON-encoding, stream filtering including "one frame per socket even when
+subscribed to multiple matching streams", dedupe by msgId including the
+1000-id eviction boundary, register/unregister lifecycle including
+readyState-gated sends, `resolveStreamName`, and `createStreamingEvents`'s
+onOpen/onClose/onError + ping-interval + ping-failure-triggers-cleanup
+behavior via fake timers), plus additions to `tests/ingest.test.ts`
+(`deriveOnIngest`'s new return value: created/empty/dedupe/SELF/retraction
+cases) and `tests/server.test.ts` (streaming route registration: absent
+without `upgradeWebSocket`+`hub`, both path variants present when wired,
+correct stream-name wiring — via a fake `UpgradeWebSocket` that invokes
+`createEvents(c)` directly, since Hono's `app.request()` can't drive a real
+websocket upgrade).
+
+Files changed: `daemon/src/streaming.ts` (new), `daemon/src/mapping.ts`
+(new), `daemon/src/ingest.ts` (`deriveOnIngest` return type), `daemon/src/
+server.ts` (extracted mapping usage, streaming route registration),
+`daemon/src/main.ts` (hub/mapper wiring, `ingestOnMessage`/`notifyFollower`
+broadcasting, `serve()`/`WebSocketServer` wiring), `daemon/package.json`
+(`ws` dependency, `@types/ws` devDependency), `daemon/tests/streaming.test.ts`
+(new), `daemon/tests/ingest.test.ts`, `daemon/tests/server.test.ts`. `pnpm
+test` (382 tests) and `pnpm check` green. Did not run `pnpm test:integration`
+(per task instructions).
