@@ -61,3 +61,4 @@
 - [x] [61 DeltaNet signup flow](issues/61-deltanet-signup-flow.md)
 - [x] [62 Invite and follow-by-invite UI](issues/62-invite-and-follow-ui.md)
 - [x] [Reconcile streamed notification status into rendered posts](issues/63-reconcile-streamed-notification-status-into-rendered-posts.md)
+- [x] [64 Render reaction chips on thread ancestors and descendants](issues/64-thread-ancestor-descendant-reaction-chips.md)

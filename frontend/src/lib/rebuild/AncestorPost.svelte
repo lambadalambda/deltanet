@@ -6,8 +6,10 @@
 	import PostCW from './PostCW.svelte';
 	import PostHead from './PostHead.svelte';
 	import PostMedia from './PostMedia.svelte';
+	import PostReactions from './PostReactions.svelte';
 	import QuotedPost from './QuotedPost.svelte';
 	import type { CustomEmoji } from '$lib/social/types';
+	import type { PleromaReactionView } from '$lib/pleroma/ui';
 	import { normalizeRenderableAttachments, openLightbox } from './attachments';
 	import type { BannerVariant, PostLike } from './attachments';
 
@@ -24,6 +26,7 @@
 		mentionAccts?: Record<string, string>;
 		addressees?: string[];
 		quotedPost?: Record<string, unknown>;
+		reactions?: PleromaReactionView[];
 		bookmarked?: boolean;
 		own?: boolean;
 		authorHandle?: string;
@@ -71,6 +74,7 @@
 				<QuotedPost quoted={post.quotedPost} />
 				<PostMedia post={post} onOpen={handleLightbox} onVote={onVote ? (pollId, choice) => onVote(post.id, pollId, choice) : undefined} />
 			</PostCW>
+			<PostReactions reactions={post.reactions} onToggle={onAction ? (reaction) => onAction(post.id, `reaction:${reaction.name}`) : undefined} onAdd={onReact ? (anchor) => onReact(post.id, anchor) : undefined} />
 			<PostActions post={post} replyExpanded={replyExpanded} replyControlsId={replyControlsId} onAction={(key) => onAction?.(post.id, key)} onReact={onReact ? (anchor) => onReact(post.id, anchor) : undefined} canManage={canManage} />
 		</div>
 	</div>

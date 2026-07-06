@@ -7,9 +7,11 @@
 	import PostCW from './PostCW.svelte';
 	import PostHead from './PostHead.svelte';
 	import PostMedia from './PostMedia.svelte';
+	import PostReactions from './PostReactions.svelte';
 	import QuotedPost from './QuotedPost.svelte';
 	import ReplyPostBranch from './ReplyPost.svelte';
 	import type { CustomEmoji } from '$lib/social/types';
+	import type { PleromaReactionView } from '$lib/pleroma/ui';
 	import { normalizeRenderableAttachments, openLightbox } from './attachments';
 	import type { BannerVariant, PostLike } from './attachments';
 
@@ -30,6 +32,7 @@
 		statusUrl?: string;
 		addressees?: string[];
 		quotedPost?: Record<string, unknown>;
+		reactions?: PleromaReactionView[];
 		replies: number;
 		boosts: number;
 		favs: number;
@@ -97,6 +100,7 @@
 				<QuotedPost quoted={post.quotedPost} />
 				<PostMedia post={post} onOpen={(idx) => handleLightbox(post, idx)} onVote={onVote ? (pollId, choice) => onVote(post.id, pollId, choice) : undefined} />
 			</PostCW>
+			<PostReactions reactions={post.reactions} onToggle={onAction ? (reaction) => onAction(post.id, `reaction:${reaction.name}`) : undefined} onAdd={onReact ? (anchor) => onReact(post.id, anchor) : undefined} />
 			<PostActions post={post} replyExpanded={inlineReplyOpenFor(post)} replyControlsId={inlineReplyOpenFor(post) ? inlineReplyComposerId(post) : undefined} onAction={(key) => onAction?.(post.id, key)} onReact={onReact ? (anchor) => onReact(post.id, anchor) : undefined} canManage={canManage} />
 			{#if nestedReplies.length > 0 && !nestedRepliesOpenFor(post)}
 				<button type="button" class="show-replies" onclick={() => onShowNested?.(post.id)}>

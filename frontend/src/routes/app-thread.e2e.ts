@@ -1116,6 +1116,57 @@ test('real thread route renders the focused post emoji reaction row and toggles 
 	await expect(reactions.getByRole('button', { name: /❤️ · 5 reactions · you reacted/ })).toHaveAttribute('aria-pressed', 'true');
 });
 
+test('real thread route renders emoji reaction chips on ancestors and descendants', async ({ page }) => {
+	await authenticate(page);
+	const reactedAncestor = {
+		...threadAncestor,
+		pleroma: {
+			...threadAncestor.pleroma,
+			emoji_reactions: [{ name: '❤️', count: 1, me: false }]
+		}
+	};
+	const reactedReply = {
+		...threadReply,
+		pleroma: {
+			...threadReply.pleroma,
+			emoji_reactions: [
+				{ name: '❤️', count: 3, me: false },
+				{ name: 'blobcat', count: 2, me: true, url: 'https://cdn.example/emoji/blobcat.png' }
+			]
+		}
+	};
+	await mockThread(page, threadStatus, [reactedReply, nestedThreadReply, secondThreadReply], [reactedAncestor]);
+	await page.route(
+		(url) => url.href.startsWith('https://pleroma.example/api/v1/pleroma/statuses/ancestor-1/reactions/'),
+		async (route) => {
+			await fulfillJson(route, {
+				...reactedAncestor,
+				pleroma: {
+					...reactedAncestor.pleroma,
+					emoji_reactions: [{ name: '❤️', count: 2, me: true }]
+				}
+			});
+		}
+	);
+	await setViewport(page, 'desktop');
+	await page.goto('/app/thread/status-1');
+
+	const ancestor = page.getByTestId('thread-ancestor');
+	const ancestorReactions = ancestor.getByTestId('post-reactions');
+	await expect(ancestorReactions).toBeVisible();
+	await expect(ancestorReactions.getByRole('button', { name: /❤️ · 1 reaction$/ })).toHaveAttribute('aria-pressed', 'false');
+
+	const reply = page.getByTestId('thread-reply').filter({ hasText: 'we used to log off. when did that stop being a thing.' });
+	const replyReactions = reply.getByTestId('post-reactions');
+	await expect(replyReactions).toBeVisible();
+	await expect(replyReactions.locator('img[alt=":blobcat:"]')).toBeVisible();
+	await expect(replyReactions.getByRole('button', { name: /:blobcat: · 2 reactions · you reacted/ })).toHaveAttribute('aria-pressed', 'true');
+	await expect(replyReactions.getByRole('button', { name: /❤️ · 3 reactions$/ })).toHaveAttribute('aria-pressed', 'false');
+
+	await ancestorReactions.getByRole('button', { name: /❤️ · 1 reaction$/ }).click();
+	await expect(ancestorReactions.getByRole('button', { name: /❤️ · 2 reactions · you reacted/ })).toHaveAttribute('aria-pressed', 'true');
+});
+
 test('real thread route links reply chips and body mentions to full federated handles', async ({ page }) => {
 	await authenticate(page);
 	const remoteReply: PleromaStatus = {

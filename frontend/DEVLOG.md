@@ -1,4 +1,27 @@
 
+## 2026-07-06 — Thread ancestor/descendant reaction chips (issue 64)
+
+Bug (daemon-verified): thread ancestor rows never rendered emoji-reaction chips
+even when `pleroma.emoji_reactions` was non-empty; only reply/boost/star counts
+showed. Descendant (reply/nested) rows had the same gap.
+
+Root cause: `Post.svelte` (timeline) and `FocusedPost.svelte` (thread main)
+render `<PostReactions>` above `<PostActions>`, but `AncestorPost.svelte` and
+`ReplyPost.svelte` rendered only `<PostActions>` — they never imported or
+rendered `PostReactions`. The `reactions` data already flows onto the post
+objects (`threadPostForRebuild` → `postForRebuild`), and the thread
+`onAction`/`onReact` handlers already process `reaction:${name}` toggles and the
+add-reaction anchor, so the fix was purely presentational.
+
+Fix: added `PostReactions` (reusing the timeline component) to both
+`AncestorPost.svelte` and `ReplyPost.svelte`, wired identically to the timeline
+row (`onToggle` → `onAction(id, 'reaction:'+name)`, `onAdd` → `onReact(id,
+anchor)`), plus the `reactions?: PleromaReactionView[]` prop type on each.
+
+TDD: new Playwright case in app-thread.e2e.ts mocks `/statuses/:id/context` with
+reactions on an ancestor and a descendant, asserts chips + me-state on both, and
+toggles an ancestor reaction. Full test (320) + check green. Issue 64 archived.
+
 ## 2026-07-06 — Avatar/banner upload wiring (settings)
 
 Wired the settings page "Choose avatar"/"Choose banner" buttons to real file
