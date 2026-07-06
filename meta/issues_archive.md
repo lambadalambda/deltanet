@@ -18,3 +18,4 @@
 - [x] [Dual-copy identity split: canonical-mid unification](issues/canonical-mid-unification.md)
 - [x] [Thread ancestor/descendant rows do not render reactions](issues/thread-rows-reactions.md)
 - [x] [Wire convention v1: logical post UUIDs](issues/post-uuids.md)
+- [x] [Non-follower nodes: DM-only replies invisible; own reactions lost on re-index](issues/non-follower-thread-rendering.md)
