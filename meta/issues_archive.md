@@ -1,5 +1,6 @@
 # Completed Issues
 
+- [x] [Wire up avatar/banner upload in the settings UI](issues/profile-avatar-banner-upload-ui.md)
 - [x] [No broken images: default header and avatar](issues/default-header-avatar-images.md)
 - [x] [Image attachments on posts](issues/image-attachments.md)
 - [x] [Own posts show "Me" in timelines](issues/timeline-self-display-name.md)
@@ -11,3 +12,4 @@
 - [x] [Notifications](issues/notifications.md)
 - [x] [Real-time streaming (Mastodon websocket API)](issues/streaming-websocket.md)
 - [x] [Replies lack in_reply_to_account_id and mentions](issues/reply-mentions-metadata.md)
+- [x] [Profile editing (name, bio, avatar)](issues/profile-editing.md)

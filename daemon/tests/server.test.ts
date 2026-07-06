@@ -338,6 +338,67 @@ describe('deltanet: default images', () => {
   });
 });
 
+describe('deltanet: served-file content types', () => {
+  // Writes a temp file with the given extension, points a fake transport's
+  // avatar/blob route at it, and returns the app + the served route paths.
+  const withServedFile = async (ext: string, bytes = 'filebytes') => {
+    const { writeFile } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { randomUUID } = await import('node:crypto');
+    const path = join(tmpdir(), `deltanet-served-${randomUUID()}${ext}`);
+    await writeFile(path, bytes);
+    const { transport } = makeFakeTransport();
+    transport.avatarPath = async () => path;
+    transport.blobPath = async () => path;
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    return { app, path, bytes };
+  };
+
+  it('serves a stored PNG avatar as image/png', async () => {
+    const { app, bytes } = await withServedFile('.png');
+    const res = await app.request('/deltanet/avatar/11');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('image/png');
+    expect(await res.text()).toBe(bytes);
+  });
+
+  it('maps jpg/jpeg avatars to image/jpeg', async () => {
+    for (const ext of ['.jpg', '.jpeg']) {
+      const { app } = await withServedFile(ext);
+      const res = await app.request('/deltanet/avatar/11');
+      expect(res.headers.get('content-type')).toBe('image/jpeg');
+    }
+  });
+
+  it('maps webp/gif/svg avatars to their image types', async () => {
+    const cases: Array<[string, string]> = [
+      ['.webp', 'image/webp'],
+      ['.gif', 'image/gif'],
+      ['.svg', 'image/svg+xml'],
+    ];
+    for (const [ext, mime] of cases) {
+      const { app } = await withServedFile(ext);
+      const res = await app.request('/deltanet/avatar/11');
+      expect(res.headers.get('content-type')).toBe(mime);
+    }
+  });
+
+  it('falls back to application/octet-stream for an unknown extension', async () => {
+    const { app } = await withServedFile('.bin');
+    const res = await app.request('/deltanet/avatar/11');
+    expect(res.headers.get('content-type')).toBe('application/octet-stream');
+  });
+
+  it('serves a blob with a content type derived from its extension', async () => {
+    const { app, bytes } = await withServedFile('.png');
+    const res = await app.request('/deltanet/blob/12');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('image/png');
+    expect(await res.text()).toBe(bytes);
+  });
+});
+
 describe('PATCH /api/v1/accounts/update_credentials', () => {
   it('updates display_name and note (JSON body) and returns the fresh account with stats', async () => {
     const { transport, profileUpdates } = makeFakeTransport();

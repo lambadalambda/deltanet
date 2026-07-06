@@ -466,6 +466,12 @@ export const openTransport = async (
 
     post: async (text: string, opts?: PostOptions) => {
       const chatId = await ensureFeedChat();
+      // Our own just-sent message has the SELF contact as sender, whose
+      // displayName is the placeholder "Me" — apply the same override
+      // loadMessages/self() do so the returned status carries the configured
+      // display name (this message is echoed straight back to the poster).
+      const loadOwn = async (msgId: number): Promise<T.Message> =>
+        withSelfDisplayName(await rpc.getMessage(accountId, msgId), await selfDisplayName());
       if (opts?.file || opts?.quotedText) {
         const base: T.MessageData = {
           text: text || null,
@@ -479,10 +485,10 @@ export const openTransport = async (
           quotedText: opts?.quotedText ?? null,
         };
         const msgId = await rpc.sendMsg(accountId, chatId, base);
-        return rpc.getMessage(accountId, msgId);
+        return loadOwn(msgId);
       }
       const msgId = await rpc.miscSendTextMessage(accountId, chatId, text);
-      return rpc.getMessage(accountId, msgId);
+      return loadOwn(msgId);
     },
 
     feedInvite: async () => {

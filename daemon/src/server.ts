@@ -101,6 +101,26 @@ const profileScratchDir = (): string => join(tmpdir(), `deltanet-profile-${rando
 const imageExt = (mime: string): string =>
   mime === 'image/jpeg' ? '.jpg' : mime === 'image/webp' ? '.webp' : mime === 'image/gif' ? '.gif' : '.png';
 
+/**
+ * Content-Type for a file served from disk (avatars/blobs/headers), sniffed
+ * from its extension. Avatars/blobs are DC blob-store copies whose paths keep
+ * the original extension, so this is enough to stop them defaulting to
+ * text/plain. Unknown extensions fall back to a safe binary type.
+ */
+const IMAGE_MIME_BY_EXT: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  webp: 'image/webp',
+  gif: 'image/gif',
+  svg: 'image/svg+xml',
+};
+const contentTypeForPath = (path: string): string => {
+  const dot = path.lastIndexOf('.');
+  const ext = dot === -1 ? '' : path.slice(dot + 1).toLowerCase();
+  return IMAGE_MIME_BY_EXT[ext] ?? 'application/octet-stream';
+};
+
 export const createApp = (
   ctx: AppContext,
   { baseUrl, staticDir, store: injectedStore, upgradeWebSocket, hub, dataDir }: ServerOptions,
@@ -691,7 +711,9 @@ export const createApp = (
     const { readFile } = await import('node:fs/promises');
     const data = await readFile(path).catch(() => null);
     if (!data) return c.notFound();
-    return new Response(new Uint8Array(data));
+    return new Response(new Uint8Array(data), {
+      headers: { 'Content-Type': contentTypeForPath(path) },
+    });
   };
 
   const NEUTRAL_BADGE = { initial: '?', color: '#2a3542' };

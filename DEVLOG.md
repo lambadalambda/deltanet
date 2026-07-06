@@ -895,3 +895,32 @@ option, avatar/header persistence), `daemon/src/main.ts` (`dataDir` wiring),
 `daemon/tests/server.test.ts` (fake transport `updateProfile` + recorder, new
 update_credentials/header suites). `pnpm test` (413 tests) and `pnpm check`
 green. Did not run `pnpm test:integration` (per task instructions).
+
+## 2026-07-06 — profile federation findings (live verification)
+
+- Display name and avatar federate on ANY outgoing message (encrypted
+  headers) — verified: bob's node showed "Carol Sparkle" + her avatar file
+  after one broadcast post.
+- **Bio (`selfstatus`) federates only via 1:1 messages**, not broadcasts —
+  verified empirically: two broadcast posts left bob's copy empty; a single
+  reaction control DM delivered it. In practice bios spread to anyone you
+  interact with (reply DM copies, reactions). Broadcast-only followers keep
+  an empty bio until first direct interaction. Documented limitation.
+- Headers/banners are local-only (no DC equivalent), as designed.
+
+## 2026-07-06 — two live-found bug fixes
+
+- `transport.post()` (`daemon/src/transport/deltachat.ts`) returned raw
+  `rpc.getMessage(...)`, so the just-posted status echoed back with the SELF
+  placeholder display name "Me". Now wraps both send paths in a `loadOwn`
+  helper applying the same `withSelfDisplayName` override `loadMessages`/`self()`
+  use. Audited the file: `post()` was the only single-raw-message returner;
+  `message()` already routes through `loadMessages`, `blobPath()` only reads
+  `msg.file`. No transport-layer unit test by convention (openTransport is only
+  exercised by the integration suite, not run here) — the `server.test.ts` fake
+  doesn't model the "Me" placeholder so it can't cover this.
+- `serveFile` (`daemon/src/server.ts`) served avatars/blobs/headers with no
+  Content-Type (defaulted to text/plain). Added `contentTypeForPath` sniffing
+  the extension (png/jpg/jpeg/webp/gif/svg → image/*; else
+  application/octet-stream); no new RPC calls. Covered by new
+  `served-file content types` suite in `daemon/tests/server.test.ts`.
