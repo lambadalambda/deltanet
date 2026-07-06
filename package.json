@@ -10,7 +10,8 @@
     "test": "vitest run --exclude 'tests/integration/**'",
     "test:watch": "vitest --exclude 'tests/integration/**'",
     "test:integration": "vitest run tests/integration --testTimeout 240000",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "setup-account": "tsx scripts/setup-account.ts"
   },
   "packageManager": "pnpm@11.5.2",
   "dependencies": {
