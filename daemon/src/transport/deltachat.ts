@@ -13,6 +13,22 @@ const FEED_CHAT_TYPES: ReadonlySet<T.ChatType> = new Set([
   'InBroadcast',
 ]);
 
+/**
+ * Pure predicate: is this message worth passing to `notifyOnMessage`?
+ *
+ * Filters out info/system messages (chat-membership changes etc.) and
+ * "empty" messages with no sender, no text, and no attached file — these
+ * show up as artifacts of chat-level `MsgsChanged` events (e.g. drafts) and
+ * carry nothing a `Store` derivation pass could act on. Extracted as a pure
+ * function so the filtering logic is unit-testable without a running core.
+ */
+export const shouldIngest = (msg: T.Message): boolean => {
+  if (msg.isInfo) return false;
+  if (msg.fromId === 0) return false;
+  if (!msg.text && !msg.file) return false;
+  return true;
+};
+
 export type ChatmailCredentials = {
   addr: string;
   password: string;
@@ -62,12 +78,41 @@ export const openTransport = async (
   }
   await rpc.startIo(accountId);
 
+  // Reaction/reply control DMs from a node we don't yet have an accepted
+  // 1:1 chat with land in a contact-request chat. Core suppresses
+  // `IncomingMsg` for those (confirmed live: feed/broadcast messages ingest
+  // fine, but contact-request DMs never fire the event) — accepting the
+  // chat as soon as we see a message in it stops it being a pending request
+  // so future deliveries flow through normal events. Best-effort: a failure
+  // here must never block ingestion.
+  const acceptIfContactRequest = async (chatId: number): Promise<void> => {
+    try {
+      const chat = await rpc.getBasicChatInfo(accountId, chatId);
+      if (chat.isContactRequest) await rpc.acceptChat(accountId, chatId);
+    } catch (err) {
+      console.error('failed to accept contact-request chat (non-fatal):', err);
+    }
+  };
+
   const notifyOnMessage = async (msg: T.Message): Promise<void> => {
+    if (!shouldIngest(msg)) return;
+    await acceptIfContactRequest(msg.chatId);
     if (!options.onMessage) return;
     try {
       await options.onMessage(msg);
     } catch (err) {
       console.error('onMessage ingestion failed (non-fatal):', err);
+    }
+  };
+
+  /** Load a message by id and pass it through `notifyOnMessage`, tagging errors with their source event. */
+  const loadAndNotify = async (msgId: number, eventKind: string): Promise<void> => {
+    try {
+      const msg = await rpc.getMessage(accountId, msgId);
+      const displayname = await selfDisplayName();
+      await notifyOnMessage(withSelfDisplayName(msg, displayname));
+    } catch (err) {
+      console.error(`failed to load message from ${eventKind} for ingestion:`, err);
     }
   };
 
@@ -137,14 +182,23 @@ export const openTransport = async (
   // copies to us) as soon as the core reports them.
   dc.on('IncomingMsg', (eventAccountId, event) => {
     if (eventAccountId !== accountId) return;
-    void rpc
-      .getMessage(accountId, event.msgId)
-      .then(async (msg) => {
-        if (msg.isInfo) return;
-        const displayname = await selfDisplayName();
-        await notifyOnMessage(withSelfDisplayName(msg, displayname));
-      })
-      .catch((err) => console.error('failed to load incoming message for ingestion:', err));
+    void loadAndNotify(event.msgId, 'IncomingMsg');
+  });
+
+  // Safety net: per its own doc comment, `IncomingMsg` fires with "no extra
+  // MsgsChanged event sent together with this event" for the normal case —
+  // but live testing showed the *reverse* isn't true for messages that land
+  // in a contact-request chat (reaction/reply control DMs from a node we
+  // haven't accepted yet): those never fire `IncomingMsg` at all, only
+  // `MsgsChanged`. Subscribing here catches that case, plus anything else
+  // IncomingMsg might miss. `msgId` is 0 for chat-level changes (e.g. drafts,
+  // multiple messages affected at once) — nothing to load, so skip those.
+  // Downstream ingestion is idempotent (`Store.ingestMessage` dedupes via
+  // `ingestedMsgIds`), so double-delivery via both events is harmless.
+  dc.on('MsgsChanged', (eventAccountId, event) => {
+    if (eventAccountId !== accountId) return;
+    if (event.msgId === 0) return;
+    void loadAndNotify(event.msgId, 'MsgsChanged');
   });
 
   // Fires when someone finishes securejoin-ing our feed broadcast (i.e. a
@@ -167,6 +221,42 @@ export const openTransport = async (
     }
     return null;
   };
+
+  const BACKFILL_BATCH_SIZE = 50;
+
+  /**
+   * Startup backfill: walk every chat's message ids and run them through
+   * `notifyOnMessage`. Catches two gaps events alone can't cover: messages
+   * that arrived while the daemon was down, and — per the bug this fixes —
+   * contact-request DMs for which core may never have emitted an event we
+   * were subscribed to in the first place. Sequential (one chat/batch at a
+   * time) rather than parallel: this is a background sweep, not
+   * latency-sensitive, and a simple sequential loop is easiest to reason
+   * about for concurrency. Errors are logged per-chat so one bad chat
+   * doesn't abort the whole sweep.
+   */
+  const backfill = async (): Promise<void> => {
+    const chatIds = await rpc.getChatlistEntries(accountId, null, null, null);
+    for (const chatId of chatIds) {
+      try {
+        const msgIds = await rpc.getMessageIds(accountId, chatId, false, false);
+        for (let i = 0; i < msgIds.length; i += BACKFILL_BATCH_SIZE) {
+          const batch = msgIds.slice(i, i + BACKFILL_BATCH_SIZE);
+          const loaded = await rpc.getMessages(accountId, batch);
+          const displayname = await selfDisplayName();
+          const messages = Object.values(loaded)
+            .filter((res): res is Extract<T.MessageLoadResult, { kind: 'message' }> => res.kind === 'message')
+            .map((msg) => withSelfDisplayName(msg, displayname));
+          for (const msg of messages) await notifyOnMessage(msg);
+        }
+      } catch (err) {
+        console.error(`backfill failed for chat ${chatId} (non-fatal):`, err);
+      }
+    }
+  };
+
+  // Fire-and-forget: must not delay openTransport's resolution.
+  void backfill().catch((err) => console.error('startup backfill failed (non-fatal):', err));
 
   return {
     accountId,

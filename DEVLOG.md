@@ -360,3 +360,79 @@ implementation, then endpoint tests against extended fakes).
   clean) both green. Did not touch `tests/integration/federation.test.ts`
   or run `pnpm test:integration`, `../frontend`, or `data/`, per
   instructions.
+
+## 2026-07-06 — bug fix: reaction/reply DMs from contact-request chats never ingested
+
+Bug found in live testing: reaction/reply control DMs from another node
+land in the recipient's Delta Chat database (in a 1:1 chat with
+`isContactRequest=true`) but were never ingested. Feed/broadcast messages
+ingested fine; only messages arriving in a *pending* 1:1 (contact-request)
+chat were silently dropped. Root cause: `dc.on('IncomingMsg', ...)` in
+`src/transport/deltachat.ts` never fired for those messages — apparently
+core suppresses `IncomingMsg` for contact-request chats, even though it
+still updates the database and (per live testing) still emits
+`MsgsChanged`. Consequence: reactions/likes from remote nodes we hadn't yet
+accepted a chat with never registered — store stayed empty, no
+favourite/emoji_reaction notifications ever fired.
+
+Checked `node_modules/@deltachat/jsonrpc-client/dist/generated/types.d.ts`
+for the exact event semantics before touching anything:
+- `IncomingMsg { chatId, msgId }`: doc comment says "there is no extra
+  MsgsChanged event sent together with this event" — describing the
+  *normal* case (one or the other, not both). It says nothing about
+  contact-request chats specifically; live testing is what showed those
+  chats get `MsgsChanged` only, never `IncomingMsg`.
+- `MsgsChanged { chatId, msgId }`: msgId is 0 "if only a single chat is
+  affected" is inverted in the actual field doc — reread: chatId/msgId are
+  each "set if only a single [chat/message] is affected... otherwise 0".
+  So `msgId === 0` means a chat-level change (multiple messages/chats
+  affected, e.g. a draft) with nothing specific to load — skipped.
+- `IncomingMsgBunch`: no payload beyond `kind` (a "stop spamming
+  notifications, batch them" hint for UIs) — carries no chatId/msgId, so
+  it's useless for ingestion and wasn't subscribed to.
+- No other event kind in the file documents contact-request-specific
+  delivery semantics.
+
+Fix (`src/transport/deltachat.ts`), three parts:
+1. Subscribed to `MsgsChanged` alongside `IncomingMsg`, routed through the
+   same `notifyOnMessage` funnel (via a new shared `loadAndNotify(msgId,
+   eventKind)` helper). Skips `msgId === 0`. Downstream ingestion
+   (`Store.ingestMessage`) already dedupes via `ingestedMsgIds`, so
+   double-delivery from both events firing for the same message is a
+   harmless no-op.
+2. Startup backfill: a fire-and-forget `backfill()` runs after `startIo`
+   (not awaited in the main `openTransport` path, so it never delays
+   daemon startup) — walks every chat via `getChatlistEntries` →
+   `getMessageIds` → `getMessages` in batches of 50, sequentially, each
+   message run through `notifyOnMessage`. Catches messages that arrived
+   while the daemon was down *and* anything both events missed. Per-chat
+   try/catch so one bad chat doesn't abort the sweep.
+3. Accept contact-request chats on first sight: `notifyOnMessage` now
+   calls a new `acceptIfContactRequest(chatId)` before handing off to
+   `options.onMessage` — checks `getBasicChatInfo(...).isContactRequest`
+   and calls `acceptChat` (best-effort, caught and logged) so the 1:1 stops
+   being a pending request and future deliveries flow through normal
+   events instead of relying on the `MsgsChanged` safety net forever.
+
+Extracted the filtering logic all three paths need (skip info messages,
+skip messages with no sender (`fromId === 0`), skip messages with neither
+text nor a file) into a pure, exported `shouldIngest(msg)` predicate in
+`src/transport/deltachat.ts` — the one piece of transport-layer logic
+worth unit-testing per the project's "transport has no unit tests, it's
+network-bound" convention. Added `tests/deltachat.test.ts` (6 cases: plain
+text accepted, info message rejected, sender-id-0 rejected, no-text/no-file
+rejected, file-only accepted, text-only accepted).
+
+`src/main.ts` needed no changes — `ingestOnMessage`'s signature
+(`(msg: T.Message) => Promise<void>`) is unchanged; it's still just
+`options.onMessage` under the hood, now fed from three call sites
+(`IncomingMsg`, `MsgsChanged`, backfill) instead of one.
+
+TDD note: skipped red→green for the transport wiring itself per the
+project's existing convention (transport is network-bound / no unit
+tests) — only `shouldIngest` got the full TDD treatment (test file written
+against the not-yet-exported predicate first, confirmed failing via
+missing-export error, then extracted and exported).
+
+`pnpm test` (315 tests, all passing) and `pnpm check` (`tsc --noEmit`,
+clean) both green.
