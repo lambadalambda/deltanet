@@ -66,3 +66,20 @@ Hard requirements: `POST /api/v1/apps`, `GET /oauth/authorize`,
 frontend falls back to 60s polling. `http://localhost` is accepted by the
 sign-in form. Statuses should carry a `pleroma` object (emoji_reactions etc.)
 but empty defaults are fine.
+
+## 2026-07-06 — zero-config boot + signup + real stats
+
+The daemon can now start with no `accounts.local.json` at all: `createApp`
+takes an `AppContext` (`getTransport()` / `signup()`) instead of a bare
+`Transport`, so Mastodon endpoints that need chatmail 401 with
+`{"error": "not configured"}` until an account exists, while
+`/api/deltanet/status`, instance metadata, oauth, and the stub endpoints
+keep working. `POST /api/deltanet/signup` registers a fresh chatmail account
+against a relay's `/new` endpoint (factored into an injectable
+`registerAccount()` in `src/signup.ts` so tests never touch the network),
+persists it to `accounts.local.json`, and opens the transport in place —
+no restart needed. Also wired real follower/following/status counts
+(`Transport.stats()`, backed by the feed broadcast's contacts/chat list) into
+`verify_credentials`, and added static SPA serving (`DELTANET_STATIC`,
+default `../frontend/build`) with an index.html fallback for client-side
+routes. All new behavior was driven top-down from `tests/server.test.ts`.

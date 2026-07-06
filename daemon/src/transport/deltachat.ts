@@ -151,5 +151,23 @@ export const openTransport = async (
       const msg = await rpc.getMessage(accountId, msgId).catch(() => null);
       return msg?.file ?? null;
     },
+
+    stats: async () => {
+      const feedChatId = await ensureFeedChat();
+      const [feedContacts, entries, msgIds] = await Promise.all([
+        rpc.getChatContacts(accountId, feedChatId),
+        rpc.getChatlistEntries(accountId, null, null, null),
+        rpc.getMessageIds(accountId, feedChatId, false, false),
+      ]);
+      const followers = feedContacts.filter((id) => id !== DC_CONTACT_ID_SELF).length;
+
+      const chats = await Promise.all(entries.map((id) => rpc.getBasicChatInfo(accountId, id)));
+      const following = chats.filter((chat) => chat.chatType === 'InBroadcast').length;
+
+      const messages = await loadMessages(msgIds);
+      const statuses = messages.length;
+
+      return { followers, following, statuses };
+    },
   };
 };

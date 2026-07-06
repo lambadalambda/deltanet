@@ -23,4 +23,6 @@ export interface Transport {
   contact(contactId: number): Promise<T.Contact | null>;
   avatarPath(contactId: number): Promise<string | null>;
   blobPath(msgId: number): Promise<string | null>;
+  /** Real follower/following/post counts for the self account. */
+  stats(): Promise<{ followers: number; following: number; statuses: number }>;
 }

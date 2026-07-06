@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { T } from '@deltachat/jsonrpc-client';
-import { createApp } from '../src/server.js';
+import { createApp, type AppContext } from '../src/server.js';
 import type { TimelineQuery, Transport } from '../src/transport/types.js';
 import { makeContact, makeMessage } from './entities.test.js';
 
@@ -38,11 +38,35 @@ const makeFakeTransport = () => {
     contact: async (id) => (id === 1 ? self : null),
     avatarPath: async () => null,
     blobPath: async () => null,
+    stats: async () => ({ followers: 3, following: 2, statuses: 7 }),
   };
   return { transport, messages };
 };
 
-const makeApp = () => createApp(makeFakeTransport().transport, { baseUrl: BASE });
+/** A context that's already configured with a fixed fake transport. */
+const makeConfiguredCtx = (transport: Transport): AppContext => ({
+  getTransport: () => transport,
+  signup: async () => {
+    throw new Error('already configured');
+  },
+});
+
+/** A context with no transport yet, whose signup() can be customized per-test. */
+const makeUnconfiguredCtx = (signup?: AppContext['signup']): AppContext => {
+  let transport: Transport | null = null;
+  return {
+    getTransport: () => transport,
+    signup: async (displayName, relay) => {
+      const t = signup
+        ? await signup(displayName, relay)
+        : makeFakeTransport().transport;
+      transport = t;
+      return t;
+    },
+  };
+};
+
+const makeApp = () => createApp(makeConfiguredCtx(makeFakeTransport().transport), { baseUrl: BASE });
 
 describe('oauth flow', () => {
   it('registers an app', async () => {
@@ -95,6 +119,14 @@ describe('oauth flow', () => {
     expect(account.acct).toBe('p6yalimhl@nine.testrun.org');
     expect(account.username).toBe('p6yalimhl');
   });
+
+  it('merges real follower/following/status counts into verify_credentials', async () => {
+    const res = await makeApp().request('/api/v1/accounts/verify_credentials');
+    const account = await res.json() as any;
+    expect(account.followers_count).toBe(3);
+    expect(account.following_count).toBe(2);
+    expect(account.statuses_count).toBe(7);
+  });
 });
 
 describe('instance metadata', () => {
@@ -103,6 +135,23 @@ describe('instance metadata', () => {
     expect(res.status).toBe(200);
     const instance = await res.json() as any;
     expect(instance.configuration.statuses.max_characters).toBeGreaterThan(0);
+  });
+
+  it('serves v2 instance metadata even when unconfigured', async () => {
+    const app = createApp(makeUnconfiguredCtx(), { baseUrl: BASE });
+    const res = await app.request('/api/v2/instance');
+    expect(res.status).toBe(200);
+  });
+
+  it('registers apps and serves oauth stubs even when unconfigured', async () => {
+    const app = createApp(makeUnconfiguredCtx(), { baseUrl: BASE });
+    const appRes = await app.request('/api/v1/apps', {
+      method: 'POST',
+      body: new URLSearchParams({ client_name: 'x', redirect_uris: 'http://x/y' }),
+    });
+    expect(appRes.status).toBe(200);
+    const tokenRes = await app.request('/oauth/token', { method: 'POST' });
+    expect(tokenRes.status).toBe(200);
   });
 });
 
@@ -134,7 +183,7 @@ describe('timelines', () => {
 describe('posting', () => {
   it('creates a status from form-encoded body and shows it in the timeline', async () => {
     const { transport } = makeFakeTransport();
-    const app = createApp(transport, { baseUrl: BASE });
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     const res = await app.request('/api/v1/statuses', {
       method: 'POST',
       headers: { Authorization: 'Bearer whatever' },
@@ -208,5 +257,142 @@ describe('stub endpoints pleromanet polls', () => {
       headers: { Origin: 'http://localhost:5173' },
     });
     expect(res.headers.get('access-control-allow-origin')).toBe('*');
+  });
+
+  it('stub endpoints still respond when unconfigured', async () => {
+    const app = createApp(makeUnconfiguredCtx(), { baseUrl: BASE });
+    const res = await app.request('/api/v1/notifications');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([]);
+  });
+});
+
+describe('GET /api/deltanet/status', () => {
+  it('reports unconfigured with a null address', async () => {
+    const app = createApp(makeUnconfiguredCtx(), { baseUrl: BASE });
+    const res = await app.request('/api/deltanet/status');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ configured: false, address: null });
+  });
+
+  it('reports configured with the account address', async () => {
+    const res = await makeApp().request('/api/deltanet/status');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ configured: true, address: 'p6yalimhl@nine.testrun.org' });
+  });
+});
+
+describe('POST /api/deltanet/signup', () => {
+  it('registers a fresh account and transitions the app to configured', async () => {
+    const { transport } = makeFakeTransport();
+    let requestedRelay: string | undefined;
+    let requestedName: string | undefined;
+    const ctx = makeUnconfiguredCtx(async (displayName, relay) => {
+      requestedName = displayName;
+      requestedRelay = relay;
+      return transport;
+    });
+    const app = createApp(ctx, { baseUrl: BASE });
+
+    const statusBefore = await (await app.request('/api/deltanet/status')).json() as any;
+    expect(statusBefore.configured).toBe(false);
+
+    const res = await app.request('/api/deltanet/signup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ display_name: 'alice' }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as any;
+    expect(body.account.acct).toBe('p6yalimhl@nine.testrun.org');
+    expect(requestedName).toBe('alice');
+    expect(requestedRelay).toBe('https://nine.testrun.org');
+
+    const statusAfter = await (await app.request('/api/deltanet/status')).json() as any;
+    expect(statusAfter).toEqual({ configured: true, address: 'p6yalimhl@nine.testrun.org' });
+
+    // mastodon endpoints work immediately, no restart needed
+    const verify = await (await app.request('/api/v1/accounts/verify_credentials')).json() as any;
+    expect(verify.acct).toBe('p6yalimhl@nine.testrun.org');
+  });
+
+  it('passes a custom relay through to signup', async () => {
+    let requestedRelay: string | undefined;
+    const ctx = makeUnconfiguredCtx(async (_displayName, relay) => {
+      requestedRelay = relay;
+      return makeFakeTransport().transport;
+    });
+    const app = createApp(ctx, { baseUrl: BASE });
+    await app.request('/api/deltanet/signup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ display_name: 'alice', relay: 'https://example.org' }),
+    });
+    expect(requestedRelay).toBe('https://example.org');
+  });
+
+  it('422s when display_name is missing', async () => {
+    const app = createApp(makeUnconfiguredCtx(), { baseUrl: BASE });
+    const res = await app.request('/api/deltanet/signup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(422);
+  });
+
+  it('422s when display_name is blank', async () => {
+    const app = createApp(makeUnconfiguredCtx(), { baseUrl: BASE });
+    const res = await app.request('/api/deltanet/signup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ display_name: '   ' }),
+    });
+    expect(res.status).toBe(422);
+  });
+
+  it('409s if already configured', async () => {
+    const res = await makeApp().request('/api/deltanet/signup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ display_name: 'alice' }),
+    });
+    expect(res.status).toBe(409);
+    const body = await res.json() as any;
+    expect(body.error).toBeTypeOf('string');
+  });
+});
+
+describe('unconfigured mastodon endpoints', () => {
+  const app = createApp(makeUnconfiguredCtx(), { baseUrl: BASE });
+
+  it.each([
+    ['/api/v1/accounts/verify_credentials', 'GET'],
+    ['/api/v1/timelines/home', 'GET'],
+    ['/api/v1/timelines/public', 'GET'],
+    ['/api/deltanet/invite', 'GET'],
+  ])('%s returns 401 not configured', async (path, method) => {
+    const res = await app.request(path, { method });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'not configured' });
+  });
+
+  it('POST /api/v1/statuses returns 401 not configured', async () => {
+    const res = await app.request('/api/v1/statuses', {
+      method: 'POST',
+      body: new URLSearchParams({ status: 'hi' }),
+    });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'not configured' });
+  });
+
+  it('POST /api/deltanet/follow returns 401 not configured', async () => {
+    const res = await app.request('/api/deltanet/follow', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ invite: 'OPENPGP4FPR:X' }),
+    });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'not configured' });
   });
 });
