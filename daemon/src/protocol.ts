@@ -20,6 +20,15 @@ const REPLY_PREFIX = '↳re ';
 const BOOST_PREFIX = '♻ ';
 const REACT_INFIX = ' ↳ ';
 const UNREACT_PREFIX = '✖ ↳ ';
+/**
+ * Canonical-mid marker (see ../meta/issues/canonical-mid-unification.md). A DM
+ * copy of a reply carries this final line declaring the *feed copy's* mid — the
+ * post's canonical identity — so a recipient who only ever sees the DM copy can
+ * still resolve everyone's interactions to the one mid feeds/threads render.
+ * `⚓` (anchor) reads sensibly in vanilla Delta Chat and won't collide with the
+ * other single-glyph markers. The mid is a whitespace-free Message-ID.
+ */
+const CANONICAL_PREFIX = '⚓ ';
 
 export type ParsedReaction =
   | { kind: 'react'; emoji: string; mid: string }
@@ -30,6 +39,18 @@ const MARKER_LINE_RE = /^(\S+) (\S+)$/;
 
 export const buildReplyText = (body: string, ref: MsgRef): string =>
   `${body}\n\n${REPLY_PREFIX}${ref.mid} ${ref.addr}`;
+
+/**
+ * A reply text with a trailing canonical-mid marker line, for the DM copy of a
+ * reply. `canonicalMid` is the feed broadcast copy's mid (the post's canonical
+ * identity). Only DM copies carry this — the feed copy keeps `buildReplyText`'s
+ * exact format, which is its identity for historical text-matching.
+ */
+export const buildReplyTextWithCanonical = (
+  body: string,
+  ref: MsgRef,
+  canonicalMid: string,
+): string => `${buildReplyText(body, ref)}\n${CANONICAL_PREFIX}${canonicalMid}`;
 
 export const buildBoostText = (ref: MsgRef): string => `${BOOST_PREFIX}${ref.mid} ${ref.addr}`;
 
@@ -60,17 +81,43 @@ export const parseMarkers = (text: string): ParsedMarkers => {
   }
 
   const lines = text.split('\n');
-  const lastLine = lines[lines.length - 1] ?? '';
+  // A DM copy appends a trailing canonical-mid marker after the reply marker
+  // (see buildReplyTextWithCanonical). Peel it off first so the reply marker is
+  // once again the effective final line for the parse below.
+  const hasCanonical =
+    lines.length >= 2 && parseCanonicalLine(lines[lines.length - 1] ?? '') !== null;
+  const effectiveLines = hasCanonical ? lines.slice(0, lines.length - 1) : lines;
+  const lastLine = effectiveLines[effectiveLines.length - 1] ?? '';
   if (lastLine.startsWith(REPLY_PREFIX)) {
     const reply = parseMarkerLine(lastLine.slice(REPLY_PREFIX.length));
-    const precedingBlank = lines[lines.length - 2] === '';
+    const precedingBlank = effectiveLines[effectiveLines.length - 2] === '';
     if (reply && precedingBlank) {
-      const body = lines.slice(0, lines.length - 2).join('\n');
+      const body = effectiveLines.slice(0, effectiveLines.length - 2).join('\n');
       return { body, reply };
     }
   }
 
   return { body: text };
+};
+
+/** Parse a `⚓ <mid>` line into its mid, or null if malformed / not a canonical line. */
+const parseCanonicalLine = (line: string): string | null => {
+  if (!line.startsWith(CANONICAL_PREFIX)) return null;
+  const mid = line.slice(CANONICAL_PREFIX.length);
+  // A mid is a single whitespace-free token; reject empty or multi-token.
+  if (!mid || /\s/.test(mid)) return null;
+  return mid;
+};
+
+/**
+ * Recover the canonical (feed-copy) mid declared by a DM reply copy's trailing
+ * `⚓ <mid>` marker, or null. Tolerant: the marker must be the *final* line, so
+ * marker-shaped text elsewhere never misfires (mirrors the other parsers).
+ */
+export const parseCanonicalMid = (text: string): string | null => {
+  const lines = text.split('\n');
+  if (lines.length < 2) return null;
+  return parseCanonicalLine(lines[lines.length - 1] ?? '');
 };
 
 /** Reaction (like/emoji-react) control-DM text: `"<emoji> ↳ <mid>"`. */

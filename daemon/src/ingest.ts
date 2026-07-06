@@ -52,14 +52,19 @@ export const deriveOnIngest = (store: Store, msg: T.Message, mid: string): Notif
 
   const reaction = parseReaction(msg.text);
   if (reaction) {
+    // Canonicalize the target mid so an interaction referencing a DM copy's mid
+    // applies to (and notifies about) the feed copy — the post's identity. The
+    // store also canonicalizes internally, but doing it here keeps the dedupe
+    // key + notification statusMsgId consistent with the feed copy too.
+    const targetMid = store.canonicalize(reaction.mid);
     if (reaction.kind === 'react') {
-      store.applyReaction(reaction.mid, accountAddr, reaction.emoji);
+      store.applyReaction(targetMid, accountAddr, reaction.emoji);
     } else {
-      store.retractReaction(reaction.mid, accountAddr, reaction.emoji);
+      store.retractReaction(targetMid, accountAddr, reaction.emoji);
     }
 
-    if (reaction.kind === 'react' && store.isOwnMid(reaction.mid)) {
-      const statusMsgId = store.resolveMid(reaction.mid) ?? undefined;
+    if (reaction.kind === 'react' && store.isOwnMid(targetMid)) {
+      const statusMsgId = store.resolveMid(targetMid) ?? undefined;
       const isFavourite = reaction.emoji === FAVOURITE_EMOJI;
       const notification = store.addNotification({
         type: isFavourite ? 'favourite' : 'pleroma:emoji_reaction',
@@ -67,7 +72,7 @@ export const deriveOnIngest = (store: Store, msg: T.Message, mid: string): Notif
         accountContactId,
         ...(isFavourite ? {} : { emoji: reaction.emoji }),
         ...(statusMsgId !== undefined ? { statusMsgId } : {}),
-        dedupeMid: reaction.mid,
+        dedupeMid: targetMid,
         // Fold the emoji into the dedupe key even for favourites (whose
         // stored notification has no `emoji` field) so a ❤ and a distinct
         // emoji reaction from the same reactor on the same mid never
@@ -81,26 +86,32 @@ export const deriveOnIngest = (store: Store, msg: T.Message, mid: string): Notif
 
   const parsed = parseMarkers(msg.text);
 
-  if (parsed.reply && store.isOwnMid(parsed.reply.mid)) {
-    const notification = store.addNotification({
-      type: 'mention',
-      accountAddr,
-      accountContactId,
-      statusMsgId: msg.id,
-      dedupeMid: parsed.reply.mid,
-    });
-    if (notification) created.push(notification);
+  if (parsed.reply) {
+    const parentMid = store.canonicalize(parsed.reply.mid);
+    if (store.isOwnMid(parentMid)) {
+      const notification = store.addNotification({
+        type: 'mention',
+        accountAddr,
+        accountContactId,
+        statusMsgId: msg.id,
+        dedupeMid: parentMid,
+      });
+      if (notification) created.push(notification);
+    }
   }
 
-  if (parsed.boost && store.isOwnMid(parsed.boost.mid)) {
-    const notification = store.addNotification({
-      type: 'reblog',
-      accountAddr,
-      accountContactId,
-      statusMsgId: msg.id,
-      dedupeMid: parsed.boost.mid,
-    });
-    if (notification) created.push(notification);
+  if (parsed.boost) {
+    const boostedMid = store.canonicalize(parsed.boost.mid);
+    if (store.isOwnMid(boostedMid)) {
+      const notification = store.addNotification({
+        type: 'reblog',
+        accountAddr,
+        accountContactId,
+        statusMsgId: msg.id,
+        dedupeMid: boostedMid,
+      });
+      if (notification) created.push(notification);
+    }
   }
 
   return created;

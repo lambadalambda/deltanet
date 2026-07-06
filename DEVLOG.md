@@ -1054,3 +1054,92 @@ join; feed message with the marker → no actions even when fresh; `'derive'`
 → cleanup only; `'index'` → nothing; no transport yet → no-op).
 Re-ran the follow-back integration test after the change: still green, so the
 freshness gate doesn't starve legitimate first-time execution.
+
+## 2026-07-06 — canonical-mid unification (dual-copy identity split)
+
+Fixed the dual-copy identity split (../meta/issues/canonical-mid-unification.md):
+a reply is sent twice — feed broadcast copy + DM copy to the parent author —
+under two different rfc724 Message-IDs, so a non-follower parent (who only
+holds the DM copy) references the DM mid in their replies/reactions, and those
+interactions never landed on the feed copy that timelines/threads render.
+
+### Design
+
+- **Marker**: DM reply copies append a final `⚓ <feedMid>` line declaring the
+  feed copy's mid (the post's canonical identity). Anchor glyph, readable in
+  vanilla Delta Chat, no collision with the other single-glyph markers. The
+  feed copy keeps its exact prior `buildReplyText` format — its text is its
+  identity for historical text-twin matching, so it must not change.
+  `buildReplyTextWithCanonical` / `parseCanonicalMid` (final-line-only,
+  tolerant) in `src/protocol.ts`; `parseMarkers` now peels a trailing canonical
+  line before locating the reply marker so reply parsing still round-trips.
+- **Store owns aliasing** (`src/store.ts`): a `canonicalByMid` (dmMid→feedMid)
+  map, `canonicalize(mid)`, and `aliasMid(dmMid, feedMid)`. Normalization is
+  applied **at write time** (edge/tally keys canonicalized in `ingestMessage`,
+  `applyReaction`, `deriveOnIngest`) **AND at read time** (every lookup
+  canonicalizes its query key). **Decision: re-key on alias insertion, not
+  read-time union.** `aliasMid` migrates any edges/tallies/ownBoosts already
+  registered under the dmMid onto the feedMid (merging reactor sets) — this is
+  the belt for the case where the alias arrives *after* a reaction referencing
+  the dm-mid was already applied. Read-time canonicalization is the braces
+  (covers the reverse window and queries by either mid). Both orders unit-tested.
+- **Historical text-twin aliasing during (re)index** (`learnAlias` in the store
+  ingest): builds `text→feedMid` for SELF FEED messages and `text→dmMid` for
+  SELF DM messages awaiting a twin, resolving whichever copy is swept second —
+  order-independent (both orders unit-tested). An explicit `⚓` marker is
+  honored for *any* author (a non-follower's DM copy declares its feed mid this
+  way); text-twin matching stays SELF-only (only our own copies are guaranteed
+  exact twins). Pre-fix copies are exact text twins, so carol's historical
+  "cool pic" (86/87) heals on re-index.
+- **Acting on a DM copy** (server point 5): `targetMid(transport, target)` in
+  `src/server.ts` parses the target's `⚓` marker (pure, no extra RPC) and uses
+  the canonical mid for the outgoing reply/react/boost ref when present, else
+  `messageMid`. Reply send now posts the feed copy first, learns its mid, and
+  builds the DM copy with the canonical marker appended.
+- **Migration without data surgery**: a persisted `schemaVersion` (now 1). On
+  loading an older/versionless store, `migrate()` drops the derived indices
+  (mid maps, edges, tallies, ingestedMsgIds, ownMids, alias map) but KEEPS
+  `notifications` + `notificationDedupeKeys` + `nextNotificationId` +
+  `pendingFollowRequests`, then the startup backfill re-indexes with aliasing.
+  Verified: re-derivation can't duplicate-notify (dedupe keys survive — unit
+  test re-adds the same favourite and gets a null no-op) and no DC database is
+  touched, so QA nodes heal on a plain restart.
+
+### Emoji normalization — WITHDRAWN
+
+The paired emoji-normalization issue was withdrawn on user review: bare `❤`
+(the favourite wire encoding) and `❤️` VS16 (a deliberate red-heart emoji
+reaction) are two distinct interactions by design, not duplication — so no
+variation-selector stripping, no heart merging. Favourite detection stays
+exact-match bare `❤`; `❤️` keeps flowing through as a normal emoji_reactions
+chip (unchanged behavior). Re-index re-derives tallies form-preserving.
+
+### Tests
+
+Unit: marker round-trip + tolerance, canonicalize at every touchpoint,
+alias re-key (both orders), identical-text aliasing (both sweep orders,
+non-self negatives, explicit-marker-wins), schema migration (index drop +
+notification/dedupe/pending preservation + version bump), server "acting on a
+DM copy" for reply/react/boost. Integration
+(`tests/integration/canonical-mid.test.ts`, fresh accounts + `data/int-canon-*`):
+the full QA scenario over real chatmail — B follows A (no follow-back), A posts,
+B replies, A (holding only the DM copy) reacts ❤ and replies; asserts B's FEED
+copy shows replies_count 1 + favourites_count 1 and the thread chains through
+feed-chat conversation ids. Green on first real run (~17s).
+`pnpm test` (527) + `pnpm check` + `pnpm test:integration` (5) all green.
+
+### Review fix: resolveMid canonical-first
+
+`resolveMid` initially tried the raw mid before the canonical one — so a
+HISTORICAL ref pointing at a DM copy's mid (pre-fix data on a migrated store)
+raw-hit the DM twin's msgId and context ancestors still routed through the
+Single-chat copy (right counts, wrong copy). Flipped to canonical-first with
+raw as fallback: `midToMsgId[canon(mid)] ?? midToMsgId[mid]`. The fallback
+preserves the legitimate case where the canonical feed copy doesn't exist
+locally (a non-follower's node only ever received the DM copy). Audited the
+other lookups: everything that routes rendering (ancestor walk, notification
+statusMsgId, status mapping resolver) goes through `store.resolveMid`, so the
+one flip covers them; `isOwnMid` is an order-independent boolean OR; all other
+store lookups already key by `canon(mid)` only. Unit tests added for both
+sides (both copies ingested → FEED msgId; alias known but feed copy absent →
+DM msgId).

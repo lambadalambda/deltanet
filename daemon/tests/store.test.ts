@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { T } from '@deltachat/jsonrpc-client';
-import { createStore } from '../src/store.js';
+import { writeFileSync } from 'node:fs';
+import { createStore, STORE_SCHEMA_VERSION } from '../src/store.js';
 import { buildBoostText, buildReplyText } from '../src/protocol.js';
 import { makeMessage } from './entities.test.js';
 
@@ -429,6 +430,256 @@ describe('createStore: notifications', () => {
     store.addNotification({ type: 'follow', accountAddr: 'bob@example.org' });
     const reloaded = createStore(filePath);
     expect(reloaded.listNotifications({})).toHaveLength(1);
+  });
+});
+
+describe('createStore: canonical-mid aliasing', () => {
+  const DM = 'dm-copy-mid@example.org';
+  const FEED = 'feed-copy-mid@example.org';
+  const PARENT = 'parent-mid@example.org';
+
+  it('canonicalize returns the mid unchanged when no alias is known', () => {
+    const store = createStore(filePath);
+    expect(store.canonicalize(DM)).toBe(DM);
+  });
+
+  it('canonicalize maps an aliased dm-mid to its feed-mid', () => {
+    const store = createStore(filePath);
+    store.aliasMid(DM, FEED);
+    expect(store.canonicalize(DM)).toBe(FEED);
+    // The feed mid canonicalizes to itself.
+    expect(store.canonicalize(FEED)).toBe(FEED);
+  });
+
+  it('reply edges registered against a dm-mid resolve under the feed-mid once aliased (re-key on alias insertion)', () => {
+    const store = createStore(filePath);
+    const ref = { mid: DM, addr: 'author@example.org' };
+    // A child reply arrives referencing the DM copy's mid, before we learn the alias.
+    store.ingestMessage(makeMessage({ id: 10, text: buildReplyText('child', ref) }), 'child@example.org', true);
+    expect(store.childrenCount(DM)).toBe(1);
+
+    // Now the alias is learned (e.g. an ingested canonical marker). The edge
+    // re-keys so the feed copy carries the child.
+    store.aliasMid(DM, FEED);
+    expect(store.childrenCount(FEED)).toBe(1);
+    expect(store.replyChildren(FEED)).toEqual([10]);
+  });
+
+  it('reply edges registered against a dm-mid AFTER the alias is known land on the feed-mid (write-time canonicalize)', () => {
+    const store = createStore(filePath);
+    store.aliasMid(DM, FEED);
+    const ref = { mid: DM, addr: 'author@example.org' };
+    store.ingestMessage(makeMessage({ id: 11, text: buildReplyText('child', ref) }), 'child2@example.org', true);
+    expect(store.childrenCount(FEED)).toBe(1);
+    expect(store.childrenCount(DM)).toBe(1); // read-time union covers the dm-mid too
+  });
+
+  it('reactions applied to a dm-mid re-key to the feed-mid on alias insertion', () => {
+    const store = createStore(filePath);
+    store.applyReaction(DM, 'bob@example.org', '❤');
+    expect(store.reactionTallies(DM)).toEqual([{ emoji: '❤', count: 1, reactors: ['bob@example.org'] }]);
+
+    store.aliasMid(DM, FEED);
+    expect(store.reactionTallies(FEED)).toEqual([{ emoji: '❤', count: 1, reactors: ['bob@example.org'] }]);
+  });
+
+  it('reactions applied to a dm-mid after aliasing tally under the feed-mid, read-visible under both', () => {
+    const store = createStore(filePath);
+    store.aliasMid(DM, FEED);
+    store.applyReaction(DM, 'bob@example.org', '❤');
+    expect(store.reactionTallies(FEED)).toEqual([{ emoji: '❤', count: 1, reactors: ['bob@example.org'] }]);
+    expect(store.reactionTallies(DM)).toEqual([{ emoji: '❤', count: 1, reactors: ['bob@example.org'] }]);
+  });
+
+  it('resolveMid on an aliased dm-mid resolves the feed message when present locally', () => {
+    const store = createStore(filePath);
+    store.ingestMessage(makeMessage({ id: 20, fromId: 1, text: 'the feed copy' }), FEED, true);
+    store.aliasMid(DM, FEED);
+    expect(store.resolveMid(DM)).toBe(20);
+  });
+
+  it('resolveMid prefers the FEED copy when BOTH copies are ingested and the alias is known (canonical-first)', () => {
+    const store = createStore(filePath);
+    // Both twins indexed — e.g. a migrated store re-indexed by the backfill.
+    // A historical ref pointing at the DM copy's mid must resolve to the FEED
+    // copy's msgId, or context ancestors would still route through the
+    // Single-chat twin.
+    store.ingestMessage(makeMessage({ id: 30, fromId: 1, text: 'the feed copy' }), FEED, true);
+    store.ingestMessage(makeMessage({ id: 31, fromId: 1, text: 'the dm copy' }), DM, false);
+    store.aliasMid(DM, FEED);
+    expect(store.resolveMid(DM)).toBe(30);
+    expect(store.resolveMid(FEED)).toBe(30);
+  });
+
+  it('resolveMid falls back to the DM copy when the alias is known but the canonical feed copy is absent locally', () => {
+    const store = createStore(filePath);
+    // A non-follower's node only ever received the DM copy; its `⚓` marker
+    // taught the alias, but the feed copy never arrived. The DM copy is the
+    // only renderable message — resolve it rather than nothing.
+    store.ingestMessage(makeMessage({ id: 40, fromId: 11, text: 'the dm copy' }), DM, false);
+    store.aliasMid(DM, FEED);
+    expect(store.resolveMid(DM)).toBe(40);
+  });
+
+  it('isOwnMid follows the alias to the feed copy', () => {
+    const store = createStore(filePath);
+    store.ingestMessage(makeMessage({ id: 21, fromId: 1, text: 'mine' }), FEED, true);
+    store.aliasMid(DM, FEED);
+    expect(store.isOwnMid(DM)).toBe(true);
+  });
+
+  it('merges reaction tallies when both dm-mid and feed-mid carried reactions before aliasing', () => {
+    const store = createStore(filePath);
+    store.applyReaction(FEED, 'carol@example.org', '❤');
+    store.applyReaction(DM, 'bob@example.org', '❤');
+    store.aliasMid(DM, FEED);
+    const tally = store.reactionTallies(FEED);
+    expect(tally).toEqual([{ emoji: '❤', count: 2, reactors: ['carol@example.org', 'bob@example.org'] }]);
+  });
+
+  it('aliasing is a no-op when dm-mid equals feed-mid', () => {
+    const store = createStore(filePath);
+    store.applyReaction(PARENT, 'bob@example.org', '❤');
+    store.aliasMid(PARENT, PARENT);
+    expect(store.reactionTallies(PARENT)).toEqual([{ emoji: '❤', count: 1, reactors: ['bob@example.org'] }]);
+  });
+
+  it('persists the alias map across reloads', () => {
+    const store = createStore(filePath);
+    store.aliasMid(DM, FEED);
+    const reloaded = createStore(filePath);
+    expect(reloaded.canonicalize(DM)).toBe(FEED);
+  });
+});
+
+describe('createStore: historical text-twin aliasing during (re)index', () => {
+  const ref = { mid: 'orig@example.org', addr: 'author@example.org' };
+  // Pre-fix copies are exact text twins: the feed copy and DM copy of a reply
+  // carry identical text (no canonical marker existed yet).
+  const replyText = buildReplyText('nice pic', ref);
+
+  it('aliases a SELF DM reply copy to a SELF feed reply copy with identical text (feed swept first)', () => {
+    const store = createStore(filePath);
+    // Feed copy encountered first.
+    store.ingestMessage(makeMessage({ id: 86, fromId: 1, text: replyText }), 'feed86@example.org', true);
+    // DM copy encountered second, identical text.
+    store.ingestMessage(makeMessage({ id: 87, fromId: 1, text: replyText }), 'dm87@example.org', false);
+
+    expect(store.canonicalize('dm87@example.org')).toBe('feed86@example.org');
+  });
+
+  it('aliases order-independently when the DM copy is swept BEFORE the feed copy', () => {
+    const store = createStore(filePath);
+    // DM copy encountered first.
+    store.ingestMessage(makeMessage({ id: 87, fromId: 1, text: replyText }), 'dm87@example.org', false);
+    // Feed copy encountered second.
+    store.ingestMessage(makeMessage({ id: 86, fromId: 1, text: replyText }), 'feed86@example.org', true);
+
+    expect(store.canonicalize('dm87@example.org')).toBe('feed86@example.org');
+  });
+
+  it('re-keys an interaction referencing the dm-mid onto the feed-mid via the identical-text alias', () => {
+    const store = createStore(filePath);
+    // A third party reacted to the DM copy's mid before we ever knew the alias.
+    store.applyReaction('dm87@example.org', 'lain@example.org', '❤');
+
+    // (Re)index sweeps both twins.
+    store.ingestMessage(makeMessage({ id: 87, fromId: 1, text: replyText }), 'dm87@example.org', false);
+    store.ingestMessage(makeMessage({ id: 86, fromId: 1, text: replyText }), 'feed86@example.org', true);
+
+    // The reaction now shows under the feed copy's mid.
+    expect(store.reactionTallies('feed86@example.org')).toEqual([
+      { emoji: '❤', count: 1, reactors: ['lain@example.org'] },
+    ]);
+  });
+
+  it('does not alias a DM copy to a NON-self feed message with identical text', () => {
+    const store = createStore(filePath);
+    store.ingestMessage(makeMessage({ id: 86, fromId: 11, text: replyText }), 'feed86@example.org', true);
+    store.ingestMessage(makeMessage({ id: 87, fromId: 1, text: replyText }), 'dm87@example.org', false);
+    expect(store.canonicalize('dm87@example.org')).toBe('dm87@example.org');
+  });
+
+  it('does not alias a non-self DM copy even to a self feed twin', () => {
+    const store = createStore(filePath);
+    store.ingestMessage(makeMessage({ id: 86, fromId: 1, text: replyText }), 'feed86@example.org', true);
+    store.ingestMessage(makeMessage({ id: 87, fromId: 11, text: replyText }), 'dm87@example.org', false);
+    expect(store.canonicalize('dm87@example.org')).toBe('dm87@example.org');
+  });
+
+  it('prefers an explicit canonical marker over text-twin matching for a DM copy', () => {
+    const store = createStore(filePath);
+    // A post-fix DM copy carries the marker directly; no text-twin needed.
+    const canonicalText = replyText + '\n⚓ explicit-feed@example.org';
+    store.ingestMessage(makeMessage({ id: 87, fromId: 1, text: canonicalText }), 'dm87@example.org', false);
+    expect(store.canonicalize('dm87@example.org')).toBe('explicit-feed@example.org');
+  });
+});
+
+describe('createStore: schema migration / re-index', () => {
+  it('writes the current schema version on a fresh store', () => {
+    const store = createStore(filePath);
+    store.ingestMessage(makeMessage({ id: 1, text: 'hi' }), 'm1@example.org');
+    const raw = JSON.parse(readFileSync(filePath, 'utf8'));
+    expect(raw.schemaVersion).toBe(STORE_SCHEMA_VERSION);
+  });
+
+  it('drops derived indices but keeps notifications/dedupe/pending on an older-version load', () => {
+    // A pre-fix store: no schemaVersion, populated derived indices + notifications.
+    const legacy = {
+      midToMsgId: { 'a@x': 1 },
+      msgIdToMid: { 1: 'a@x' },
+      replyChildren: { 'p@x': [2] },
+      boostsByMid: { 'p@x': [3] },
+      ownBoosts: { 'p@x': 3 },
+      ingestedMsgIds: [1, 2, 3],
+      ownMids: ['a@x'],
+      reactions: { 'p@x': { 'bob@x': ['❤'] } },
+      notifications: [
+        { id: '1', type: 'favourite', createdAt: '2020-01-01T00:00:00.000Z', accountAddr: 'bob@x' },
+      ],
+      notificationDedupeKeys: ['favourite:bob@x:p@x:❤'],
+      nextNotificationId: 2,
+      pendingFollowRequests: { 'alice@x': 999 },
+    };
+    writeFileSync(filePath, JSON.stringify(legacy));
+
+    const store = createStore(filePath);
+
+    // Derived indices dropped (will be re-derived by the startup backfill).
+    expect(store.resolveMid('a@x')).toBeNull();
+    expect(store.childrenCount('p@x')).toBe(0);
+    expect(store.boostCount('p@x')).toBe(0);
+    expect(store.isOwnMid('a@x')).toBe(false);
+    expect(store.reactionTallies('p@x')).toEqual([]);
+
+    // Preserved: notifications, dedupe keys, pending requests, next id.
+    expect(store.listNotifications({})).toHaveLength(1);
+    expect(store.hasPendingFollowRequest('alice@x')).toBe(true);
+
+    // The dedupe key survived, so re-deriving the same favourite is a no-op.
+    const dupe = store.addNotification({
+      type: 'favourite',
+      accountAddr: 'bob@x',
+      dedupeMid: 'p@x',
+      dedupeEmoji: '❤',
+    });
+    expect(dupe).toBeNull();
+
+    // nextNotificationId preserved: a genuinely new notification gets id 2.
+    const fresh = store.addNotification({ type: 'follow', accountAddr: 'zoe@x' });
+    expect(fresh!.id).toBe('2');
+
+    // Version is bumped on disk after the migrating load.
+    const raw = JSON.parse(readFileSync(filePath, 'utf8'));
+    expect(raw.schemaVersion).toBe(STORE_SCHEMA_VERSION);
+  });
+
+  it('a current-version store is loaded as-is (no index drop)', () => {
+    const store = createStore(filePath);
+    store.ingestMessage(makeMessage({ id: 5, text: 'hi' }), 'keep@example.org');
+    const reloaded = createStore(filePath);
+    expect(reloaded.resolveMid('keep@example.org')).toBe(5);
   });
 });
 

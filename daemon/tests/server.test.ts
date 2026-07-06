@@ -5,7 +5,7 @@ import type { T } from '@deltachat/jsonrpc-client';
 import { createApp, type AppContext } from '../src/server.js';
 import type { TimelineQuery, Transport } from '../src/transport/types.js';
 import { createStore, ephemeralStorePath } from '../src/store.js';
-import { buildInviteRequestText, buildReplyText } from '../src/protocol.js';
+import { buildInviteRequestText, buildReplyText, buildReplyTextWithCanonical } from '../src/protocol.js';
 import { createStreamingHub, type StreamingSocket } from '../src/streaming.js';
 import { makeContact, makeMessage } from './entities.test.js';
 
@@ -624,10 +624,15 @@ describe('POST /api/v1/statuses with in_reply_to_id', () => {
     expect(posts[0]?.text).toContain(BOB.address);
     expect(posts[0]?.quotedText).toContain('bob');
 
-    // a DM copy goes to the author (bob, contact id 11)
+    // a DM copy goes to the author (bob, contact id 11), carrying the feed
+    // copy's body/reply-marker PLUS a trailing canonical-mid marker declaring
+    // the feed copy's mid (which the feed copy itself does NOT carry).
     expect(dms).toHaveLength(1);
     expect(dms[0]?.contactId).toBe(11);
-    expect(dms[0]?.text).toBe(posts[0]?.text);
+    const feedCopyMid = 'mid-100@example.org'; // first minted mid for the posted feed copy
+    expect(dms[0]?.text).toBe(`${posts[0]?.text}\n⚓ ${feedCopyMid}`);
+    // The feed copy keeps its exact prior format (no canonical marker).
+    expect(posts[0]?.text).not.toContain('⚓');
   });
 
   it('does not send a DM when replying to your own post', async () => {
@@ -652,6 +657,68 @@ describe('POST /api/v1/statuses with in_reply_to_id', () => {
       body: JSON.stringify({ status: 'huh', in_reply_to_id: '999' }),
     });
     expect(res.status).toBe(404);
+  });
+});
+
+describe('acting on a DM copy uses the canonical mid (issue point 5)', () => {
+  const CANON = 'canonical-feed@example.org';
+
+  /**
+   * Inject a message whose text carries a `⚓` canonical marker — i.e. a DM
+   * copy the user only received privately (a non-follower's post). Its own mid
+   * (via messageMid) is the DM mid; the marker declares the feed copy's mid.
+   */
+  const withDmCopy = () => {
+    const h = makeFakeTransport();
+    const ref = { mid: 'parent@example.org', addr: BOB.address };
+    const dmCopy = makeMessage({
+      id: 600,
+      text: buildReplyTextWithCanonical('a private reply', ref, CANON),
+      fromId: 11,
+      sender: BOB,
+      timestamp: 1751800500,
+    });
+    h.messages.push(dmCopy);
+    h.mids.set(600, 'dm-copy-600@example.org');
+    return h;
+  };
+
+  it('reply to a DM copy embeds the canonical mid in the outgoing marker', async () => {
+    const { transport, posts, dms } = withDmCopy();
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+
+    const res = await app.request('/api/v1/statuses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'me too', in_reply_to_id: '600' }),
+    });
+    expect(res.status).toBe(200);
+    // The outgoing feed reply references the CANONICAL mid, not the DM copy's.
+    expect(posts[0]?.text).toContain(CANON);
+    expect(posts[0]?.text).not.toContain('dm-copy-600@example.org');
+    // The DM copy to the author also references the canonical mid.
+    expect(dms[0]?.text).toContain(CANON);
+  });
+
+  it('reblog of a DM copy boosts the canonical mid', async () => {
+    const { transport, posts } = withDmCopy();
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+
+    const res = await app.request('/api/v1/statuses/600/reblog', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(posts[0]?.text).toContain(CANON);
+    expect(posts[0]?.text).not.toContain('dm-copy-600@example.org');
+  });
+
+  it('favouriting a DM copy DMs a reaction referencing the canonical mid', async () => {
+    const { transport, dms } = withDmCopy();
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+
+    const res = await app.request('/api/v1/statuses/600/favourite', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(dms).toHaveLength(1);
+    expect(dms[0]?.text).toContain(CANON);
+    expect(dms[0]?.text).not.toContain('dm-copy-600@example.org');
   });
 });
 

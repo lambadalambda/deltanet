@@ -6,7 +6,9 @@ import {
   buildQuotedText,
   buildReactionText,
   buildReplyText,
+  buildReplyTextWithCanonical,
   buildUnreactionText,
+  parseCanonicalMid,
   parseInviteGrant,
   parseInviteRequest,
   parseMarkers,
@@ -215,6 +217,52 @@ describe('buildInviteGrantText / parseInviteGrant (invite-grant round-trip)', ()
 
   it('handles empty string', () => {
     expect(parseInviteGrant('')).toBeNull();
+  });
+});
+
+describe('canonical-mid marker (buildReplyTextWithCanonical / parseCanonicalMid)', () => {
+  const CANON = 'feed-copy-mid@nine.testrun.org';
+
+  it('appends a canonical marker line after the reply marker', () => {
+    const text = buildReplyTextWithCanonical('hello there', REF, CANON);
+    // reply marker first (last-line reply parse still works), canonical marker after it.
+    expect(text).toBe(
+      `hello there\n\n↳re ${REF.mid} ${REF.addr}\n⚓ ${CANON}`,
+    );
+  });
+
+  it('parseCanonicalMid recovers the canonical mid from a DM reply copy', () => {
+    const text = buildReplyTextWithCanonical('hello there', REF, CANON);
+    expect(parseCanonicalMid(text)).toBe(CANON);
+  });
+
+  it('parseMarkers still recovers the body and reply ref from a canonical DM copy', () => {
+    const text = buildReplyTextWithCanonical('hello there\nsecond line', REF, CANON);
+    const parsed = parseMarkers(text);
+    expect(parsed.body).toBe('hello there\nsecond line');
+    expect(parsed.reply).toEqual(REF);
+  });
+
+  it('parseCanonicalMid returns null when there is no canonical marker', () => {
+    expect(parseCanonicalMid(buildReplyText('plain reply', REF))).toBeNull();
+    expect(parseCanonicalMid('just a normal post')).toBeNull();
+    expect(parseCanonicalMid('')).toBeNull();
+  });
+
+  it('parseCanonicalMid ignores a marker-shaped line that is not the final line', () => {
+    const text = `⚓ ${CANON}\nmore text after`;
+    expect(parseCanonicalMid(text)).toBeNull();
+  });
+
+  it('parseCanonicalMid ignores a malformed marker (empty mid)', () => {
+    expect(parseCanonicalMid('body\n\n↳re m a\n⚓ ')).toBeNull();
+    expect(parseCanonicalMid('body\n\n↳re m a\n⚓ has space')).toBeNull();
+  });
+
+  it('round-trips a canonical marker on a multi-line body', () => {
+    const text = buildReplyTextWithCanonical('line one\nline two', REF, CANON);
+    expect(parseCanonicalMid(text)).toBe(CANON);
+    expect(parseMarkers(text).reply).toEqual(REF);
   });
 });
 

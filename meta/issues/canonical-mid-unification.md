@@ -59,3 +59,19 @@ everything else normalizes to it.
   identical-text matching during re-index).
 - Unit tests: marker round-trip, canonicalize normalization at every
   listed touchpoint, migration re-index trigger, identical-text aliasing.
+
+## Current Status (2026-07-06)
+
+IMPLEMENTED. Marker `⚓ <feedMid>` on DM reply copies only (feed copy format
+unchanged); store owns `canonicalByMid` + `canonicalize`/`aliasMid` with
+write-time canonicalization AND read-time query canonicalization; decision was
+**re-key on alias insertion** (aliasMid migrates pre-alias edges/tallies onto
+the feed mid, merging reactor sets) backed by read-time canonicalize as belt-
+and-braces. Historical text-twin aliasing runs during (re)index, order-
+independent. Server `targetMid` uses the canonical mid when acting on a DM copy
+(reply/react/boost), and the reply send posts the feed copy first then appends
+the canonical marker to the DM copy. Migration via persisted `schemaVersion`
+(=1): older-store load drops derived indices, keeps notifications + dedupe keys
++ pending requests; startup backfill re-indexes; no DC database touched.
+Full unit + integration suites green (QA scenario integration test added at
+tests/integration/canonical-mid.test.ts). See DEVLOG 2026-07-06.

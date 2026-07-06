@@ -23,7 +23,9 @@ import {
   buildQuotedText,
   buildReactionText,
   buildReplyText,
+  buildReplyTextWithCanonical,
   buildUnreactionText,
+  parseCanonicalMid,
   parseMarkers,
 } from './protocol.js';
 import { createStore, ephemeralStorePath, type Store } from './store.js';
@@ -173,6 +175,22 @@ export const createApp = (
     } catch (err) {
       console.error('ingest failed (non-fatal):', err);
     }
+  };
+
+  /**
+   * The mid a reply/react/boost should reference for a given target message
+   * (issue point 5). When the target's text carries a `⚓` canonical marker —
+   * i.e. it's a DM copy the user only holds privately (a non-follower's post) —
+   * the outgoing ref must use the declared canonical (feed-copy) mid, so third
+   * parties who only have feed copies can resolve the interaction. This is a
+   * pure protocol parse, so it costs no extra RPC beyond the `messageMid` the
+   * caller already needed. Returns null iff neither a marker nor `messageMid`
+   * yields a mid.
+   */
+  const targetMid = async (transport: Transport, target: T.Message): Promise<string | null> => {
+    const canonical = parseCanonicalMid(target.text);
+    if (canonical) return canonical;
+    return transport.messageMid(target.id);
   };
 
   app.use(
@@ -540,19 +558,33 @@ export const createApp = (
     if (inReplyToId) {
       const target = await transport.message(Number(inReplyToId));
       if (!target) return c.json({ error: 'Record not found' }, 404);
-      const mid = await transport.messageMid(target.id);
+      // Canonical mid of the reply target: a `⚓` marker on the target (a DM
+      // copy the user only holds) wins over the target's own DM mid (point 5).
+      const mid = await targetMid(transport, target);
       if (!mid) return c.json({ error: 'cannot resolve message id for reply target' }, 422);
       await ingest(transport, target);
 
       const ref = { mid, addr: target.sender.address };
-      const replyText = buildReplyText(text, ref);
+      // The feed broadcast copy keeps the plain reply format (its text is its
+      // identity for historical matching). Post it FIRST so we can learn its
+      // mid — the canonical identity — and declare it on the DM copy.
+      const feedText = buildReplyText(text, ref);
       const quotedText = buildQuotedText(target.sender.displayName, target.text, QUOTE_EXCERPT_CAP);
 
-      const msg = await transport.post(replyText, { quotedText });
+      const msg = await transport.post(feedText, { quotedText });
       await ingest(transport, msg);
 
       if (target.sender.id !== DC_CONTACT_ID_SELF) {
-        await transport.sendControlDm(target.sender.id, replyText, quotedText).catch((err) => {
+        // DM copy carries the canonical (feed-copy) mid so the parent author —
+        // who may only ever see this DM copy — and any third party can resolve
+        // everyone's interactions to the one feed mid. When our own DM copy is
+        // later ingested, the store's alias learning (its `⚓` marker) normalizes
+        // this node's own tallies/edges too.
+        const canonicalMid = await transport.messageMid(msg.id);
+        const dmText = canonicalMid
+          ? buildReplyTextWithCanonical(text, ref, canonicalMid)
+          : feedText;
+        await transport.sendControlDm(target.sender.id, dmText, quotedText).catch((err) => {
           console.error('sendControlDm failed (non-fatal):', err);
         });
       }
@@ -594,7 +626,8 @@ export const createApp = (
     const transport = c.get('transport');
     const target = await transport.message(Number(c.req.param('id')));
     if (!target) return c.json({ error: 'Record not found' }, 404);
-    const mid = await transport.messageMid(target.id);
+    // Canonical mid: boost the feed identity even when acting on a DM copy.
+    const mid = await targetMid(transport, target);
     if (!mid) return c.json({ error: 'cannot resolve message id to boost' }, 422);
     await ingest(transport, target);
 
@@ -648,7 +681,9 @@ export const createApp = (
     const transport = c.get('transport');
     const target = await transport.message(Number(c.req.param('id')));
     if (!target) return c.json({ error: 'Record not found' }, 404);
-    const mid = await transport.messageMid(target.id);
+    // Canonical mid: react to the feed identity even when acting on a DM copy,
+    // so a third party who only has the feed copy sees our reaction.
+    const mid = await targetMid(transport, target);
     if (!mid) return c.json({ error: 'cannot resolve message id to react to' }, 422);
     await ingest(transport, target);
 

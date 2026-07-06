@@ -18,3 +18,12 @@ destroy the favourite/reaction distinction.
 - Known subtlety, accepted: the distinction rides on the variation
   selector's presence. Emoji pickers emit the VS16 form, so in practice a
   bare ❤ only ever originates from the favourite path.
+
+## Current Status (2026-07-06)
+
+WITHDRAWN on user review. Premise was wrong: bare `❤` (favourite wire
+encoding) and `❤️` VS16 (a deliberate red-heart emoji reaction) are two
+distinct interactions by design, not duplication. No variation-selector
+stripping, no heart merging, no VS16-as-favourite. Favourite detection stays
+exact-match bare `❤`; `❤️` continues to surface as a normal emoji_reactions
+chip. Not implemented; behavior left unchanged. See DEVLOG 2026-07-06.
