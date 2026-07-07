@@ -8,6 +8,7 @@
 		fetchDeltanetStatus,
 		registerOAuthApp,
 		readPleromaSession,
+		restoreDeltanet,
 		signupDeltanet,
 		storePendingOAuth
 	} from '$lib/pleroma';
@@ -17,7 +18,8 @@
 	import { onMount } from 'svelte';
 
 	type AuthMode = 'signin' | 'signup';
-	type AuthStep = 'enter' | 'signup-success' | 'redirect';
+	type AuthStep = 'enter' | 'signup-success' | 'restore-success' | 'redirect';
+	type SignupView = 'create' | 'restore';
 
 	const scopes = ['read', 'write', 'follow'] as const satisfies readonly PleromaScope[];
 
@@ -35,6 +37,13 @@
 	let signupError = $state('');
 	let signupAddress = $state('');
 
+	let signupView = $state<SignupView>('create');
+	let restoreFile = $state<File | null>(null);
+	let restorePassphrase = $state('');
+	let restorePending = $state(false);
+	let restoreError = $state('');
+	let restoredAddress = $state('');
+
 	const selectedInstanceUrl = $derived((() => {
 		const trimmed = instance.trim().replace(/\/$/, '');
 		return /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
@@ -48,6 +57,8 @@
 		authError = '';
 		authorizationUrl = '';
 		signupError = '';
+		restoreError = '';
+		signupView = 'create';
 	};
 	const cancelRedirect = () => {
 		authAttempt += 1;
@@ -101,6 +112,44 @@
 		} catch (error) {
 			if (attempt !== authAttempt) return;
 			authError = error instanceof Error ? error.message : 'Could not start OAuth with this node.';
+		}
+	};
+
+	const restoreDisabled = $derived(!restoreFile || !restorePassphrase.trim() || restorePending);
+
+	const submitRestore = async () => {
+		if (restoreDisabled || !restoreFile) return;
+
+		restorePending = true;
+		restoreError = '';
+		try {
+			const result = await restoreDeltanet({
+				instanceUrl: selectedInstanceUrl,
+				file: restoreFile,
+				passphrase: restorePassphrase,
+				fetch: window.fetch.bind(window)
+			});
+			restoredAddress = result.acct;
+			authStep = 'restore-success';
+			restorePending = false;
+			await new Promise((resolve) => window.setTimeout(resolve, 900));
+			if (authStep !== 'restore-success') return;
+			void startOAuth();
+		} catch (error) {
+			restorePending = false;
+			if (error && typeof error === 'object' && 'kind' in error) {
+				const typed = error as { kind: string; message: string };
+				if (typed.kind === 'conflict') {
+					selectMode('signin');
+					authError = typed.message;
+					return;
+				}
+
+				restoreError = typed.message;
+				return;
+			}
+
+			restoreError = error instanceof Error ? error.message : 'Could not restore a backup on this node.';
 		}
 	};
 
@@ -219,6 +268,27 @@
 						<button type="button" class="so-cta" disabled={continueDisabled} onclick={startOAuth}>Continue</button>
 						<p class="so-footnote">DeltaNet never sees your password. Authorization is granted by your node via OAuth.</p>
 					</div>
+				{:else if authStep === 'enter' && mode === 'signup' && signupView === 'restore'}
+					<div class="so-auth-body">
+						<p class="so-blurb">Restore this node from an encrypted DeltaNet backup (.dnbk). Your address, follows, and history come back exactly as exported.</p>
+						{#if restoreError}
+							<p class="so-error">{restoreError}</p>
+						{/if}
+						<div class="so-field">
+							<label for="restore-file">Backup file</label>
+							<div class="so-input-wrap">
+								<input id="restore-file" type="file" accept=".dnbk" aria-label="Backup file" onchange={(event) => (restoreFile = event.currentTarget.files?.[0] ?? null)} />
+							</div>
+						</div>
+						<div class="so-field">
+							<label for="restore-passphrase">Backup passphrase</label>
+							<div class="so-input-wrap">
+								<input id="restore-passphrase" type="password" aria-label="Backup passphrase" value={restorePassphrase} oninput={(event) => (restorePassphrase = event.currentTarget.value)} />
+							</div>
+						</div>
+						<button type="button" class="so-cta" disabled={restoreDisabled} onclick={submitRestore}>{restorePending ? 'Restoring…' : 'Restore this node'}</button>
+						<button type="button" class="so-advanced-toggle" onclick={() => { signupView = 'create'; restoreError = ''; }}>Back to creating a new account</button>
+					</div>
 				{:else if authStep === 'enter' && mode === 'signup'}
 					<div class="so-auth-body">
 						<p class="so-blurb">Create the account for this node. You'll be assigned an email address on a chatmail relay — that's your identity on the network.</p>
@@ -248,7 +318,14 @@
 							</div>
 						{/if}
 						<button type="button" class="so-cta" disabled={signupDisabled} onclick={submitSignup}>{signupPending ? 'Creating account…' : 'Create account'}</button>
-						<p class="so-footnote">Your address lives on the relay above. You can change it later.</p>
+						<button type="button" class="so-advanced-toggle" onclick={() => { signupView = 'restore'; signupError = ''; }}>Restore from a backup instead</button>
+						<p class="so-footnote">Your address lives on the relay above. Your identity exists only on this node — keep encrypted backups (Settings → Backup), because the relay deletes addresses that stay idle for ~90 days.</p>
+					</div>
+				{:else if authStep === 'restore-success'}
+					<div class="so-auth-body so-redirect">
+						<h2>Node restored</h2>
+						<p>Welcome back, <strong>{restoredAddress}</strong>.</p>
+						<div class="so-chain" role="status">Continuing into sign-in...</div>
 					</div>
 				{:else if authStep === 'signup-success'}
 					<div class="so-auth-body so-redirect">

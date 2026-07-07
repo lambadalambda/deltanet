@@ -167,3 +167,70 @@ test('signed-out landing remains usable on mobile', async ({ page }) => {
 	await expect(page.getByRole('link', { name: 'Browse public' })).toBeVisible();
 	await expectNoHorizontalOverflow(page);
 });
+
+test('signup tab warns about the 90-day expiry and offers restore-from-backup', async ({ page }) => {
+	await setViewport(page, 'desktop');
+	await mockDeltanetStatus(page, { configured: false, address: null });
+	await page.goto('/');
+
+	await expect(page.getByText(/90 days/).first()).toBeVisible();
+	await page.getByRole('button', { name: 'Restore from a backup instead' }).click();
+	await expect(page.getByLabel('Backup file')).toBeVisible();
+	await expect(page.getByLabel('Backup passphrase')).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Restore this node' })).toBeDisabled();
+
+	await page.getByRole('button', { name: 'Back to creating a new account' }).click();
+	await expect(page.getByRole('textbox', { name: 'Display name' })).toBeVisible();
+});
+
+test('restore happy path uploads the backup and continues into OAuth sign-in', async ({ page }) => {
+	await setViewport(page, 'desktop');
+	await mockDeltanetStatus(page, { configured: false, address: null });
+	await page.goto('/');
+	const origin = new URL(page.url()).origin;
+	await mockOAuthAppRegistration(page, origin);
+
+	let restoreBody = '';
+	await page.route('**/api/deltanet/restore', async (route) => {
+		restoreBody = route.request().postData() ?? '';
+		await fulfillJson(route, { account: { acct: 'restored@nine.testrun.org' } });
+	});
+
+	await page.getByRole('button', { name: 'Restore from a backup instead' }).click();
+	await page.getByLabel('Backup file').setInputFiles({
+		name: 'deltanet-backup.dnbk',
+		mimeType: 'application/octet-stream',
+		buffer: Buffer.from('DNBK1\nfake')
+	});
+	await page.getByLabel('Backup passphrase').fill('correct horse');
+	await page.getByRole('button', { name: 'Restore this node' }).click();
+
+	await expect(page.getByText('restored@nine.testrun.org')).toBeVisible();
+	expect(restoreBody).toContain('name="passphrase"');
+	expect(restoreBody).toContain('correct horse');
+	expect(restoreBody).toContain('filename="deltanet-backup.dnbk"');
+
+	await expect(page.getByText(`Redirecting to ${origin}`)).toBeVisible();
+});
+
+test('restore surfaces a wrong-passphrase error and stays on the form', async ({ page }) => {
+	await setViewport(page, 'desktop');
+	await mockDeltanetStatus(page, { configured: false, address: null });
+	await page.goto('/');
+
+	await page.route('**/api/deltanet/restore', async (route) => {
+		await fulfillJson(route, { error: 'wrong passphrase or corrupted backup file' }, 422);
+	});
+
+	await page.getByRole('button', { name: 'Restore from a backup instead' }).click();
+	await page.getByLabel('Backup file').setInputFiles({
+		name: 'deltanet-backup.dnbk',
+		mimeType: 'application/octet-stream',
+		buffer: Buffer.from('DNBK1\nfake')
+	});
+	await page.getByLabel('Backup passphrase').fill('wrong');
+	await page.getByRole('button', { name: 'Restore this node' }).click();
+
+	await expect(page.getByText('wrong passphrase or corrupted backup file')).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Restore this node' })).toBeVisible();
+});

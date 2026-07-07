@@ -303,3 +303,71 @@ test('real settings route stays touch-friendly on mobile', async ({ page }) => {
 	expect(toggleBox?.height ?? 0).toBeGreaterThanOrEqual(40);
 	await expectNoHorizontalOverflow(page);
 });
+
+test('backup card nags when no backup exists and downloads an encrypted backup', async ({ page }) => {
+	await authenticate(page);
+	await setViewport(page, 'wide');
+
+	await page.route('https://pleroma.example/api/deltanet/backup', async (route: Route) => {
+		await fulfillJson(route, { last_backup_at: null });
+	});
+	let exportBody: unknown;
+	await page.route('https://pleroma.example/api/deltanet/backup/export', async (route: Route) => {
+		exportBody = route.request().postDataJSON();
+		await route.fulfill({
+			status: 200,
+			contentType: 'application/octet-stream',
+			headers: {
+				// Mirrors the daemon: Content-Disposition must be CORS-exposed or a
+				// cross-origin frontend can't read the filename.
+				'access-control-allow-origin': '*',
+				'access-control-expose-headers': 'Content-Disposition',
+				'content-disposition': 'attachment; filename="deltanet-backup-quietadmin-2026-07-07.dnbk"'
+			},
+			body: Buffer.from('DNBK1\nfake-container-bytes')
+		});
+	});
+
+	await page.goto('/app/settings');
+
+	const card = page.getByTestId('backup-card');
+	await expect(card.getByRole('heading', { name: 'Backup & identity' })).toBeVisible();
+	await expect(card).toContainText('90 days');
+	await expect(page.getByTestId('backup-status')).toContainText('No backup has ever been made');
+
+	const exportButton = page.getByRole('button', { name: 'Download encrypted backup' });
+	await expect(exportButton).toBeDisabled();
+	await page.getByLabel('Backup passphrase').fill('correct horse battery');
+
+	const downloadPromise = page.waitForEvent('download');
+	await exportButton.click();
+	const download = await downloadPromise;
+	expect(download.suggestedFilename()).toBe('deltanet-backup-quietadmin-2026-07-07.dnbk');
+	expect(exportBody).toMatchObject({ passphrase: 'correct horse battery' });
+
+	await expect(page.getByTestId('backup-saved')).toContainText('deltanet-backup-quietadmin-2026-07-07.dnbk');
+	await expect(page.getByTestId('backup-status')).toContainText('Last backup');
+	// The passphrase field clears after a successful export.
+	await expect(page.getByLabel('Backup passphrase')).toHaveValue('');
+});
+
+test('backup card nags about a stale backup and surfaces export failures', async ({ page }) => {
+	await authenticate(page);
+	await setViewport(page, 'wide');
+
+	const sixtyDaysAgo = Date.now() - 60 * 24 * 60 * 60 * 1000;
+	await page.route('https://pleroma.example/api/deltanet/backup', async (route: Route) => {
+		await fulfillJson(route, { last_backup_at: sixtyDaysAgo });
+	});
+	await page.route('https://pleroma.example/api/deltanet/backup/export', async (route: Route) => {
+		await fulfillJson(route, { error: 'backup export exploded' }, 500);
+	});
+
+	await page.goto('/app/settings');
+
+	await expect(page.getByTestId('backup-status')).toContainText('over a month ago');
+
+	await page.getByLabel('Backup passphrase').fill('pw');
+	await page.getByRole('button', { name: 'Download encrypted backup' }).click();
+	await expect(page.getByTestId('backup-error')).toContainText('backup export exploded');
+});

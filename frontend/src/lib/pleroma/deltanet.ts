@@ -142,6 +142,129 @@ export const fetchDeltanetInvite = async ({
 	return (payload as { invite: string }).invite;
 };
 
+export type DeltanetBackupInfo = { lastBackupAt: number | null };
+export type DeltanetRestoreError =
+	| { kind: 'conflict'; message: string }
+	| { kind: 'invalid'; message: string }
+	| { kind: 'network'; message: string };
+
+/** ~1 month: past this (or with no backup at all) the settings card nags. */
+export const BACKUP_NAG_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
+
+export const backupNagState = (lastBackupAt: number | null, now: number): 'never' | 'stale' | 'fresh' =>
+	lastBackupAt === null ? 'never' : now - lastBackupAt > BACKUP_NAG_AFTER_MS ? 'stale' : 'fresh';
+
+export const fetchDeltanetBackupInfo = async ({
+	instanceUrl,
+	accessToken,
+	fetch: fetchImpl
+}: {
+	instanceUrl: string;
+	accessToken: string;
+	fetch?: FetchLike;
+}): Promise<DeltanetBackupInfo> => {
+	const requestFetch = fetchImpl ?? globalThis.fetch?.bind(globalThis);
+	if (!requestFetch) throw new Error('A fetch implementation is required for deltanet requests.');
+
+	const response = await requestFetch(new URL('/api/deltanet/backup', instanceUrl).toString(), {
+		headers: { accept: 'application/json', authorization: `Bearer ${accessToken}` }
+	});
+	const payload = await readJsonBody(response);
+	if (!response.ok || !payload || typeof payload !== 'object') {
+		throw new Error('Could not read this node’s backup status.');
+	}
+	const at = (payload as { last_backup_at?: unknown }).last_backup_at;
+	return { lastBackupAt: typeof at === 'number' ? at : null };
+};
+
+export const exportDeltanetBackup = async ({
+	instanceUrl,
+	accessToken,
+	passphrase,
+	fetch: fetchImpl
+}: {
+	instanceUrl: string;
+	accessToken: string;
+	passphrase: string;
+	fetch?: FetchLike;
+}): Promise<{ blob: Blob; filename: string }> => {
+	const requestFetch = fetchImpl ?? globalThis.fetch?.bind(globalThis);
+	if (!requestFetch) throw new Error('A fetch implementation is required for deltanet requests.');
+
+	const response = await requestFetch(new URL('/api/deltanet/backup/export', instanceUrl).toString(), {
+		method: 'POST',
+		headers: {
+			accept: 'application/octet-stream',
+			'content-type': 'application/json',
+			authorization: `Bearer ${accessToken}`
+		},
+		body: JSON.stringify({ passphrase })
+	});
+	if (!response.ok) {
+		const payload = await readJsonBody(response);
+		throw new Error(errorMessage(payload, 'Could not export a backup from this node.'));
+	}
+	const disposition = response.headers.get('content-disposition') ?? '';
+	const filename = /filename="([^"]+)"/.exec(disposition)?.[1] ?? 'deltanet-backup.dnbk';
+	return { blob: await response.blob(), filename };
+};
+
+export const restoreDeltanet = async ({
+	instanceUrl,
+	file,
+	passphrase,
+	fetch: fetchImpl
+}: {
+	instanceUrl: string;
+	file: File;
+	passphrase: string;
+	fetch?: FetchLike;
+}): Promise<{ acct: string }> => {
+	const requestFetch = fetchImpl ?? globalThis.fetch?.bind(globalThis);
+	if (!requestFetch) throw new Error('A fetch implementation is required for deltanet requests.');
+
+	const form = new FormData();
+	form.append('file', file);
+	form.append('passphrase', passphrase);
+	let response: Response;
+	try {
+		response = await requestFetch(new URL('/api/deltanet/restore', instanceUrl).toString(), {
+			method: 'POST',
+			headers: { accept: 'application/json' },
+			body: form
+		});
+	} catch (cause) {
+		throw {
+			kind: 'network',
+			message: cause instanceof Error ? cause.message : 'Could not reach this node to restore.'
+		} satisfies DeltanetRestoreError;
+	}
+
+	const payload = await readJsonBody(response);
+	if (response.status === 409) {
+		throw {
+			kind: 'conflict',
+			message: 'This node already has an account — sign in instead.'
+		} satisfies DeltanetRestoreError;
+	}
+	if (response.status === 422) {
+		throw {
+			kind: 'invalid',
+			message: errorMessage(payload, 'That backup file or passphrase was not accepted.')
+		} satisfies DeltanetRestoreError;
+	}
+	if (!response.ok) {
+		throw {
+			kind: 'network',
+			message: errorMessage(payload, 'Could not restore a backup on this node.')
+		} satisfies DeltanetRestoreError;
+	}
+
+	const account = payload && typeof payload === 'object' ? (payload as { account?: { acct?: unknown } }).account : null;
+	const acct = account && typeof account.acct === 'string' ? account.acct : '';
+	return { acct };
+};
+
 export const isFeedInvite = (value: string) => {
 	const trimmed = value.trim();
 	return trimmed.startsWith('https://i.delta.chat/') || trimmed.toUpperCase().startsWith('OPENPGP4FPR:');

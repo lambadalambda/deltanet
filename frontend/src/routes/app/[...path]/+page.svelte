@@ -27,7 +27,15 @@
 	import TimelineNewPostsIndicator from '$lib/rebuild/TimelineNewPostsIndicator.svelte';
 	import { accountsFromPleromaNotifications, accountsFromPleromaStatus, accountsFromPleromaStatuses, createPleromaAccountCache, getCachedPleromaAccount, upsertPleromaAccounts } from '$lib/pleroma/account-cache';
 	import { createPleromaClient } from '$lib/pleroma/client';
-	import { fetchDeltanetInvite, followDeltanetInvite, isFeedInvite } from '$lib/pleroma/deltanet';
+	import {
+		backupNagState,
+		exportDeltanetBackup,
+		fetchDeltanetBackupInfo,
+		fetchDeltanetInvite,
+		followDeltanetInvite,
+		isFeedInvite,
+		type DeltanetBackupInfo
+	} from '$lib/pleroma/deltanet';
 	import { NOTIFICATION_POLL_EVENT, NOTIFICATION_POLL_INTERVAL_MS, readNotificationLastSeenAt, writeNotificationLastSeenAt } from '$lib/pleroma/notifications';
 	import { readPleromaSession, signOutPleroma, writePleromaSession } from '$lib/pleroma/session';
 	import { openPleromaTimelineStream } from '$lib/pleroma/streaming';
@@ -270,6 +278,12 @@
 	let inviteState = $state<PleromaRequestState<string>>({ status: 'idle' });
 	let inviteRequestId = 0;
 	let loadedInviteKey = '';
+	let backupInfo = $state<DeltanetBackupInfo | null>(null);
+	let loadedBackupInfoKey = '';
+	let backupPassphrase = $state('');
+	let backupBusy = $state(false);
+	let backupError = $state('');
+	let backupSavedAs = $state('');
 	let followInviteInput = $state('');
 	let followInvitePending = $state(false);
 	let replySort = $state<ReplySort>('top');
@@ -2183,6 +2197,54 @@
 		loadedInviteKey = requestSessionKey;
 		void loadInvite(session);
 	};
+	const ensureBackupInfo = (session: PleromaSession) => {
+		const requestSessionKey = sessionKey(session);
+		if (loadedBackupInfoKey === requestSessionKey) return;
+
+		loadedBackupInfoKey = requestSessionKey;
+		void (async () => {
+			try {
+				const info = await fetchDeltanetBackupInfo({
+					instanceUrl: session.instanceUrl,
+					accessToken: session.accessToken,
+					fetch: window.fetch.bind(window)
+				});
+				if (!isCurrentSessionRequest(requestSessionKey)) return;
+				backupInfo = info;
+			} catch {
+				// The card still renders with an unknown last-backup state.
+			}
+		})();
+	};
+	const downloadBackup = async () => {
+		const session = currentSession;
+		if (!session || !backupPassphrase.trim() || backupBusy) return;
+
+		backupBusy = true;
+		backupError = '';
+		backupSavedAs = '';
+		try {
+			const { blob, filename } = await exportDeltanetBackup({
+				instanceUrl: session.instanceUrl,
+				accessToken: session.accessToken,
+				passphrase: backupPassphrase,
+				fetch: window.fetch.bind(window)
+			});
+			const url = URL.createObjectURL(blob);
+			const link = document.createElement('a');
+			link.href = url;
+			link.download = filename;
+			link.click();
+			URL.revokeObjectURL(url);
+			backupSavedAs = filename;
+			backupInfo = { lastBackupAt: Date.now() };
+			backupPassphrase = '';
+		} catch (error) {
+			backupError = error instanceof Error ? error.message : 'Could not export a backup.';
+		} finally {
+			backupBusy = false;
+		}
+	};
 	const copyInviteLink = async (invite: string) => {
 		try {
 			await writeClipboardText(invite);
@@ -3800,6 +3862,7 @@
 			}
 			if (route === 'search') ensureSearch(session, searchQuery);
 			if (route === 'bookmarks') ensureBookmarks(session);
+			if (route === 'settings') ensureBackupInfo(session);
 			if (route === 'thread' || route === 'profile') ensureComposerCustomEmojis(session);
 		}
 		if (session && pathname.startsWith('/app/home')) {
@@ -4696,6 +4759,53 @@
 						{#if settingsSaveError}
 							<div class="settings-save-error" data-testid="settings-save-error" role="alert">{settingsSaveError.title}: {settingsSaveError.message}</div>
 						{/if}
+					</section>
+					<section class="card app-panel settings-panel" data-testid="backup-card" aria-label="Backup">
+							<div class="crumbs">Settings / Backup</div>
+							<h1>Backup &amp; identity</h1>
+							<p>
+								Your identity lives only in this node's data directory — the relay stores nothing for you,
+								and deletes idle addresses after about 90 days. Download an encrypted backup so a lost disk
+								doesn't mean losing your address, follows, and history.
+							</p>
+							{#if backupInfo}
+								{@const nag = backupNagState(backupInfo.lastBackupAt, Date.now())}
+								<p class="backup-status" data-testid="backup-status" class:backup-nag={nag !== 'fresh'}>
+									{#if nag === 'never'}
+										No backup has ever been made on this node.
+									{:else if nag === 'stale'}
+										Last backup {new Date(backupInfo.lastBackupAt!).toLocaleDateString()} — over a month ago. Time for a fresh one.
+									{:else}
+										Last backup {new Date(backupInfo.lastBackupAt!).toLocaleDateString()}.
+									{/if}
+								</p>
+							{/if}
+							<div class="field">
+								<label class="field-label" for="backup-passphrase">Backup passphrase</label>
+								<input
+									id="backup-passphrase"
+									class="input"
+									type="password"
+									autocomplete="new-password"
+									value={backupPassphrase}
+									oninput={(event) => (backupPassphrase = event.currentTarget.value)}
+								/>
+								<div class="field-help">Encrypts the download. You will need it to restore — there is no way to recover a forgotten passphrase.</div>
+							</div>
+							<div class="settings-actions">
+								<button type="button" class="btn-primary" onclick={downloadBackup} disabled={!backupPassphrase.trim() || backupBusy}>
+									{backupBusy ? 'Exporting…' : 'Download encrypted backup'}
+								</button>
+							</div>
+							{#if backupSavedAs}
+								<p class="backup-status" data-testid="backup-saved" role="status">Backup saved as {backupSavedAs}. Keep it somewhere that isn't this disk.</p>
+							{/if}
+							{#if backupError}
+								<div class="settings-save-error" data-testid="backup-error" role="alert">{backupError}</div>
+							{/if}
+							<p class="field-help">
+								Restoring: on a fresh node, choose “Restore from a backup” on the landing page instead of creating an account.
+							</p>
 					</section>
 				{:else}
 					<section class="card app-panel">
