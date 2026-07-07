@@ -41,6 +41,16 @@ export interface Transport {
   post(text: string, opts?: PostOptions): Promise<T.Message>;
   /** Invite link others use to follow (join) our feed. */
   feedInvite(): Promise<string>;
+  /**
+   * Export core's passphrase-encrypted backup tar into `destDir` and return
+   * the written file's path. Stamps the last-backup timestamp config on
+   * success (see `lastBackupAt`). NOTE: this is only the CORE half of a
+   * deltanet backup — the API layer wraps it with the encrypted sidecar
+   * (signing key + store) into a `.dnbk` container (see ../backup.ts).
+   */
+  exportBackup(destDir: string, passphrase: string): Promise<string>;
+  /** ms-epoch of the last successful `exportBackup`, or null if never. */
+  lastBackupAt(): Promise<number | null>;
   /** Join someone else's feed from their invite link. Returns the chat id. */
   follow(invite: string): Promise<number>;
   /**

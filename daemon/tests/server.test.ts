@@ -14,8 +14,13 @@ const midTok = (mid: string): RefToken => ({ kind: 'mid', mid });
 const midRef = (mid: string, addr: string) => refFromToken({ kind: 'mid', mid }, addr);
 import { createStreamingHub, type StreamingSocket } from '../src/streaming.js';
 import { makeContact, makeMessage } from './entities.test.js';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 const BASE = 'http://localhost:4030';
+
+/** What the fake transport's exportBackup writes as "core's tar" (bytes only matter for round-trips). */
+const FAKE_CORE_TAR = Buffer.from('FAKE-DELTA-CHAT-BACKUP-TAR-BYTES');
 
 const BOB = makeContact({ id: 11, address: 'zbie604yz@nine.testrun.org', displayName: 'bob' });
 
@@ -65,6 +70,7 @@ const makeFakeTransport = () => {
     { contactId: 11, chatId: 200, name: "bob's feed", addr: BOB.address },
   ];
   const followerHandlers = new Set<(contactId: number) => void>();
+  let lastBackupStamp: number | null = null;
   const transport: Transport = {
     self: async () => self,
     updateProfile: async (updates) => {
@@ -96,6 +102,15 @@ const makeFakeTransport = () => {
       return msg;
     },
     feedInvite: async () => 'OPENPGP4FPR:FAKEINVITE',
+    // Fake core backup: writes a recognizable "tar" into destDir like core's
+    // exportBackup does, and stamps the last-backup timestamp.
+    exportBackup: async (destDir, _passphrase) => {
+      const path = join(destDir, 'delta-chat-backup-fake.tar');
+      writeFileSync(path, FAKE_CORE_TAR);
+      lastBackupStamp = Date.now();
+      return path;
+    },
+    lastBackupAt: async () => lastBackupStamp,
     follow: async () => 99,
     contact: async (id) => (id === 1 ? self : id === 11 ? BOB : null),
     contactIdByAddr: async (addr) => {

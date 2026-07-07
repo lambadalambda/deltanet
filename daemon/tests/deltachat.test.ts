@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   badgeOf,
   blockedContactIds,
+  credsFromConfig,
   isFeedChat,
   matchesSelfAddr,
   shouldIngest,
@@ -116,5 +117,23 @@ describe('badgeOf', () => {
   it('ignores the self displayname for non-SELF contacts', () => {
     const bob = makeContact({ id: 11, displayName: 'bob', color: '#0000ff' });
     expect(badgeOf(bob, 'carol')).toEqual({ initial: 'B', color: '#0000ff' });
+  });
+});
+
+describe('credsFromConfig (backup restore)', () => {
+  it('prefers configured_addr and falls back to addr', () => {
+    expect(
+      credsFromConfig({ configuredAddr: 'a@x.y', addr: 'stale@x.y', password: 'pw', displayName: 'A' }),
+    ).toEqual({ addr: 'a@x.y', password: 'pw', displayName: 'A' });
+    expect(credsFromConfig({ addr: 'b@x.y', password: 'pw', displayName: 'B' })?.addr).toBe('b@x.y');
+  });
+
+  it('derives a display name from the addr local part when the backup has none', () => {
+    expect(credsFromConfig({ addr: 'carol@relay.example', password: 'pw' })?.displayName).toBe('carol');
+  });
+
+  it('is null without any address (unusable backup)', () => {
+    expect(credsFromConfig({ password: 'pw', displayName: 'X' })).toBeNull();
+    expect(credsFromConfig({ configuredAddr: null, addr: '' })).toBeNull();
   });
 });

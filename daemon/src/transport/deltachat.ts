@@ -237,6 +237,87 @@ export const openTransport = async (
     }
   }
   await rpc.startIo(accountId);
+  return buildTransport(dc, accountId, creds, options);
+};
+
+/** Config key stamped (ms-epoch) after every successful `exportBackup` — travels inside future backups. */
+export const LAST_BACKUP_AT_KEY = 'ui.deltanet.last_backup_at';
+
+/**
+ * Pure mapper: reconstruct `ChatmailCredentials` from an imported backup's
+ * config reads (`configured_addr`/`addr`/`configured_mail_pw`/`displayname`).
+ * Null when no address survived — an unusable backup. Extracted so the
+ * fallback ladder is unit-testable without a running core.
+ */
+export const credsFromConfig = (cfg: {
+  addr?: string | null;
+  configuredAddr?: string | null;
+  password?: string | null;
+  displayName?: string | null;
+}): ChatmailCredentials | null => {
+  const addr = cfg.configuredAddr || cfg.addr;
+  if (!addr) return null;
+  return {
+    addr,
+    password: cfg.password ?? '',
+    displayName: cfg.displayName || (addr.split('@')[0] ?? addr),
+  };
+};
+
+/**
+ * Boot a transport for a FRESH data dir by importing a core backup tar
+ * (`importBackup`) instead of configuring credentials — the restore-instead-
+ * of-signup path. The backup carries the account config (addr/password/
+ * displayname), which is read back out and returned alongside the transport so
+ * the caller can persist it to the accounts file (a later normal
+ * `openTransport` boot then finds an already-configured account and skips
+ * configuration entirely). Throws if the data dir already has a configured
+ * account or core rejects the tar/passphrase; the spawned core process is
+ * closed on every failure path.
+ */
+export const restoreTransport = async (
+  dataDir: string,
+  backupTarPath: string,
+  passphrase: string,
+  options: OpenTransportOptions = {},
+): Promise<{ transport: DeltaChatTransport; creds: ChatmailCredentials }> => {
+  const dc = startDeltaChat(dataDir, { muteStdErr: true });
+  const rpc = dc.rpc;
+  try {
+    const accountIds = await rpc.getAllAccountIds();
+    const accountId = accountIds[0] ?? (await rpc.addAccount());
+    if (await rpc.isConfigured(accountId)) {
+      throw new Error('this data dir already has a configured account');
+    }
+    await rpc.importBackup(accountId, backupTarPath, passphrase);
+    const [configuredAddr, addr, password, displayName] = await Promise.all([
+      rpc.getConfig(accountId, 'configured_addr').catch(() => null),
+      rpc.getConfig(accountId, 'addr').catch(() => null),
+      rpc.getConfig(accountId, 'configured_mail_pw').catch(() => null),
+      rpc.getConfig(accountId, 'displayname').catch(() => null),
+    ]);
+    const creds = credsFromConfig({ configuredAddr, addr, password, displayName });
+    if (!creds) throw new Error('restored account carries no address');
+    await rpc.startIo(accountId);
+    return { transport: buildTransport(dc, accountId, creds, options), creds };
+  } catch (err) {
+    dc.close();
+    throw err;
+  }
+};
+
+/**
+ * Everything `openTransport` (signup/normal boot) and `restoreTransport`
+ * (backup import) share, given an already-configured, IO-started account:
+ * event wiring, ingestion machinery, and the whole Transport surface.
+ */
+const buildTransport = (
+  dc: ReturnType<typeof startDeltaChat>,
+  accountId: number,
+  creds: ChatmailCredentials,
+  options: OpenTransportOptions,
+): DeltaChatTransport => {
+  const rpc = dc.rpc;
 
   // Reaction/reply control DMs from a node we don't yet have an accepted
   // 1:1 chat with land in a contact-request chat. Core suppresses
@@ -569,6 +650,34 @@ export const openTransport = async (
     feedInvite: async () => {
       const chatId = await ensureFeedChat();
       return rpc.getChatSecurejoinQrCode(accountId, chatId);
+    },
+
+    exportBackup: async (destDir: string, passphrase: string) => {
+      // Core picks the tar's filename; `ImexFileWritten` reports it. Subscribe
+      // before starting the export so the write can't race the listener.
+      let written: string | null = null;
+      const onWritten = (eventAccountId: number, event: { path: string }) => {
+        if (eventAccountId === accountId) written = event.path;
+      };
+      dc.on('ImexFileWritten', onWritten);
+      try {
+        await rpc.exportBackup(accountId, destDir, passphrase);
+      } finally {
+        dc.off('ImexFileWritten', onWritten);
+      }
+      if (!written) throw new Error('backup export produced no file');
+      // Stamped only AFTER a successful export, so the nag never reads a
+      // failed attempt as a backup. Lives in config (not the store) so the
+      // value travels inside future backups: a restored node knows when its
+      // dc.db was last exported.
+      await rpc.setConfig(accountId, LAST_BACKUP_AT_KEY, String(Date.now()));
+      return written;
+    },
+
+    lastBackupAt: async () => {
+      const raw = await rpc.getConfig(accountId, LAST_BACKUP_AT_KEY).catch(() => null);
+      const parsed = Number(raw);
+      return raw && Number.isFinite(parsed) ? parsed : null;
     },
 
     createBroadcast: async (name: string) => rpc.createBroadcast(accountId, name),
