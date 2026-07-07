@@ -21,3 +21,5 @@
 - [x] [Non-follower nodes: DM-only replies invisible; own reactions lost on re-index](issues/non-follower-thread-rendering.md)
 - [x] [Podman-based ephemeral chatmail relay for integration tests](issues/podman-test-relay.md)
 - [x] [Wire format v2: structured JSON bodies](issues/wire-v2-json.md)
+- [x] [Profile deep links fail outside in-app navigation](issues/profile-deep-links.md)
+- [x] [Hygiene: pin core exactly; honest timeline labels](issues/hygiene-core-pin-timeline-labels.md)
