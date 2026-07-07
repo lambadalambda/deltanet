@@ -237,6 +237,13 @@ export type Attestor = {
    * `env.ts` if already set (send path stamps it), else `Date.now()`.
    */
   sign(env: Envelope, addr: string): { ts: number; pubkey: string; sig: string };
+  /**
+   * Drop the cached key pair so the next use re-reads `keyPath` — the
+   * backup-restore seam: a restore writes the restored signing key file under
+   * a live daemon, and without this the closure would keep signing with the
+   * pre-restore key.
+   */
+  reload(): void;
 };
 
 /**
@@ -340,6 +347,10 @@ export const openAttestor = (keyPath: string): Attestor => {
       const payload = canonicalPayload(fieldsFromEnvelope({ ...env, ts }, addr));
       const sig = edSign(null, payload, priv!).toString('base64');
       return { ts, pubkey: pubB64!, sig };
+    },
+    reload: () => {
+      priv = null;
+      pubB64 = null;
     },
   };
 };

@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, existsSync, statSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, existsSync, statSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -576,5 +576,27 @@ describe('openAttestor / sign / verify', () => {
       const signed: Envelope = { ...env, ...a.sign(env, ADDR) };
       expect(verify({ ...signed, root: { u: 'altered', addr: 'alice@x' } }, ADDR)).toBe(false);
     });
+  });
+});
+
+describe('attestor reload (backup restore seam)', () => {
+  it('picks up a key file swapped underneath it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'deltanet-attest-reload-'));
+    try {
+      const keyPath = join(dir, 'key.json');
+      const attestor = openAttestor(keyPath);
+      const before = attestor.publicKeyBase64(); // generates + writes the file
+
+      const otherPath = join(dir, 'restored-key.json');
+      const restored = openAttestor(otherPath);
+      const restoredPub = restored.publicKeyBase64();
+      writeFileSync(keyPath, readFileSync(otherPath));
+
+      attestor.reload();
+      expect(attestor.publicKeyBase64()).toBe(restoredPub);
+      expect(attestor.publicKeyBase64()).not.toBe(before);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

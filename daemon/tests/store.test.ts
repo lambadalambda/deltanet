@@ -1251,3 +1251,33 @@ describe('createStore: TOFU key pins', () => {
     expect(createStore(filePath).pinnedKey(ALICE)).toBe('KEY_A');
   });
 });
+
+describe('reload (backup restore seam)', () => {
+  it('drops the in-memory cache and re-reads the file on next access', () => {
+    const store = createStore(filePath);
+    store.markRepublished('uuid-before');
+    expect(store.wasRepublished('uuid-before')).toBe(true);
+
+    // Simulate a restore: a different store file lands at the same path.
+    const otherPath = join(dir, 'restored.json');
+    const other = createStore(otherPath);
+    other.markRepublished('uuid-restored');
+    writeFileSync(filePath, readFileSync(otherPath));
+
+    store.reload();
+    expect(store.wasRepublished('uuid-restored')).toBe(true);
+    expect(store.wasRepublished('uuid-before')).toBe(false);
+  });
+
+  it('runs migration on reload when the restored file is an older schema', () => {
+    const store = createStore(filePath);
+    store.markRepublished('uuid-x');
+    const raw = JSON.parse(readFileSync(filePath, 'utf8'));
+    raw.schemaVersion = 0;
+    writeFileSync(filePath, JSON.stringify(raw));
+    store.reload();
+    // Non-derivable state survives the migrate re-index, same as a fresh load.
+    expect(store.wasRepublished('uuid-x')).toBe(true);
+    expect(JSON.parse(readFileSync(filePath, 'utf8')).schemaVersion).toBe(STORE_SCHEMA_VERSION);
+  });
+});

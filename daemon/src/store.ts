@@ -532,6 +532,15 @@ export type Store = {
   /** Mark reply `uuid` as republished (dedupe; idempotent). */
   markRepublished(uuid: string): void;
 
+  /**
+   * Drop the in-memory cache and re-read the store file — the backup-restore
+   * seam: a restore writes the restored store file to disk under a live
+   * daemon, and without this every module holding this store object would
+   * keep serving the pre-restore (empty) state. Runs migration exactly like
+   * a fresh load if the restored file is an older schema.
+   */
+  reload(): void;
+
   /** Record that we SUBSCRIBE to thread `rootUuid` via joined chat `chatId`. Overwrites. */
   addThreadSubscription(rootUuid: string, chatId: number): void;
   /** The chatId we joined for thread `rootUuid`, or null if not subscribed. */
@@ -1094,6 +1103,11 @@ export const createStore = (
       if (d.republishedUuids[uuid] === true) return;
       d.republishedUuids[uuid] = true;
       save();
+    },
+
+    reload: () => {
+      data = null;
+      load();
     },
 
     addThreadSubscription: (rootUuid, chatId) => {
