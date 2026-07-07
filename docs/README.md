@@ -8,6 +8,10 @@
   chatmail federation vs the fediverse — matches, clashes, UX
   consequences, and what deltanet can do that ActivityPub can't.
 
+- [design-sketches.md](design-sketches.md) — unscheduled design ideas: channel-based
+  visibility tiers + directory node, verifiable reaction receipts,
+  subscribable threads (root-author-as-host).
+
 Design history and day-by-day findings live in the repo-root DEVLOG.md;
 the wire convention itself is documented there (v0 markers → v1 post
 UUIDs).
