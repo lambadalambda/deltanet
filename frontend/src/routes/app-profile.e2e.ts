@@ -895,10 +895,12 @@ test('petnames: set from the profile, rendered as a chip after their chosen name
 	await profile.getByRole('textbox', { name: 'Petname' }).fill('carol');
 	await profile.getByRole('button', { name: 'Save' }).click();
 
-	expect(petnameBody).toEqual({ petname: 'carol' });
 	// Their chosen name stays the heading; my petname renders as the chip.
+	// (UI assertions first: they auto-wait for the intercepted POST to round-trip,
+	// so the recorded body check below is deterministic on slow runners.)
 	await expect(profile.getByRole('heading', { name: 'Carol Sparkle' })).toBeVisible();
 	await expect(profile.getByTestId('petname-chip')).toContainText('carol');
+	expect(petnameBody).toEqual({ petname: 'carol' });
 	// The follow state was NOT clobbered by the petname response (no
 	// relationship in that payload).
 	await expect(profile).toContainText('Following');
