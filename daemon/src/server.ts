@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { Hono, type Context, type Next } from 'hono';
 import { cors } from 'hono/cors';
 import { serveStatic } from '@hono/node-server/serve-static';
@@ -37,6 +38,13 @@ import {
 } from './envelope.js';
 import { parseWire, parseWireUuid } from './wire.js';
 import { openAttestor, sha256File } from './attest.js';
+import {
+  BackupDecodeError,
+  backupFilename,
+  decodeBackupContainer,
+  encodeBackupContainer,
+  type BackupSidecar,
+} from './backup.js';
 import { createStore, ephemeralStorePath, type Store } from './store.js';
 import { deriveOnIngest } from './ingest.js';
 import { createStatusMapper, mapNotification } from './mapping.js';
@@ -90,6 +98,15 @@ export type ServerOptions = {
 export type AppContext = {
   getTransport(): Transport | null;
   signup(displayName: string, relay: string): Promise<Transport>;
+  /**
+   * Restore-instead-of-signup (see ../meta/issues/backup-second-device.md):
+   * import a CORE backup tar into this node's data dir, open the transport,
+   * and persist the recovered credentials — main.ts's mirror of `signup`.
+   * The API layer has already unpacked the `.dnbk` container and written the
+   * sidecar files by the time this runs. Optional so test contexts without a
+   * real data dir stay minimal; the endpoint answers 501 when absent.
+   */
+  restore?(backupTarPath: string, passphrase: string): Promise<Transport>;
 };
 
 type TransportEnv = { Variables: { transport: Transport } };
@@ -146,7 +163,8 @@ export const createApp = (
   // Per-account ed25519 signing key (post attestations, sketch #6). Persisted
   // in the account data dir exactly like the store — never logged. Falls back
   // to a scratch dir when no real data dir is provided (tests).
-  const attestor = openAttestor(join(profileDir, 'deltanet-signing-key.json'));
+  const attestorKeyPath = join(profileDir, 'deltanet-signing-key.json');
+  const attestor = openAttestor(attestorKeyPath);
 
   /**
    * Attest a content envelope: stamp `{ ts, pubkey, sig }` over its canonical
@@ -572,6 +590,123 @@ export const createApp = (
     const relay = body.relay ?? DEFAULT_RELAY;
     const transport = await ctx.signup(displayName, relay);
     return c.json({ account: contactToAccount(await transport.self(), baseUrl) });
+  });
+
+  // --- deltanet: backup & restore (see ../meta/issues/backup-second-device.md)
+
+  app.get('/api/deltanet/backup', requireTransport, async (c) =>
+    c.json({ last_backup_at: await c.get('transport').lastBackupAt() }),
+  );
+
+  app.post('/api/deltanet/backup/export', requireTransport, async (c) => {
+    const transport = c.get('transport');
+    const body = await c.req.json<{ passphrase?: string }>().catch(() => ({}) as { passphrase?: string });
+    const passphrase = String(body.passphrase ?? '');
+    if (!passphrase) {
+      return c.json({ error: "Validation failed: passphrase can't be blank" }, 422);
+    }
+    const self = await transport.self();
+    // Core writes its tar into a directory of our choosing; a scratch dir keeps
+    // the (large, sensitive) intermediate out of the data dir and lets cleanup
+    // be one recursive rm. v0 assembles the container in memory — a single-user
+    // dc.db is tens of MB; revisit with streaming if media makes this a problem.
+    const scratch = mkdtempSync(join(tmpdir(), 'deltanet-export-'));
+    try {
+      const tarPath = await transport.exportBackup(scratch, passphrase);
+      const exportedAt = Date.now();
+      const sidecar: BackupSidecar = {
+        addr: self.address,
+        exportedAt,
+        // Both are lazily created, so either may legitimately not exist yet
+        // (a node that never signed / never persisted derived state).
+        ...(existsSync(attestorKeyPath)
+          ? { signingKey: readFileSync(attestorKeyPath, 'utf8') }
+          : {}),
+        ...(existsSync(store.filePath) ? { store: readFileSync(store.filePath, 'utf8') } : {}),
+      };
+      const container = encodeBackupContainer(
+        { sidecar, coreTar: readFileSync(tarPath) },
+        passphrase,
+      );
+      c.header('Content-Type', 'application/octet-stream');
+      c.header(
+        'Content-Disposition',
+        `attachment; filename="${backupFilename(self.address, exportedAt)}"`,
+      );
+      // Copy into a plain Uint8Array: Buffer's ArrayBufferLike generic doesn't
+      // satisfy the web-typed body data union.
+      return c.body(new Uint8Array(container));
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
+  app.post('/api/deltanet/restore', async (c) => {
+    if (ctx.getTransport()) return c.json({ error: 'already configured' }, 409);
+    if (!ctx.restore) return c.json({ error: 'restore not supported' }, 501);
+    const body = await c.req.parseBody().catch(() => null);
+    const file = body?.['file'];
+    const passphrase = String(body?.['passphrase'] ?? '');
+    if (!(file instanceof File) || !passphrase) {
+      return c.json({ error: 'Validation failed: file and passphrase are required' }, 422);
+    }
+    let sidecar: BackupSidecar;
+    let coreTar: Buffer;
+    try {
+      // The GCM tag rejects a wrong passphrase / corrupted file HERE, before
+      // any state is touched (core import included).
+      ({ sidecar, coreTar } = decodeBackupContainer(
+        Buffer.from(await file.arrayBuffer()),
+        passphrase,
+      ));
+    } catch (err) {
+      if (err instanceof BackupDecodeError) return c.json({ error: err.message }, 422);
+      throw err;
+    }
+
+    // Write the sidecar files BEFORE the transport opens, so its startup
+    // re-index sweep runs against the restored non-derivable state (held
+    // envelopes, pins, thread chatIds) instead of an empty store — then drop
+    // the in-memory caches so the running app serves the restored state too.
+    // Previous contents are snapshotted so a failed core import rolls back to
+    // an untouched node.
+    const previous = new Map<string, string | null>();
+    const writeSidecarFile = (path: string, contents: string | undefined, secret: boolean) => {
+      if (contents === undefined) return;
+      previous.set(path, existsSync(path) ? readFileSync(path, 'utf8') : null);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, contents, secret ? { mode: 0o600 } : {});
+    };
+    const rollbackSidecarFiles = () => {
+      for (const [path, contents] of previous) {
+        if (contents === null) rmSync(path, { force: true });
+        else writeFileSync(path, contents);
+      }
+      store.reload();
+      attestor.reload();
+    };
+
+    const scratch = mkdtempSync(join(tmpdir(), 'deltanet-restore-'));
+    try {
+      writeSidecarFile(store.filePath, sidecar.store, false);
+      writeSidecarFile(attestorKeyPath, sidecar.signingKey, true);
+      store.reload();
+      attestor.reload();
+
+      const tarPath = join(scratch, 'core-backup.tar');
+      writeFileSync(tarPath, coreTar);
+      let transport: Transport;
+      try {
+        transport = await ctx.restore(tarPath, passphrase);
+      } catch (err) {
+        rollbackSidecarFiles();
+        const message = err instanceof Error ? err.message : 'restore failed';
+        return c.json({ error: message }, 422);
+      }
+      return c.json({ account: contactToAccount(await transport.self(), baseUrl) });
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
   });
 
   // --- OAuth: single-user daemon, auto-granted ---------------------------

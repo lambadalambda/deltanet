@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import type { Context } from 'hono';
 import type { UpgradeWebSocket, WSEvents } from 'hono/ws';
 import type { T } from '@deltachat/jsonrpc-client';
@@ -6,7 +6,9 @@ import { createApp, type AppContext } from '../src/server.js';
 import type { TimelineQuery, Transport } from '../src/transport/types.js';
 import { createStore, ephemeralStorePath } from '../src/store.js';
 import { buildReplyText, mintPostUuid, refFromToken, type RefToken } from '../src/protocol.js';
-import { buildInviteRequestEnvelope } from '../src/envelope.js';
+import { buildInviteRequestEnvelope, parseEnvelope } from '../src/envelope.js';
+import { decodeBackupContainer, encodeBackupContainer } from '../src/backup.js';
+import { openAttestor } from '../src/attest.js';
 
 /** A mid-targeting ref token (legacy targets keyed by mid). */
 const midTok = (mid: string): RefToken => ({ kind: 'mid', mid });
@@ -14,7 +16,8 @@ const midTok = (mid: string): RefToken => ({ kind: 'mid', mid });
 const midRef = (mid: string, addr: string) => refFromToken({ kind: 'mid', mid }, addr);
 import { createStreamingHub, type StreamingSocket } from '../src/streaming.js';
 import { makeContact, makeMessage } from './entities.test.js';
-import { writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const BASE = 'http://localhost:4030';
@@ -2359,5 +2362,211 @@ describe('embed-only interactions (orig-<uuid> action targets)', () => {
     await flush();
     expect(h.introductions).toEqual([]);
     expect(h.dms).toEqual([]);
+  });
+});
+
+// --- backup & restore (see meta/issues/backup-second-device.md) -------------
+
+describe('backup endpoints', () => {
+  const dnbkTmpDirs: string[] = [];
+  const scratchDir = () => {
+    const dir = mkdtempSync(join(tmpdir(), 'deltanet-backup-test-'));
+    dnbkTmpDirs.push(dir);
+    return dir;
+  };
+  afterAll(() => {
+    for (const dir of dnbkTmpDirs) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('401s unconfigured on both backup info and export', async () => {
+    const app = createApp(makeUnconfiguredCtx(), { baseUrl: BASE });
+    expect((await app.request('/api/deltanet/backup')).status).toBe(401);
+    const res = await app.request('/api/deltanet/backup/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ passphrase: 'pw' }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('422s an export without a passphrase', async () => {
+    const res = await makeApp().request('/api/deltanet/backup/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ passphrase: '' }),
+    });
+    expect(res.status).toBe(422);
+  });
+
+  it('exports a decodable .dnbk carrying core tar + sidecar, and stamps last_backup_at', async () => {
+    const dir = scratchDir();
+    const store = createStore(join(dir, 'deltanet-store.json'));
+    store.markRepublished('seed-uuid-for-backup');
+    const { transport } = makeFakeTransport();
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
+
+    // Sign once so the attestation key file exists (it is created lazily).
+    const postRes = await app.request('/api/v1/statuses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'pre-backup post' }),
+    });
+    expect(postRes.status).toBe(200);
+
+    const before = (await (await app.request('/api/deltanet/backup')).json()) as any;
+    expect(before.last_backup_at).toBeNull();
+
+    const res = await app.request('/api/deltanet/backup/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ passphrase: 'hunter2' }),
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('application/octet-stream');
+    expect(res.headers.get('content-disposition')).toMatch(/^attachment; filename="deltanet-backup-.*\.dnbk"$/);
+
+    const { sidecar, coreTar } = decodeBackupContainer(Buffer.from(await res.arrayBuffer()), 'hunter2');
+    expect(Buffer.compare(coreTar, FAKE_CORE_TAR)).toBe(0);
+    expect(sidecar.addr).toBe('p6yalimhl@nine.testrun.org');
+    expect(sidecar.store).toContain('seed-uuid-for-backup');
+    expect(sidecar.signingKey).toContain('privatePem');
+
+    const after = (await (await app.request('/api/deltanet/backup')).json()) as any;
+    expect(typeof after.last_backup_at).toBe('number');
+  });
+
+  it('409s a restore when already configured', async () => {
+    const res = await makeApp().request('/api/deltanet/restore', { method: 'POST' });
+    expect(res.status).toBe(409);
+  });
+
+  it('501s a restore when the context does not support it', async () => {
+    const app = createApp(makeUnconfiguredCtx(), { baseUrl: BASE });
+    const fd = new FormData();
+    fd.append('file', new File([Buffer.from('x')], 'b.dnbk'));
+    fd.append('passphrase', 'pw');
+    const res = await app.request('/api/deltanet/restore', { method: 'POST', body: fd });
+    expect(res.status).toBe(501);
+  });
+
+  it('422s a garbage container / wrong passphrase without touching state', async () => {
+    const dir = scratchDir();
+    const store = createStore(join(dir, 'deltanet-store.json'));
+    let restoreCalled = false;
+    const ctx: AppContext = {
+      getTransport: () => null,
+      signup: async () => {
+        throw new Error('unused');
+      },
+      restore: async () => {
+        restoreCalled = true;
+        throw new Error('unused');
+      },
+    };
+    const app = createApp(ctx, { baseUrl: BASE, store, dataDir: dir });
+
+    const post = async (bytes: Buffer, passphrase: string) => {
+      const fd = new FormData();
+      fd.append('file', new File([new Uint8Array(bytes)], 'b.dnbk'));
+      fd.append('passphrase', passphrase);
+      return app.request('/api/deltanet/restore', { method: 'POST', body: fd });
+    };
+
+    expect((await post(Buffer.from('not a backup'), 'pw')).status).toBe(422);
+    const valid = encodeBackupContainer(
+      { sidecar: { addr: 'a@b.c', exportedAt: 1 }, coreTar: FAKE_CORE_TAR },
+      'right',
+    );
+    expect((await post(valid, 'wrong')).status).toBe(422);
+    expect(restoreCalled).toBe(false);
+    expect(existsSync(join(dir, 'deltanet-signing-key.json'))).toBe(false);
+  });
+
+  it('422s when the file or passphrase is missing', async () => {
+    const dir = scratchDir();
+    const ctx: AppContext = {
+      getTransport: () => null,
+      signup: async () => {
+        throw new Error('unused');
+      },
+      restore: async () => {
+        throw new Error('unused');
+      },
+    };
+    const app = createApp(ctx, { baseUrl: BASE, dataDir: dir });
+    const fd = new FormData();
+    fd.append('passphrase', 'pw');
+    expect((await app.request('/api/deltanet/restore', { method: 'POST', body: fd })).status).toBe(422);
+    const fd2 = new FormData();
+    fd2.append('file', new File([Buffer.from('x')], 'b.dnbk'));
+    expect((await app.request('/api/deltanet/restore', { method: 'POST', body: fd2 })).status).toBe(422);
+  });
+
+  it('restores sidecar files + core tar, reloads live state, and signs with the restored key', async () => {
+    // Donor: a signing key + a store with observable non-derivable state.
+    const donorDir = scratchDir();
+    const donorAttestor = openAttestor(join(donorDir, 'deltanet-signing-key.json'));
+    const donorPub = donorAttestor.publicKeyBase64();
+    const donorStore = createStore(join(donorDir, 'deltanet-store.json'));
+    donorStore.markRepublished('donor-uuid');
+    const container = encodeBackupContainer(
+      {
+        sidecar: {
+          addr: 'p6yalimhl@nine.testrun.org',
+          exportedAt: 123,
+          signingKey: readFileSync(join(donorDir, 'deltanet-signing-key.json'), 'utf8'),
+          store: readFileSync(join(donorDir, 'deltanet-store.json'), 'utf8'),
+        },
+        coreTar: FAKE_CORE_TAR,
+      },
+      'hunter2',
+    );
+
+    // Target: a fresh unconfigured node whose restore() hands back the fake transport.
+    const dir = scratchDir();
+    const store = createStore(join(dir, 'deltanet-store.json'));
+    const { transport, posts } = makeFakeTransport();
+    let restoredTarBytes: Buffer | null = null;
+    let restoredPassphrase: string | null = null;
+    let live: Transport | null = null;
+    const ctx: AppContext = {
+      getTransport: () => live,
+      signup: async () => {
+        throw new Error('unused');
+      },
+      restore: async (tarPath, passphrase) => {
+        restoredTarBytes = readFileSync(tarPath);
+        restoredPassphrase = passphrase;
+        live = transport;
+        return transport;
+      },
+    };
+    const app = createApp(ctx, { baseUrl: BASE, store, dataDir: dir });
+
+    const fd = new FormData();
+    fd.append('file', new File([new Uint8Array(container)], 'backup.dnbk'));
+    fd.append('passphrase', 'hunter2');
+    const res = await app.request('/api/deltanet/restore', { method: 'POST', body: fd });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.account.acct).toBe('p6yalimhl@nine.testrun.org');
+
+    // The core tar reached ctx.restore byte-identical, with the passphrase.
+    expect(restoredTarBytes && Buffer.compare(restoredTarBytes, FAKE_CORE_TAR)).toBe(0);
+    expect(restoredPassphrase).toBe('hunter2');
+
+    // Sidecar files landed in the data dir and the LIVE store sees them (reload).
+    expect(readFileSync(join(dir, 'deltanet-store.json'), 'utf8')).toContain('donor-uuid');
+    expect(store.wasRepublished('donor-uuid')).toBe(true);
+
+    // The attestor now signs with the RESTORED key — followers' TOFU pins hold.
+    const postRes = await app.request('/api/v1/statuses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'post-restore post' }),
+    });
+    expect(postRes.status).toBe(200);
+    const envelope = parseEnvelope(posts[posts.length - 1]!.text);
+    expect(envelope?.pubkey).toBe(donorPub);
   });
 });

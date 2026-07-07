@@ -540,6 +540,8 @@ export type Store = {
    * a fresh load if the restored file is an older schema.
    */
   reload(): void;
+  /** The JSON file backing this store — backup export reads it, restore overwrites it (then `reload()`s). */
+  readonly filePath: string;
 
   /** Record that we SUBSCRIBE to thread `rootUuid` via joined chat `chatId`. Overwrites. */
   addThreadSubscription(rootUuid: string, chatId: number): void;
@@ -784,6 +786,8 @@ export const createStore = (
   };
 
   return {
+    filePath,
+
     ingestMessage: (msg, mid, isFeedMessage = true) => {
       const d = load();
       if (ingestedSet().has(msg.id)) return false;
