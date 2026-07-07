@@ -1,5 +1,50 @@
 # deltanet devlog
 
+## 2026-07-07 — backup & identity survival (.dnbk export/restore)
+
+The data dir is the identity and the relay retains nothing, so losing the disk
+meant ceasing to exist. Now: Settings has a Backup card (passphrase → encrypted
+`.dnbk` download + last-backup nag), and the landing page offers
+restore-instead-of-signup. Closed `meta/issues/backup-second-device.md`; the
+second-device QR pairing stretch (`provideBackup`/`getBackup`) stays unfiled
+until wanted.
+
+Key findings/decisions:
+
+- **Core's backup is NOT the whole identity.** `exportBackup` covers dc.db +
+  blobs, but `deltanet-signing-key.json` (ed25519 attestation key — followers
+  TOFU-pin it; non-recoverable) and `deltanet-store.json` (held envelopes,
+  pins, thread chatIds — non-derivable) live outside it. The `.dnbk` container
+  (src/backup.ts) packs an AES-256-GCM-encrypted sidecar (scrypt of the same
+  passphrase) ahead of core's tar: `"DNBK1\n" | u32BE len | sidecar | tar`.
+  The GCM tag doubles as an early wrong-passphrase check, so a bad passphrase
+  422s before any state is touched.
+- **`ImexFileWritten` races the RPC response.** A listener scoped to the
+  `exportBackup` call can miss the event (it arrives on the event channel,
+  observed live against the podman relay). The tar's path is resolved by
+  scanning the scratch dest dir after the RPC resolves instead.
+- **Live-restore seams.** The store and attestor are lazy file-backed caches;
+  both grew `reload()` so a restore under a running daemon takes effect
+  without a restart (the restored attestor key must sign the next post or
+  followers' pins break — asserted end-to-end in the integration test, which
+  does export → wipe the whole data dir → restore → B verifies a post-restore
+  post under its pre-wipe pin).
+- **`restoreTransport`** shares the whole transport surface with
+  `openTransport` via an extracted `buildTransport`; it imports the tar, reads
+  addr/password/displayname back out of config (`credsFromConfig`), and main.ts
+  persists them to the accounts file so later boots are ordinary.
+- **Core refuses a non-empty data dir** (`"<dir>" is not empty`, immediate
+  exit) when no accounts structure exists yet — so the sidecar files can NOT
+  be written before the restore starts, which was the first implementation.
+  Worse, the child's death surfaces as a swallowed "Server quit" throw and the
+  pending RPC call hangs forever (12 min of nothing until sampled the process
+  and reproduced the spawn by hand). The sidecar write now runs as a
+  `beforeOpen` hook INSIDE `restoreTransport` — after `importBackup` created
+  the account structure, before `startIo`/ingestion — which is also exactly
+  the window that kills the ingest-vs-restored-store race.
+- **Content-Disposition needs CORS exposure** (not safelisted) or a
+  cross-origin frontend can't read the backup filename.
+
 ## 2026-07-07 — whole-code security/QA review, hardening, CI
 
 A pass over the whole daemon (crypto trust boundary, backfill/thread-channel

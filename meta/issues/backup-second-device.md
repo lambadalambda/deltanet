@@ -59,6 +59,12 @@ follow-up if media-heavy accounts make this a problem).
 - `store.reload()` + `attestor.reload()`: both are lazy file-backed
   caches; restore writes the sidecar files to the data dir then drops the
   in-memory cache so the restored state is live without a daemon restart.
+- Sidecar-write timing (found live): core REFUSES to initialize an
+  accounts structure in a non-empty dir ("<dir> is not empty", immediate
+  exit → swallowed "Server quit" → RPC hang). So the sidecar files are
+  written by a `beforeOpen` hook that `restoreTransport` invokes after
+  `importBackup` created the structure and before `startIo` — which is
+  also the window that avoids the ingest-vs-restored-store race.
 - Endpoints:
   - `GET  /api/deltanet/backup` → `{ last_backup_at }` (transport-gated)
   - `POST /api/deltanet/backup/export` `{passphrase}` → `.dnbk` download

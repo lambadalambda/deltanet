@@ -87,6 +87,27 @@ Notes:
   undelivered messages (store-and-forward), and the daemon's local index
   rebuilds from its Delta Chat database on startup.
 
+## Backup & restore
+
+Your node's data directory **is** your identity: the OpenPGP key lives in the
+Delta Chat database, the relay stores nothing for you (and deletes addresses
+idle for ~90 days), and the post-attestation signing key that followers pin
+lives next to it. Losing the disk without a backup means losing the account.
+
+- **Backup:** Settings → Backup — pick a passphrase and download a `.dnbk`
+  file. It contains core's passphrase-encrypted backup tar plus an encrypted
+  sidecar (the attestation signing key and the daemon's index), so a restore
+  brings back *everything*: address, follows, history, and the signing key
+  (followers' key pins keep verifying).
+- **Restore:** on a fresh node, choose **Restore from a backup** on the
+  landing page's Create-account tab instead of signing up. Or over the API:
+  `POST /api/deltanet/restore` (multipart `file` + `passphrase`);
+  `POST /api/deltanet/backup/export` (`{"passphrase": ...}`) produces the
+  download; `GET /api/deltanet/backup` reports the last backup time.
+
+The passphrase is not recoverable — a wrong one fails cleanly (the container
+is authenticated) without touching the node.
+
 ## Testing against a local relay
 
 By default `pnpm -C daemon test:integration` provisions its own **ephemeral
