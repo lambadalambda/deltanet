@@ -50,6 +50,17 @@ export interface Transport {
    * returns contact id 1. Null if no contact is known for the address.
    */
   contactIdByAddr(addr: string): Promise<number | null>;
+  /**
+   * Resolve a contact id from an email address, CREATING the contact if we've
+   * never met them (core's `createContact`). Unlike `contactIdByAddr` (lookup
+   * only), this always yields an id for a valid address. NOTE: a contact id is
+   * NOT deliverability — core refuses to SEND to a peer whose PGP key it never
+   * obtained ("e2e encryption unavailable"; securejoin is the substrate's only
+   * key-exchange path), so callers must treat sends to such contacts as
+   * best-effort. Returns SELF's id for our own address. Used by the reply
+   * root-DM copy. Null only if the address is invalid / creation fails.
+   */
+  ensureContactIdByAddr(addr: string): Promise<number | null>;
   avatarPath(contactId: number): Promise<string | null>;
   /** Initial + stable color for the avatar placeholder; null if the contact is unknown. */
   contactBadge(contactId: number): Promise<{ initial: string; color: string } | null>;

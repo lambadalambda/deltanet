@@ -25,11 +25,13 @@ import {
   buildReactEnvelope,
   buildReplyObject,
   buildUnreactEnvelope,
+  envelopeRefAddr,
   mintUuid,
   parseEnvelope,
   refTokenToEnvelopeRef,
   serializeEnvelope,
   type Envelope,
+  type EnvelopeRef,
 } from './envelope.js';
 import { parseWire, parseWireUuid } from './wire.js';
 import { openAttestor, sha256File } from './attest.js';
@@ -279,6 +281,44 @@ export const createApp = (
   /** The store post-key for a ref token (mirrors ingest.ts `refKey`): a uuid, or the canonicalized mid. */
   const refKeyString = (ref: RefToken): string =>
     ref.kind === 'uuid' ? ref.uuid : store.canonicalize(ref.mid);
+
+  /**
+   * The thread-root ref for a reply whose parent is `parent` (design:
+   * wire-thread-root-ref). Best-effort, never fabricated — an omitted (undefined)
+   * root is always valid, so every branch that can't PROVE the root returns
+   * undefined:
+   *
+   *  a. If the parent's own envelope carries `root`, reuse it VERBATIM (the
+   *     parent already resolved the thread root; the chain is transitive).
+   *  b. Else if the parent is NOT itself a reply, the parent IS the root — but
+   *     only when it carries a uuid (a uuid ref resolves on any node holding any
+   *     copy). A uuid-less legacy parent falls through to (c).
+   *  c. Else walk locally-held ancestors (same resolveKey/parseWire climb the
+   *     context endpoint uses, bounded) to the topmost held message and apply
+   *     (a)/(b) to it. If the true root isn't determinable (the chain breaks, a
+   *     legacy/uuid-less link), OMIT — never guess.
+   */
+  const deriveRootRef = async (
+    transport: Transport,
+    parent: T.Message,
+  ): Promise<EnvelopeRef | undefined> => {
+    let current: T.Message | null = parent;
+    for (let depth = 0; depth < MAX_CONTEXT_ANCESTORS && current; depth++) {
+      const env = parseEnvelope(current.text);
+      // (a) The current node already names the thread root — reuse verbatim.
+      if (env?.root) return env.root;
+      const parsed = parseWire(current.text);
+      // (b) The current node is not a reply → it IS the root (if it has a uuid).
+      if (!parsed.reply) {
+        return parsed.uuid ? { u: parsed.uuid, addr: current.sender.address } : undefined;
+      }
+      // (c) Climb one held ancestor and repeat; a broken/unheld link → omit.
+      const parentMsgId = store.resolveKey(parsed.reply.keyString);
+      if (parentMsgId === null) return undefined;
+      current = await transport.message(parentMsgId);
+    }
+    return undefined;
+  };
 
   app.use(
     '*',
@@ -662,8 +702,12 @@ export const createApp = (
       const mediaFields = media
         ? { description: media.description, sha256: await sha256File(media.path) }
         : undefined;
+      // The signed thread-root ref (best-effort; omitted when unknowable) MUST be
+      // set before signing — it rides inside the dn3 canonical payload so a
+      // mid-thread holder can name the thread + owner.
+      const root = await deriveRootRef(transport, target);
       const replyText = signEnvelope(
-        buildReplyObject(text, uuid, envRef, mediaFields),
+        buildReplyObject(text, uuid, envRef, mediaFields, root),
         await mapper.ownAddr(transport),
       );
 
@@ -676,6 +720,33 @@ export const createApp = (
         await transport.sendControlDm(target.sender.id, replyText).catch((err) => {
           console.error('sendControlDm failed (non-fatal):', err);
         });
+      }
+
+      // Root DM copy (thread completeness by construction): also copy the SAME
+      // reply envelope to the ROOT author when known, distinct from the parent
+      // author and not SELF, so the root accumulates the full thread (a future
+      // thread host must be complete). BEST-EFFORT: delivery to a NEVER-MET
+      // root author fails at the core level ("e2e encryption unavailable" —
+      // securejoin is the substrate's only key-exchange path; an in-band
+      // introduction mechanism is future work), and a failure here must never
+      // fail the reply, feed post, or parent copy.
+      const rootAddr = root ? envelopeRefAddr(root) : undefined;
+      const parentAddr = target.sender.address.toLowerCase();
+      const myAddr = (await mapper.ownAddr(transport)).toLowerCase();
+      if (
+        rootAddr &&
+        rootAddr.toLowerCase() !== parentAddr &&
+        rootAddr.toLowerCase() !== myAddr
+      ) {
+        await transport
+          .ensureContactIdByAddr(rootAddr)
+          .then((rootContactId) => {
+            if (rootContactId === null || rootContactId === DC_CONTACT_ID_SELF) return;
+            return transport.sendControlDm(rootContactId, replyText);
+          })
+          .catch((err) => {
+            console.error('root sendControlDm failed (non-fatal):', err);
+          });
       }
 
       return c.json(await toStatus(transport, msg, media?.description ?? null));

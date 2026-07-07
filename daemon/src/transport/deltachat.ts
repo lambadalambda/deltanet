@@ -592,6 +592,16 @@ export const openTransport = async (
       return rpc.lookupContactIdByAddr(accountId, addr).catch(() => null);
     },
 
+    ensureContactIdByAddr: async (addr) => {
+      // SELF short-circuit, same as the lookup path.
+      if (matchesSelfAddr(addr, creds.addr)) return DC_CONTACT_ID_SELF;
+      // createContact is idempotent in core (returns the existing id if the
+      // contact is already known), so this both finds and first-creates. An id
+      // alone is NOT deliverability: sends to a never-met peer fail with "e2e
+      // encryption unavailable" (securejoin is the only key-exchange path).
+      return rpc.createContact(accountId, addr, null).catch(() => null);
+    },
+
     avatarPath: async (contactId) => {
       // SELF: the raw contact's profileImage lags a freshly-set selfavatar in
       // some core versions, so read the authoritative `selfavatar` config

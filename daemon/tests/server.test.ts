@@ -42,6 +42,10 @@ const makeFakeTransport = () => {
   ]);
   let nextId = 100;
   let nextMid = 100;
+  // Cold contacts minted by ensureContactIdByAddr (addr -> id), modelling core's
+  // createContact for never-met root authors.
+  let nextContactId = 500;
+  const createdContacts = new Map<string, number>();
   const posts: Array<{ text: string; file?: string; quotedText?: string }> = [];
   const dms: Array<{ contactId: number; text: string; quotedText?: string }> = [];
   const deleted: number[] = [];
@@ -89,7 +93,20 @@ const makeFakeTransport = () => {
       const selfAddr = self.address.toLowerCase();
       if (handle === selfAddr || handle === selfAddr.split('@')[0]) return 1;
       if (handle === BOB.address.toLowerCase()) return 11;
-      return null;
+      return createdContacts.get(handle) ?? null;
+    },
+    ensureContactIdByAddr: async (addr) => {
+      const handle = addr.toLowerCase();
+      const selfAddr = self.address.toLowerCase();
+      if (handle === selfAddr || handle === selfAddr.split('@')[0]) return 1;
+      if (handle === BOB.address.toLowerCase()) return 11;
+      // Model core's createContact: first-create mints a fresh id for a cold
+      // (never-met) address, stable across repeat calls.
+      const existing = createdContacts.get(handle);
+      if (existing !== undefined) return existing;
+      const id = nextContactId++;
+      createdContacts.set(handle, id);
+      return id;
     },
     avatarPath: async (id) => (id === 1 ? selfAvatarPath : null),
     contactBadge: async (id) =>
@@ -127,7 +144,7 @@ const makeFakeTransport = () => {
   const emitFollower = (contactId: number) => {
     for (const handler of followerHandlers) handler(contactId);
   };
-  return { transport, messages, posts, dms, deleted, unfollowed, following, mids, emitFollower, profileUpdates };
+  return { transport, messages, posts, dms, deleted, unfollowed, following, mids, emitFollower, profileUpdates, createdContacts };
 };
 
 /** A context that's already configured with a fixed fake transport. */
@@ -737,6 +754,224 @@ describe('acting on a DM copy uses the canonical mid (issue point 5)', () => {
     expect(dms).toHaveLength(1);
     expect(dms[0]?.text).toContain(CANON);
     expect(dms[0]?.text).not.toContain('dm-copy-600@example.org');
+  });
+});
+
+describe('reply thread-root ref derivation + root DM copy', () => {
+  const ROOT_ADDR = 'alice@example.org';
+  const ROOT_CONTACT = makeContact({ id: 21, address: ROOT_ADDR, displayName: 'alice' });
+  const ROOT_UUID = 'aaaa0000-1111-4222-8333-444444444444';
+  const B_REPLY_UUID = 'bbbb0000-1111-4222-8333-444444444444';
+
+  /** A signed v2 envelope authored by `addr` (a scratch key per call). */
+  const sign = async (env: any, addr: string): Promise<string> => {
+    const { openAttestor } = await import('../src/attest.js');
+    const { serializeEnvelope } = await import('../src/envelope.js');
+    const { mkdtempSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const a = openAttestor(join(mkdtempSync(join(tmpdir(), 'root-key-')), 'k.json'));
+    return serializeEnvelope({ ...env, ...a.sign(env, addr) });
+  };
+
+  /**
+   * Topology: ALICE's root post (uuid=ROOT_UUID) and BOB's reply to it
+   * (uuid=B_REPLY_UUID, ref=ALICE, root=ALICE) both held locally + indexed. SELF
+   * then replies to BOB's reply → root should resolve to ALICE.
+   */
+  const withThread = async (opts: { bReplyRoot?: any } = {}) => {
+    const h = makeFakeTransport();
+    const { buildPostObject, buildReplyObject } = await import('../src/envelope.js');
+    const store = createStore(ephemeralStorePath());
+
+    // ALICE's root post (v2, signed, carries ROOT_UUID).
+    const rootText = await sign(buildPostObject('the root', ROOT_UUID), ROOT_ADDR);
+    const rootMsg = makeMessage({ id: 300, text: rootText, fromId: 21, sender: ROOT_CONTACT });
+
+    // BOB's reply to ALICE (ref=ALICE root, root=ALICE unless overridden).
+    const bReplyText = await sign(
+      buildReplyObject(
+        'bob replies',
+        B_REPLY_UUID,
+        { u: ROOT_UUID, addr: ROOT_ADDR },
+        undefined,
+        'bReplyRoot' in opts ? opts.bReplyRoot : { u: ROOT_UUID, addr: ROOT_ADDR },
+      ),
+      BOB.address,
+    );
+    const bReplyMsg = makeMessage({ id: 301, text: bReplyText, fromId: 11, sender: BOB });
+
+    h.messages.push(rootMsg, bReplyMsg);
+    h.mids.set(300, 'root@example.org');
+    h.mids.set(301, 'breply@example.org');
+    store.ingestMessage(rootMsg, 'root@example.org', true);
+    store.ingestMessage(bReplyMsg, 'breply@example.org', true);
+    return { ...h, store };
+  };
+
+  const parseLast = (posts: Array<{ text: string }>) => JSON.parse(posts.at(-1)!.text);
+
+  it('parent-with-root: reuses the parent reply\'s root verbatim', async () => {
+    const { transport, posts, store } = await withThread();
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
+
+    const res = await app.request('/api/v1/statuses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'self replies deep', in_reply_to_id: '301' }),
+    });
+    expect(res.status).toBe(200);
+    const env = parseLast(posts);
+    expect(env.type).toBe('reply');
+    expect(env.root).toEqual({ u: ROOT_UUID, addr: ROOT_ADDR });
+  });
+
+  it('parent-is-root: a non-reply parent with a uuid becomes the root', async () => {
+    const { transport, posts, store } = await withThread();
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
+
+    // Reply directly to ALICE's root post (300) → parent IS the root.
+    const res = await app.request('/api/v1/statuses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'reply to root', in_reply_to_id: '300' }),
+    });
+    expect(res.status).toBe(200);
+    expect(parseLast(posts).root).toEqual({ u: ROOT_UUID, addr: ROOT_ADDR });
+  });
+
+  it('deep chain walked: parent reply WITHOUT a root climbs ancestors to the root', async () => {
+    // BOB's reply carries NO root (older reply) → deriving SELF's root must walk
+    // from BOB's reply up to ALICE's held root post.
+    const { transport, posts, store } = await withThread({ bReplyRoot: undefined });
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
+
+    const res = await app.request('/api/v1/statuses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'self replies deep', in_reply_to_id: '301' }),
+    });
+    expect(res.status).toBe(200);
+    expect(parseLast(posts).root).toEqual({ u: ROOT_UUID, addr: ROOT_ADDR });
+  });
+
+  it('unknown -> omitted: a legacy (uuid-less, non-envelope) parent yields no root', async () => {
+    const { transport, posts } = makeFakeTransport();
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    // Message 12 ("newest, from bob") is a plain non-envelope string: no uuid,
+    // not a reply → parent-is-root but uuid-less → omit.
+    const res = await app.request('/api/v1/statuses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'reply to legacy', in_reply_to_id: '12' }),
+    });
+    expect(res.status).toBe(200);
+    expect(parseLast(posts).root).toBeUndefined();
+  });
+
+  it('DM recipients: parent author AND root author, deduped, never SELF, both byte-identical', async () => {
+    const { transport, posts, dms, store, createdContacts } = await withThread();
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
+
+    const res = await app.request('/api/v1/statuses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'self replies deep', in_reply_to_id: '301' }),
+    });
+    expect(res.status).toBe(200);
+    const replyText = posts.at(-1)!.text;
+
+    // Parent author (BOB, id 11) + root author (ALICE, cold contact, minted id).
+    const aliceId = createdContacts.get(ROOT_ADDR.toLowerCase());
+    expect(aliceId).toBeDefined();
+    const recipients = dms.map((d) => d.contactId);
+    expect(recipients).toContain(11); // parent author BOB
+    expect(recipients).toContain(aliceId); // root author ALICE (cold contact)
+    // Both copies are byte-identical to the feed copy (same uuid).
+    for (const d of dms) expect(d.text).toBe(replyText);
+  });
+
+  it('root DM deduped when the root author IS the parent author (single DM)', async () => {
+    // Reply directly to ALICE's root: parent author == root author == ALICE.
+    // ALICE is NOT a known contact here (message 300 is from contact id 21 but
+    // the parent-copy uses target.sender.id), so only the parent copy goes out.
+    const { transport, dms, store } = await withThread();
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
+
+    const res = await app.request('/api/v1/statuses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'reply to root', in_reply_to_id: '300' }),
+    });
+    expect(res.status).toBe(200);
+    // Root addr == parent addr → root copy suppressed; exactly one DM (parent).
+    expect(dms.map((d) => d.contactId)).toEqual([21]);
+  });
+
+  it('never DMs SELF as the root author', async () => {
+    // A thread whose ROOT is authored by SELF: SELF's own address must never
+    // receive a root DM copy.
+    const h = makeFakeTransport();
+    const self = await h.transport.self();
+    const { buildPostObject, buildReplyObject } = await import('../src/envelope.js');
+    const store = createStore(ephemeralStorePath());
+
+    const selfRootText = await sign(buildPostObject('self root', ROOT_UUID), self.address);
+    const selfRoot = makeMessage({ id: 310, text: selfRootText, fromId: 1 });
+    // BOB replies to SELF's root, carrying root=SELF.
+    const bReply = await sign(
+      buildReplyObject('bob', B_REPLY_UUID, { u: ROOT_UUID, addr: self.address }, undefined, {
+        u: ROOT_UUID,
+        addr: self.address,
+      }),
+      BOB.address,
+    );
+    const bReplyMsg = makeMessage({ id: 311, text: bReply, fromId: 11, sender: BOB });
+    h.messages.push(selfRoot, bReplyMsg);
+    h.mids.set(310, 'selfroot@example.org');
+    h.mids.set(311, 'breply2@example.org');
+    store.ingestMessage(selfRoot, 'selfroot@example.org', true);
+    store.ingestMessage(bReplyMsg, 'breply2@example.org', true);
+
+    const app = createApp(makeConfiguredCtx(h.transport), { baseUrl: BASE, store });
+    const res = await app.request('/api/v1/statuses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'reply, root is self', in_reply_to_id: '311' }),
+    });
+    expect(res.status).toBe(200);
+    // Only the parent (BOB, id 11) is DMed; SELF (id 1) is never a recipient.
+    expect(h.dms.map((d) => d.contactId)).toEqual([11]);
+    expect(h.dms.map((d) => d.contactId)).not.toContain(1);
+  });
+
+  it('root DM send failure does not fail the reply (best-effort)', async () => {
+    const { transport, posts, store } = await withThread();
+    // Make the root DM (to the cold ALICE contact) throw; parent DM (BOB) is fine.
+    const origSend = transport.sendControlDm;
+    const aliceIds = new Set<number>();
+    transport.ensureContactIdByAddr = async (addr) => {
+      if (addr.toLowerCase() === ROOT_ADDR.toLowerCase()) {
+        const id = 999;
+        aliceIds.add(id);
+        return id;
+      }
+      return null;
+    };
+    transport.sendControlDm = async (contactId, text, quotedText) => {
+      if (aliceIds.has(contactId)) throw new Error('cold encrypt failed');
+      return origSend(contactId, text, quotedText);
+    };
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
+
+    const res = await app.request('/api/v1/statuses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'self replies deep', in_reply_to_id: '301' }),
+    });
+    // The reply itself + feed post still succeed despite the root-copy failure.
+    expect(res.status).toBe(200);
+    expect(posts).toHaveLength(1);
   });
 });
 

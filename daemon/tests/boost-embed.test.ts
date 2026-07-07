@@ -42,6 +42,23 @@ const alicePost = (text: string, media?: { description?: string | null; sha256?:
 };
 
 /**
+ * A signed reply envelope authored by Alice carrying a thread-root ref (dn3):
+ * the embed case where tampering with `root` must break verification.
+ */
+const aliceReply = (text: string, root: { u: string; addr: string }): Envelope => {
+  const a = aliceAttestor();
+  const env: Envelope = {
+    dn: 2,
+    type: 'reply',
+    uuid: ORIG_UUID,
+    text,
+    ref: { u: 'parent-uuid', addr: BOB },
+    root,
+  };
+  return { ...env, ...a.sign(env, ALICE) };
+};
+
+/**
  * Bob's boost message embedding `orig`. `file` (+ its bytes) models the
  * re-attached media the booster physically carries on the boost message.
  */
@@ -205,6 +222,30 @@ describe('boost embed rendering ladder', () => {
       const orig = alicePost('a photo', { description: 'x', sha256: 'abc' });
       await expectUnverified(boostMsg(orig, { id: 58 })); // no file
     });
+
+    it('altered thread-root after signing (dn3 signs the root token)', async () => {
+      const orig = aliceReply('deep reply', { u: 'root-uuid', addr: ALICE });
+      // Verifies as-is (sanity), then tamper the root -> unverified placeholder.
+      const tampered = { ...orig, root: { u: 'forged-root', addr: 'mallory@relay.example' } };
+      await expectUnverified(boostMsg(tampered, { id: 61 }));
+    });
+
+    it('grafted EMPTY root on a root-less signed orig (nested envelope bypasses parser sanitization)', async () => {
+      // The trivial graft: `{u:'', addr:''}` frames identically (`0:0:`) to an
+      // absent root, and a nested `orig` never passes through parseEnvelope's
+      // tolerant-drop — verify()'s own shape gate must fail this closed before
+      // `.root` on verified relayed envelopes becomes load-bearing (backfill).
+      const orig = alicePost('authentic, no root');
+      const grafted = { ...orig, root: { u: '', addr: '' } as any };
+      await expectUnverified(boostMsg(grafted, { id: 63 }));
+    });
+  });
+
+  it('embeds + verifies a signed reply carrying a thread-root (dn3 round-trip through the ladder)', async () => {
+    const orig = aliceReply('deep reply', { u: 'root-uuid', addr: ALICE });
+    const status = await createStatusMapper(store, BASE).toStatus(fakeTransport(), boostMsg(orig, { id: 62 }));
+    expect(status.reblog).not.toBeNull();
+    expect(status.reblog!.content).toBe('<p>deep reply</p>');
   });
 
   it('pin-consistent (same key pinned) verified embed still renders', async () => {
