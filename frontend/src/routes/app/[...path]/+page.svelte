@@ -34,6 +34,7 @@
 		fetchDeltanetInvite,
 		followDeltanetInvite,
 		isFeedInvite,
+		requestDeltanetLockedAccess,
 		setDeltanetPetname,
 		type DeltanetBackupInfo
 	} from '$lib/pleroma/deltanet';
@@ -200,6 +201,7 @@
 	let profileFollowPending = $state(false);
 	let profilePetnamePending = $state(false);
 	let profilePetnameError = $state<string | null>(null);
+	let profileLockedRequestState = $state<'idle' | 'pending' | 'requested'>('idle');
 	let profileFollowError = $state<PleromaRequestErrorView | null>(null);
 	let notificationState = $state<NotificationState>({ status: 'idle' });
 	let searchState = $state<SearchState>({ status: 'idle' });
@@ -285,6 +287,9 @@
 	let inviteState = $state<PleromaRequestState<string>>({ status: 'idle' });
 	let inviteRequestId = 0;
 	let loadedInviteKey = '';
+	// Visibility channels: the LOCKED channel's invite, revealed on demand only
+	// (it grants followers-only access; sharing it IS the approval).
+	let lockedInviteState = $state<PleromaRequestState<string>>({ status: 'idle' });
 	let backupInfo = $state<DeltanetBackupInfo | null>(null);
 	let loadedBackupInfoKey = '';
 	let backupPassphrase = $state('');
@@ -1802,6 +1807,24 @@
 	// contact, then merge ONLY the name fields back into the profile state —
 	// the endpoint's account payload carries no relationship, so re-adapting it
 	// wholesale would wrongly reset followState.
+	// Visibility channels 1B: ask the viewed contact for followers-only access.
+	const requestProfileLockedAccess = async () => {
+		const session = currentSession;
+		if (!session || profileRouteState.status !== 'success' || profileLockedRequestState !== 'idle') return;
+		const target = profileRouteState.data.profile;
+		profileLockedRequestState = 'pending';
+		try {
+			await requestDeltanetLockedAccess({
+				instanceUrl: session.instanceUrl,
+				accessToken: session.accessToken,
+				contactId: target.id,
+				fetch: window.fetch.bind(window)
+			});
+			profileLockedRequestState = 'requested';
+		} catch {
+			profileLockedRequestState = 'idle';
+		}
+	};
 	const saveProfilePetname = async (petname: string) => {
 		const session = currentSession;
 		if (!session || profileRouteState.status !== 'success' || profilePetnamePending) return;
@@ -2295,6 +2318,22 @@
 			backupError = error instanceof Error ? error.message : 'Could not export a backup.';
 		} finally {
 			backupBusy = false;
+		}
+	};
+	const revealLockedInvite = async () => {
+		const session = currentSession;
+		if (!session || lockedInviteState.status === 'loading') return;
+		lockedInviteState = { status: 'loading' };
+		try {
+			const invite = await fetchDeltanetInvite({
+				instanceUrl: session.instanceUrl,
+				accessToken: session.accessToken,
+				channel: 'locked',
+				fetch: window.fetch.bind(window)
+			});
+			lockedInviteState = { status: 'success', data: invite };
+		} catch (error) {
+			lockedInviteState = { status: 'error', error: normalizePleromaRequestError(error) };
 		}
 	};
 	const copyInviteLink = async (invite: string) => {
@@ -3622,6 +3661,7 @@
 		}
 
 		profileRouteState = { status: 'loading' };
+		profileLockedRequestState = 'idle';
 
 		const profileInstanceUrl = session?.instanceUrl ?? publicInstanceUrl;
 		try {
@@ -4261,6 +4301,17 @@
 							<code class="invite-link">{inviteState.data}</code>
 							<button type="button" class="btn-ghost invite-copy" onclick={() => copyInviteLink(inviteState.status === 'success' ? inviteState.data : '')}>Copy invite link</button>
 						{/if}
+						{#if lockedInviteState.status === 'idle'}
+							<button type="button" class="btn-ghost invite-copy" data-testid="reveal-locked-invite" onclick={revealLockedInvite}>Show followers-only invite</button>
+						{:else if lockedInviteState.status === 'loading'}
+							<span class="invite-status">Loading the followers-only invite...</span>
+						{:else if lockedInviteState.status === 'error'}
+							<span class="invite-status">Could not load the followers-only invite.</span>
+						{:else if lockedInviteState.status === 'success'}
+							<div class="invite-status" data-testid="locked-invite-note">Followers-only invite — sharing it GRANTS access. Hand it out one-to-one, never publish it.</div>
+							<code class="invite-link" data-testid="locked-invite-link">{lockedInviteState.data}</code>
+							<button type="button" class="btn-ghost invite-copy" onclick={() => copyInviteLink(lockedInviteState.status === 'success' ? lockedInviteState.data : '')}>Copy followers-only invite</button>
+						{/if}
 					</div>
 				</div>
 				<div class="card app-side-card">
@@ -4622,6 +4673,8 @@
 								onSetPetname={profileRouteState.data.profile.id !== '0' ? saveProfilePetname : undefined}
 								petnamePending={profilePetnamePending}
 								petnameError={profilePetnameError}
+								onRequestLocked={profileRouteState.data.profile.id !== '0' ? requestProfileLockedAccess : undefined}
+								lockedRequestState={profileLockedRequestState}
 							/>
 						{/if}
 					</section>

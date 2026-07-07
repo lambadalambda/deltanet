@@ -32,9 +32,12 @@
 		onSetPetname?: (petname: string) => void | Promise<void>;
 		petnamePending?: boolean;
 		petnameError?: string | null;
+		/** Visibility channels 1B: ask this contact for followers-only access. */
+		onRequestLocked?: () => void | Promise<void>;
+		lockedRequestState?: 'idle' | 'pending' | 'requested';
 	};
 
-	let { profile, posts = [], replies = [], pinned = [], media = [], timelineLoading = false, followPending = false, followError = null, signedOut = false, onPostOpen, onPostAction, onPostReact, onPostVote, canManage = false, onEditProfile, onFollowToggle, onSignIn, onSetPetname, petnamePending = false, petnameError = null }: Props = $props();
+	let { profile, posts = [], replies = [], pinned = [], media = [], timelineLoading = false, followPending = false, followError = null, signedOut = false, onPostOpen, onPostAction, onPostReact, onPostVote, canManage = false, onEditProfile, onFollowToggle, onSignIn, onSetPetname, petnamePending = false, petnameError = null, onRequestLocked, lockedRequestState = 'idle' }: Props = $props();
 	let tab = $state<ProfileTab>('posts');
 	let pinnedExpanded = $state(false);
 	let petnameEditorOpen = $state(false);
@@ -103,6 +106,18 @@
 					</button>
 					{#if profile.followState !== 'self'}
 						<button type="button" class="pp-icon-btn" title="Notifications not wired yet" aria-label="Profile notifications" disabled><Icon name="bell" width={14} height={14} /></button>
+					{/if}
+					{#if onRequestLocked && (profile.followState === 'following' || profile.followState === 'mutual')}
+						<button
+							type="button"
+							class="pp-follow-btn pp-locked-request"
+							data-testid="request-locked"
+							disabled={lockedRequestState !== 'idle'}
+							title="Ask for access to their followers-only posts"
+							onclick={() => void onRequestLocked()}
+						>
+							<span class="pp-btn-l">{lockedRequestState === 'requested' ? 'Locked access requested' : lockedRequestState === 'pending' ? 'Requesting…' : 'Request locked access'}</span>
+						</button>
 					{/if}
 					<button type="button" class="pp-icon-btn" title="More profile actions not wired yet" aria-label="More profile actions" disabled><Icon name="more" width={14} height={14} /></button>
 				</div>

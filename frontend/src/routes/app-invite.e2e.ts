@@ -108,3 +108,21 @@ test('header search detects an OPENPGP4FPR invite and surfaces a follow failure 
 
 	await expect(page.getByTestId('post-control-toast')).toContainText(/could not follow/i);
 });
+
+test('the followers-only invite is hidden behind an explicit reveal with a sharing warning', async ({ page }) => {
+	await authenticate(page);
+	await mockHomeTimeline(page);
+	await mockInvite(page);
+	await page.route('https://pleroma.example/api/deltanet/invite?channel=locked', async (route) => {
+		await fulfillJson(route, { invite: 'https://i.delta.chat/#locked456' });
+	});
+	await setViewport(page, 'desktop');
+	await page.goto('/app/home');
+
+	const card = page.getByTestId('invite-card');
+	// Never shown by default — revealing is a deliberate act.
+	await expect(card.getByTestId('locked-invite-link')).toHaveCount(0);
+	await card.getByTestId('reveal-locked-invite').click();
+	await expect(card.getByTestId('locked-invite-link')).toContainText('locked456');
+	await expect(card.getByTestId('locked-invite-note')).toContainText('GRANTS access');
+});

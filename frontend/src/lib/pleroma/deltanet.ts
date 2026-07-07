@@ -122,16 +122,21 @@ export const signupDeltanet = async ({
 export const fetchDeltanetInvite = async ({
 	instanceUrl,
 	accessToken,
+	channel,
 	fetch: fetchImpl
 }: {
 	instanceUrl: string;
 	accessToken: string;
+	/** 'locked' fetches the followers-only channel's invite (share one-to-one, never publish). */
+	channel?: 'public' | 'locked';
 	fetch?: FetchLike;
 }): Promise<string> => {
 	const requestFetch = fetchImpl ?? globalThis.fetch?.bind(globalThis);
 	if (!requestFetch) throw new Error('A fetch implementation is required for deltanet requests.');
 
-	const response = await requestFetch(new URL('/api/deltanet/invite', instanceUrl).toString(), {
+	const url = new URL('/api/deltanet/invite', instanceUrl);
+	if (channel === 'locked') url.searchParams.set('channel', 'locked');
+	const response = await requestFetch(url.toString(), {
 		headers: { accept: 'application/json', authorization: `Bearer ${accessToken}` }
 	});
 	const payload = await readJsonBody(response);
@@ -303,6 +308,38 @@ export const setDeltanetPetname = async ({
 		throw new Error(errorMessage(payload, 'Could not save the petname.'));
 	}
 	return payload;
+};
+
+/**
+ * Ask a contact for access to their followers-only (locked) channel
+ * (visibility channels 1B). Their owner approves via the follow-request UI;
+ * the grant then auto-joins on this node.
+ */
+export const requestDeltanetLockedAccess = async ({
+	instanceUrl,
+	accessToken,
+	contactId,
+	fetch: fetchImpl
+}: {
+	instanceUrl: string;
+	accessToken: string;
+	contactId: string;
+	fetch?: FetchLike;
+}): Promise<void> => {
+	const requestFetch = fetchImpl ?? globalThis.fetch?.bind(globalThis);
+	if (!requestFetch) throw new Error('A fetch implementation is required for deltanet requests.');
+
+	const response = await requestFetch(
+		new URL(`/api/deltanet/contacts/${encodeURIComponent(contactId)}/request-locked`, instanceUrl).toString(),
+		{
+			method: 'POST',
+			headers: { accept: 'application/json', authorization: `Bearer ${accessToken}` }
+		}
+	);
+	if (!response.ok) {
+		const payload = await readJsonBody(response);
+		throw new Error(errorMessage(payload, 'Could not request followers-only access.'));
+	}
 };
 
 export const isFeedInvite = (value: string) => {

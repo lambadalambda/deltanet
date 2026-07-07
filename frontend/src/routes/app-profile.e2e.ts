@@ -905,3 +905,36 @@ test('petnames: set from the profile, rendered as a chip after their chosen name
 	// relationship in that payload).
 	await expect(profile).toContainText('Following');
 });
+
+test('locked access can be requested from a followed profile', async ({ page }) => {
+	const followedAccount: PleromaAccount = {
+		...profileAccount,
+		id: '12',
+		username: 'zbie604yz',
+		acct: 'zbie604yz@nine.testrun.org',
+		display_name: 'Carol Sparkle',
+		bot: false,
+		fields: [],
+		pleroma: { ...profileAccount.pleroma, relationship: undefined, deltanet: { auth_name: 'Carol Sparkle' } }
+	};
+	await authenticate(page);
+	await mockProfileApis(page, followedAccount);
+	await page.route('https://pleroma.example/api/v1/accounts/relationships**', async (route: Route) => {
+		await fulfillJson(route, [relationshipFor(followedAccount.id, { following: true })]);
+	});
+	let requestMethod = '';
+	await page.route('https://pleroma.example/api/deltanet/contacts/12/request-locked', async (route: Route) => {
+		requestMethod = route.request().method();
+		await fulfillJson(route, { requested: true });
+	});
+	await setViewport(page, 'desktop');
+
+	await page.goto('/app/profiles/zbie604yz@nine.testrun.org');
+
+	const button = page.getByTestId('request-locked');
+	await expect(button).toContainText('Request locked access');
+	await button.click();
+	await expect(button).toContainText('Locked access requested');
+	await expect(button).toBeDisabled();
+	expect(requestMethod).toBe('POST');
+});
