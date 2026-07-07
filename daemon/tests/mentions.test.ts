@@ -37,6 +37,12 @@ describe('parseBodyMentions', () => {
     expect(parseBodyMentions('@a@localhost and @@x.org and @a@@b.org')).toEqual([]);
   });
 
+  it('allows underscores in domain labels (real chatmail relays use them)', () => {
+    expect(parseBodyMentions('ping @jt6hwfn4e@_chatmail.example now')).toEqual([
+      'jt6hwfn4e@_chatmail.example',
+    ]);
+  });
+
   it('returns [] for empty/plain text', () => {
     expect(parseBodyMentions('')).toEqual([]);
     expect(parseBodyMentions('no mentions here')).toEqual([]);

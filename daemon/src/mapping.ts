@@ -185,10 +185,15 @@ export const createStatusMapper = (store: Store, baseUrl: string): StatusMapper 
       boostEmbed?.kind === 'verified' ? await resolveEmbedAccount(transport, boostEmbed.addr) : undefined;
     // Body-mention entries (mention addressing): resolve each @addr token in
     // the body to a known contact so the UI renders names instead of random
-    // local parts. Unknown addrs simply stay plain text.
+    // local parts. Unknown addrs simply stay plain text. KEY-contact probe
+    // first: core's addr lookup (`contactIdByAddr`) returns ADDRESS-contact
+    // rows and can miss the key-contact for an addr we securejoined with
+    // (observed live over the relay) — the e2ee probe finds the real row.
     const bodyMentions: MastodonMention[] = [];
     for (const addr of parseBodyMentions(parsed.body ?? '')) {
-      const contactId = await transport.contactIdByAddr(addr).catch(() => null);
+      const contactId =
+        (await transport.keyContactIdForAddr(addr).catch(() => null)) ??
+        (await transport.contactIdByAddr(addr).catch(() => null));
       const contact = contactId !== null ? await transport.contact(contactId) : null;
       if (contact) bodyMentions.push(contactToMention(contact, baseUrl));
     }

@@ -14,10 +14,12 @@ import type { T } from '@deltachat/jsonrpc-client';
 
 // local part: RFC-ish pragmatic subset; domain: dotted labels with a TLD —
 // `@a@localhost` is not addressable across relays and stays plain text.
-// A leading (?<![\w@.]) guard keeps plain email addresses (no @ prefix) and
-// `@a@@b` junk from matching.
+// Labels allow underscores (not strict-RFC hostname, but real chatmail relays
+// use them — e.g. the test relay's `_chatmail.example`). A leading
+// (?<![\w@.]) guard keeps plain email addresses (no @ prefix) and `@a@@b`
+// junk from matching.
 const MENTION_PATTERN =
-  /(?<![\w@.])@([A-Za-z0-9._%+-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*\.[A-Za-z]{2,})(?![\w@.-])/g;
+  /(?<![\w@.])@([A-Za-z0-9._%+-]+@[A-Za-z0-9_](?:[A-Za-z0-9_-]*[A-Za-z0-9_])?(?:\.[A-Za-z0-9_](?:[A-Za-z0-9_-]*[A-Za-z0-9_])?)*\.[A-Za-z]{2,})(?![\w@.-])/g;
 
 /**
  * Rank a contact against an autocomplete query. Petname (MY name for them)
