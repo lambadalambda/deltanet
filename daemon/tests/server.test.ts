@@ -42,10 +42,18 @@ const makeFakeTransport = () => {
   ]);
   let nextId = 100;
   let nextMid = 100;
+  let nextChatId = 900;
   // Cold contacts minted by ensureContactIdByAddr (addr -> id), modelling core's
   // createContact for never-met root authors.
   let nextContactId = 500;
   const createdContacts = new Map<string, number>();
+  // thread-subscribe fakes: broadcasts created, channel posts, chats left, and
+  // the KEY-contact reachability map (a real key path exists only for these
+  // addresses — default BOB, whom we've met). A test can clear/extend it.
+  const broadcasts: Array<{ chatId: number; name: string }> = [];
+  const chatPosts: Array<{ chatId: number; text: string }> = [];
+  const leftChats: number[] = [];
+  const keyReachable = new Map<string, number>([[BOB.address.toLowerCase(), 11]]);
   const posts: Array<{ text: string; file?: string; quotedText?: string }> = [];
   const dms: Array<{ contactId: number; text: string; quotedText?: string }> = [];
   const deleted: number[] = [];
@@ -136,6 +144,31 @@ const makeFakeTransport = () => {
         .filter((m) => (maxId === undefined || m.id < maxId) && (minId === undefined || m.id > minId))
         .sort((a, b) => b.id - a.id)
         .slice(0, limit),
+    createBroadcast: async (name) => {
+      const id = nextChatId++;
+      broadcasts.push({ chatId: id, name });
+      return id;
+    },
+    chatInvite: async (chatId) => `OPENPGP4FPR:CHAT${chatId}`,
+    postToChat: async (chatId, text, opts) => {
+      chatPosts.push({ chatId, text });
+      const id = nextId++;
+      const msg = makeMessage({ id, text, timestamp: 1751900000, file: opts?.file ?? null });
+      messages.push(msg);
+      mids.set(id, `mid-${nextMid++}@example.org`);
+      return msg;
+    },
+    // A KEY-contact exists only for addresses the test marks reachable (default:
+    // SELF + BOB). Clearing/omitting an addr simulates an unreachable root author.
+    keyContactIdForAddr: async (addr) => {
+      const handle = addr.toLowerCase();
+      const selfAddr = self.address.toLowerCase();
+      if (handle === selfAddr || handle === selfAddr.split('@')[0]) return 1;
+      return keyReachable.get(handle) ?? null;
+    },
+    leaveChat: async (chatId) => {
+      leftChats.push(chatId);
+    },
     onFollower: (handler) => {
       followerHandlers.add(handler);
       return () => followerHandlers.delete(handler);
@@ -144,7 +177,7 @@ const makeFakeTransport = () => {
   const emitFollower = (contactId: number) => {
     for (const handler of followerHandlers) handler(contactId);
   };
-  return { transport, messages, posts, dms, deleted, unfollowed, following, mids, emitFollower, profileUpdates, createdContacts };
+  return { transport, messages, posts, dms, deleted, unfollowed, following, mids, emitFollower, profileUpdates, createdContacts, broadcasts, chatPosts, leftChats, keyReachable };
 };
 
 /** A context that's already configured with a fixed fake transport. */
@@ -171,6 +204,27 @@ const makeUnconfiguredCtx = (signup?: AppContext['signup']): AppContext => {
 };
 
 const makeApp = () => createApp(makeConfiguredCtx(makeFakeTransport().transport), { baseUrl: BASE });
+
+// --- thread-subscribe endpoint fixtures ---
+const THREAD_ROOT_UUID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+/** A BOB-authored signed ROOT post message (contact 11), added to a fake transport. */
+const bobRootMessage = (id: number) =>
+  makeMessage({
+    id,
+    fromId: 11,
+    sender: BOB,
+    text: JSON.stringify({
+      dn: 2,
+      type: 'post',
+      uuid: THREAD_ROOT_UUID,
+      text: 'bob thread root',
+      // A real signature isn't needed for the endpoint (it reads uuid + sender
+      // addr); the signed root ref on a REPLY is what a subscriber contacts.
+      ts: 1751900000000,
+      pubkey: 'fakepubkey',
+      sig: 'fakesig',
+    }),
+  });
 
 describe('oauth flow', () => {
   it('registers an app', async () => {
@@ -1946,5 +2000,105 @@ describe('GET /api/v1/streaming: route registration', () => {
     const body = (await res.json()) as { sent: string[] };
     expect(body.sent).toHaveLength(1);
     expect(JSON.parse(body.sent[0]!).event).toBe('notification');
+  });
+});
+
+describe('thread subscription endpoints (thread-subscribe)', () => {
+  const setup = (opts?: { reachable?: boolean }) => {
+    const fake = makeFakeTransport();
+    fake.messages.push(bobRootMessage(500));
+    if (opts?.reachable === false) fake.keyReachable.clear();
+    const store = createStore(ephemeralStorePath());
+    const app = createApp(makeConfiguredCtx(fake.transport), { baseUrl: BASE, store });
+    return { app, store, fake };
+  };
+  const parseEnv = (text: string) => JSON.parse(text) as Record<string, any>;
+
+  it('subscribes: DMs a scoped invite-request to the root author + reports pending', async () => {
+    const { app, store, fake } = setup();
+    const res = await app.request('/api/v1/pleroma/statuses/500/subscribe', { method: 'POST' });
+    expect(res.status).toBe(200);
+    const status = (await res.json()) as any;
+    expect(status.pleroma.deltanet.thread_subscribed).toBe(true); // optimistic pending
+    // Scoped invite-request DM went to BOB (key-contact 11).
+    const req = fake.dms.find((d) => parseEnv(d.text).type === 'invite-request');
+    expect(req?.contactId).toBe(11);
+    expect(parseEnv(req!.text).scope.thread).toBe(`u:${THREAD_ROOT_UUID}`);
+    expect(store.hasPendingThreadRequest(THREAD_ROOT_UUID)).toBe(true);
+  });
+
+  it('422 (unreachable_author) with NO cold send when there is no key path', async () => {
+    const { app, store, fake } = setup({ reachable: false });
+    const res = await app.request('/api/v1/pleroma/statuses/500/subscribe', { method: 'POST' });
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as any;
+    expect(body.code).toBe('unreachable_author');
+    // No invite-request DM was attempted (no cold send).
+    expect(fake.dms.some((d) => parseEnv(d.text).type === 'invite-request')).toBe(false);
+    expect(store.hasPendingThreadRequest(THREAD_ROOT_UUID)).toBe(false);
+  });
+
+  it('422 (own_thread) when the root is our own post', async () => {
+    const fake = makeFakeTransport();
+    // A SELF-authored root (fromId 1).
+    fake.messages.push(
+      makeMessage({ id: 501, text: JSON.stringify({ dn: 2, type: 'post', uuid: THREAD_ROOT_UUID, text: 'mine' }) }),
+    );
+    const app = createApp(makeConfiguredCtx(fake.transport), { baseUrl: BASE, store: createStore(ephemeralStorePath()) });
+    const res = await app.request('/api/v1/pleroma/statuses/501/subscribe', { method: 'POST' });
+    expect(res.status).toBe(422);
+    expect(((await res.json()) as any).code).toBe('own_thread');
+  });
+
+  it('unsubscribes: leaves the channel + drops the subscription', async () => {
+    const { app, store, fake } = setup();
+    // Pretend we already joined the channel.
+    store.addThreadSubscription(THREAD_ROOT_UUID, 424);
+    const res = await app.request('/api/v1/pleroma/statuses/500/subscribe', { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    expect(fake.leftChats).toContain(424);
+    expect(store.isSubscribedToThread(THREAD_ROOT_UUID)).toBe(false);
+    const status = (await res.json()) as any;
+    expect(status.pleroma.deltanet.thread_subscribed).toBe(false);
+  });
+
+  it('the root status carries thread_subscribed once subscribed', async () => {
+    const { app, store } = setup();
+    store.addThreadSubscription(THREAD_ROOT_UUID, 424);
+    const res = await app.request('/api/v1/statuses/500');
+    const status = (await res.json()) as any;
+    expect(status.pleroma.deltanet.thread_subscribed).toBe(true);
+  });
+
+  it('a non-existent status id 404s', async () => {
+    const { app } = setup();
+    const res = await app.request('/api/v1/pleroma/statuses/99999/subscribe', { method: 'POST' });
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('thread channels are excluded from following()/home timeline', () => {
+  it('a thread-subscription chat does not appear in the following list', async () => {
+    const fake = makeFakeTransport();
+    // Add a thread-channel InBroadcast to the transport's following list.
+    fake.following.push({ contactId: 77, chatId: 300, name: 'Thread abc', addr: 'host@x' });
+    const store = createStore(ephemeralStorePath());
+    store.addThreadSubscription('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', 300);
+    const app = createApp(makeConfiguredCtx(fake.transport), { baseUrl: BASE, store });
+    // The relationships endpoint reads followedFeeds — 77 must NOT be "following".
+    const res = await app.request('/api/v1/accounts/relationships?id[]=77');
+    const rels = (await res.json()) as any[];
+    expect(rels[0].following).toBe(false);
+  });
+
+  it('messages from a subscribed thread channel are filtered out of the home timeline', async () => {
+    const fake = makeFakeTransport();
+    // A message arriving on the thread channel chat (chatId 300).
+    fake.messages.push(makeMessage({ id: 600, chatId: 300, text: 'republished thread reply' }));
+    const store = createStore(ephemeralStorePath());
+    store.addThreadSubscription('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', 300);
+    const app = createApp(makeConfiguredCtx(fake.transport), { baseUrl: BASE, store });
+    const home = (await (await app.request('/api/v1/timelines/home')).json()) as any[];
+    expect(home.some((s) => s.content.includes('republished thread reply'))).toBe(false);
   });
 });

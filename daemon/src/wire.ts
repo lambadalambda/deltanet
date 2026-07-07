@@ -14,6 +14,7 @@ import {
   parseEnvelope,
   envelopeRefToken,
   envelopeRefKeyString,
+  threadScopeRootUuid,
   type Envelope,
   type EnvelopeRef,
 } from './envelope.js';
@@ -148,6 +149,34 @@ export const parseWireInviteGrant = (text: string): string | null => {
   const env = parseEnvelope(text);
   if (env) return env.type === 'invite-grant' && typeof env.link === 'string' ? env.link : null;
   return parseInviteGrant(text);
+};
+
+/**
+ * The THREAD scope (root uuid) of a v2 invite-request DM, or null when the DM is
+ * NOT a thread-scoped invite-request (a plain follow-back request, a non-request
+ * envelope, or a legacy marker). Tolerant: a malformed scope degrades to null,
+ * so such a DM is treated as an unscoped follow-back request by the caller. This
+ * is how a host tells "subscribe me to this thread" apart from "follow my feed".
+ */
+export const parseWireThreadInviteRequest = (text: string): string | null => {
+  const env = parseEnvelope(text);
+  if (!env || env.type !== 'invite-request') return null;
+  return threadScopeRootUuid(env.scope);
+};
+
+/**
+ * The THREAD scope + invite link of a v2 invite-grant DM, or null when the DM is
+ * NOT a thread-scoped grant (a plain follow-back grant, a non-grant envelope, or
+ * a legacy marker). Returns both so the subscriber can join the granted channel
+ * AND record which thread it subscribes. Tolerant on the scope (malformed → null).
+ */
+export const parseWireThreadInviteGrant = (
+  text: string,
+): { rootUuid: string; link: string } | null => {
+  const env = parseEnvelope(text);
+  if (!env || env.type !== 'invite-grant' || typeof env.link !== 'string') return null;
+  const rootUuid = threadScopeRootUuid(env.scope);
+  return rootUuid ? { rootUuid, link: env.link } : null;
 };
 
 /** The store post-key a v2 envelope ref points at (uuid, or bare mid). Re-exported for callers. */

@@ -43,6 +43,32 @@ export interface Transport {
   feedInvite(): Promise<string>;
   /** Join someone else's feed from their invite link. Returns the chat id. */
   follow(invite: string): Promise<number>;
+  /**
+   * Create a fresh broadcast channel with the given name and return its chatId
+   * (thread-subscribe host side — mirrors how the account's own feed broadcast is
+   * created at signup). Used to lazily host a per-thread channel.
+   */
+  createBroadcast(name: string): Promise<number>;
+  /** The securejoin invite link for a SPECIFIC broadcast chat we own (a thread channel). */
+  chatInvite(chatId: number): Promise<string>;
+  /**
+   * Post `text` to a SPECIFIC chat we own (a thread channel), rather than the
+   * account feed — the republication seam. Returns the sent message. `opts` is
+   * the same as `post()` (media/quotedText) though thread republication uses
+   * neither today.
+   */
+  postToChat(chatId: number, text: string, opts?: PostOptions): Promise<T.Message>;
+  /**
+   * A contact id we can ACTUALLY encrypt to for `addr`, or null. Unlike
+   * `contactIdByAddr`/`ensureContactIdByAddr` (which can return a KEYLESS
+   * address-contact row that fails "e2e encryption unavailable" on send), this
+   * probes core's e2ee availability (`e2eeAvail`) and returns an id ONLY when a
+   * send would encrypt. The honest reachability signal thread-subscribe needs:
+   * a subscriber can only DM the root author if it already holds a key path
+   * (from a received message / securejoin). Null → the endpoint returns the
+   * clean "can't reach the thread author yet" error, never a cold send.
+   */
+  keyContactIdForAddr(addr: string): Promise<number | null>;
   contact(contactId: number): Promise<T.Contact | null>;
   /**
    * Resolve a contact id from an email address. Also matches SELF: if the
@@ -91,6 +117,12 @@ export interface Transport {
    * that contact (no InBroadcast chat found for them).
    */
   unfollow(contactId: number): Promise<boolean>;
+  /**
+   * Leave a specific chat by id (block it, stopping delivery) — used to
+   * unsubscribe from a thread channel. Same `blockChat` mechanism as `unfollow`
+   * (broadcasts have no plain "leave"); best-effort.
+   */
+  leaveChat(chatId: number): Promise<void>;
   /** All messages from a specific contact's feed chat(s), newest first. */
   timelineFrom(contactId: number, query: TimelineQuery): Promise<T.Message[]>;
   /**

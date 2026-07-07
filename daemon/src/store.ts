@@ -52,8 +52,17 @@ const DC_CONTACT_ID_SELF = 1;
  * `{}` for pre-v6 stores), so an existing v5 store gains them on load without
  * losing anything; the version bump itself is what forces the derived-index
  * re-index that seeds the backfill queue from pre-existing dangling refs.
+ * Version 7 introduced thread-subscription state (see
+ * ../meta/issues/thread-subscribe.md): `hostedThreads` (root uuid -> the
+ * broadcast chatId we host that thread's channel on, host side) and
+ * `threadSubscriptions` (root uuid -> the chatId we joined for a thread we
+ * subscribe to, subscriber side). BOTH are non-derivable roots — a hosted
+ * channel's chatId and a subscribed channel's chatId cannot be reconstructed
+ * from a message sweep (they name DC chats created/joined out-of-band) — so,
+ * like pins/held envelopes, they SURVIVE a `migrate` re-index. Additive fields,
+ * defaulted to `{}` for pre-v7 stores.
  */
-export const STORE_SCHEMA_VERSION = 6;
+export const STORE_SCHEMA_VERSION = 7;
 
 export type NotificationType =
   | 'follow'
@@ -251,6 +260,37 @@ type StoreData = {
    * Persisted; survives migrate (records network history a re-index can't know).
    */
   backfillAttempts: Record<string, BackfillAttempt>;
+  /**
+   * HOST side (thread-subscribe): thread ROOT uuid -> the broadcast chatId we
+   * created to host that thread's channel. Lazily created on the first granted
+   * subscriber; republished replies for the thread are posted here. Non-derivable
+   * (the chatId names an out-of-band DC broadcast); survives migrate.
+   */
+  hostedThreads: Record<string, number>;
+  /**
+   * SUBSCRIBER side (thread-subscribe): thread ROOT uuid -> the chatId we joined
+   * for a thread channel we subscribe to. Distinguishes a thread-channel chat
+   * from a followed FEED so `following()`/home timeline can EXCLUDE it (a thread
+   * subscription must never surface as a followed feed). Non-derivable; survives
+   * migrate.
+   */
+  threadSubscriptions: Record<string, number>;
+  /**
+   * HOST side (thread-subscribe): reply uuids we've already republished into a
+   * thread channel, so a reply delivered twice (feed + DM copy) or re-ingested
+   * on restart is never double-posted. A record of what we SENT — network
+   * history a message sweep can't reconstruct — so it survives migrate. Stored
+   * as a map (uuid -> true) for O(1) membership + stable JSON.
+   */
+  republishedUuids: Record<string, boolean>;
+  /**
+   * SUBSCRIBER side (thread-subscribe): outstanding thread invite-requests we've
+   * sent and are awaiting a grant for, keyed by thread ROOT uuid -> requested-at
+   * ms. A scoped invite-grant is only auto-joined when its rootUuid has an entry
+   * here — the same anti-unsolicited-join gate `pendingFollowRequests` provides
+   * for feed follow-backs. Cleared on join (or abandon). Survives migrate.
+   */
+  pendingThreadRequests: Record<string, number>;
 };
 
 const emptyData = (): StoreData => ({
@@ -276,6 +316,10 @@ const emptyData = (): StoreData => ({
   pinnedKeys: {},
   heldEnvelopes: {},
   backfillAttempts: {},
+  hostedThreads: {},
+  threadSubscriptions: {},
+  pendingThreadRequests: {},
+  republishedUuids: {},
 });
 
 /**
@@ -313,6 +357,12 @@ const migrate = (old: StoreData): StoreData => ({
   // Preserve both across a re-index exactly like pins/notifications.
   heldEnvelopes: old.heldEnvelopes ?? {},
   backfillAttempts: old.backfillAttempts ?? {},
+  // Thread channel bindings (host + subscriber) name out-of-band DC chats a
+  // message sweep can't reconstruct — preserve across a re-index like pins.
+  hostedThreads: old.hostedThreads ?? {},
+  threadSubscriptions: old.threadSubscriptions ?? {},
+  pendingThreadRequests: old.pendingThreadRequests ?? {},
+  republishedUuids: old.republishedUuids ?? {},
 });
 
 export type ReactionTally = { emoji: string; count: number; reactors: string[] };
@@ -449,6 +499,43 @@ export type Store = {
   backfillAttempt(refUuid: string): BackfillAttempt | null;
   /** Clear a ref's attempt state (e.g. once it resolves). No-op if absent. */
   clearBackfillAttempt(refUuid: string): void;
+
+  // --- thread-subscribe: hosted threads (host side) + subscriptions (subscriber side) ---
+
+  /** Record that we HOST thread `rootUuid`'s channel on broadcast `chatId`. Overwrites. */
+  addHostedThread(rootUuid: string, chatId: number): void;
+  /** The broadcast chatId hosting thread `rootUuid`, or null if we don't host it. */
+  hostedThreadChatId(rootUuid: string): number | null;
+  /** Every hosted thread's root uuid (for republication lookup / pruning). */
+  hostedThreadUuids(): string[];
+  /** Drop a hosted-thread binding (channel gone). No-op if absent. */
+  removeHostedThread(rootUuid: string): void;
+  /** Have we already republished reply `uuid` into a thread channel? */
+  wasRepublished(uuid: string): boolean;
+  /** Mark reply `uuid` as republished (dedupe; idempotent). */
+  markRepublished(uuid: string): void;
+
+  /** Record that we SUBSCRIBE to thread `rootUuid` via joined chat `chatId`. Overwrites. */
+  addThreadSubscription(rootUuid: string, chatId: number): void;
+  /** The chatId we joined for thread `rootUuid`, or null if not subscribed. */
+  threadSubscriptionChatId(rootUuid: string): number | null;
+  /** Are we subscribed to thread `rootUuid`? */
+  isSubscribedToThread(rootUuid: string): boolean;
+  /** Is `chatId` a chat we joined for a thread subscription? (excludes it from following()/home). */
+  isThreadSubscriptionChat(chatId: number): boolean;
+  /** All subscribed thread chat ids (for the following()/timeline exclusion set). */
+  threadSubscriptionChatIds(): number[];
+  /** Every subscribed thread's root uuid. */
+  threadSubscriptionUuids(): string[];
+  /** Drop a thread subscription (unsubscribe). No-op if absent. */
+  removeThreadSubscription(rootUuid: string): void;
+
+  /** Record an outstanding thread invite-request for `rootUuid` at `requestedAtMs`. */
+  addPendingThreadRequest(rootUuid: string, requestedAtMs: number): void;
+  /** Is there an outstanding thread invite-request awaiting a grant for `rootUuid`? */
+  hasPendingThreadRequest(rootUuid: string): boolean;
+  /** Clear a pending thread request (on grant/join, or abandon). No-op if absent. */
+  clearPendingThreadRequest(rootUuid: string): void;
 };
 
 /** A fresh scratch path for callers (tests, `createApp` defaults) that don't need cross-restart persistence. */
@@ -945,6 +1032,60 @@ export const createStore = (filePath: string): Store => {
       const d = load();
       if (d.backfillAttempts[refUuid] === undefined) return;
       delete d.backfillAttempts[refUuid];
+      save();
+    },
+
+    // --- thread-subscribe ---
+
+    addHostedThread: (rootUuid, chatId) => {
+      const d = load();
+      d.hostedThreads[rootUuid] = chatId;
+      save();
+    },
+    hostedThreadChatId: (rootUuid) => load().hostedThreads[rootUuid] ?? null,
+    hostedThreadUuids: () => Object.keys(load().hostedThreads),
+    removeHostedThread: (rootUuid) => {
+      const d = load();
+      if (d.hostedThreads[rootUuid] === undefined) return;
+      delete d.hostedThreads[rootUuid];
+      save();
+    },
+    wasRepublished: (uuid) => load().republishedUuids[uuid] === true,
+    markRepublished: (uuid) => {
+      const d = load();
+      if (d.republishedUuids[uuid] === true) return;
+      d.republishedUuids[uuid] = true;
+      save();
+    },
+
+    addThreadSubscription: (rootUuid, chatId) => {
+      const d = load();
+      d.threadSubscriptions[rootUuid] = chatId;
+      save();
+    },
+    threadSubscriptionChatId: (rootUuid) => load().threadSubscriptions[rootUuid] ?? null,
+    isSubscribedToThread: (rootUuid) => rootUuid in load().threadSubscriptions,
+    isThreadSubscriptionChat: (chatId) =>
+      Object.values(load().threadSubscriptions).includes(chatId),
+    threadSubscriptionChatIds: () => Object.values(load().threadSubscriptions),
+    threadSubscriptionUuids: () => Object.keys(load().threadSubscriptions),
+    removeThreadSubscription: (rootUuid) => {
+      const d = load();
+      if (d.threadSubscriptions[rootUuid] === undefined) return;
+      delete d.threadSubscriptions[rootUuid];
+      save();
+    },
+
+    addPendingThreadRequest: (rootUuid, requestedAtMs) => {
+      const d = load();
+      d.pendingThreadRequests[rootUuid] = requestedAtMs;
+      save();
+    },
+    hasPendingThreadRequest: (rootUuid) => rootUuid in load().pendingThreadRequests,
+    clearPendingThreadRequest: (rootUuid) => {
+      const d = load();
+      if (!(rootUuid in d.pendingThreadRequests)) return;
+      delete d.pendingThreadRequests[rootUuid];
       save();
     },
   };

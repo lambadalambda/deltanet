@@ -554,6 +554,46 @@ export const openTransport = async (
       return rpc.getChatSecurejoinQrCode(accountId, chatId);
     },
 
+    createBroadcast: async (name: string) => rpc.createBroadcast(accountId, name),
+
+    chatInvite: async (chatId: number) => rpc.getChatSecurejoinQrCode(accountId, chatId),
+
+    postToChat: async (chatId: number, text: string, opts?: PostOptions) => {
+      const loadOwn = async (msgId: number): Promise<T.Message> =>
+        withSelfDisplayName(await rpc.getMessage(accountId, msgId), await selfDisplayName());
+      if (opts?.file || opts?.quotedText) {
+        const data: T.MessageData = {
+          text: text || null,
+          html: null,
+          viewtype: opts?.file ? 'Image' : null,
+          file: opts?.file ?? null,
+          filename: null,
+          location: null,
+          overrideSenderName: null,
+          quotedMessageId: null,
+          quotedText: opts?.quotedText ?? null,
+        };
+        return loadOwn(await rpc.sendMsg(accountId, chatId, data));
+      }
+      return loadOwn(await rpc.miscSendTextMessage(accountId, chatId, text));
+    },
+
+    keyContactIdForAddr: async (addr: string) => {
+      // SELF is trivially reachable (we can address our own thread), but a
+      // subscription to our own thread is nonsensical; the caller guards that.
+      if (matchesSelfAddr(addr, creds.addr)) return DC_CONTACT_ID_SELF;
+      // Core keeps KEY-contacts (e2ee-capable) and ADDRESS-contacts (keyless) as
+      // SEPARATE rows for the same addr. Query by addr and pick the row we can
+      // ACTUALLY encrypt to (`e2eeAvail`), so a send won't fail "e2e encryption
+      // unavailable". No such row → null (honest: no key path to this author yet).
+      const contacts = await rpc.getContacts(accountId, 0, addr).catch(() => [] as T.Contact[]);
+      const target = addr.toLowerCase();
+      const match = contacts.find(
+        (c) => c.address.toLowerCase() === target && c.e2eeAvail && c.id !== DC_CONTACT_ID_SELF,
+      );
+      return match ? match.id : null;
+    },
+
     follow: async (invite: string) => {
       const chatId = await rpc.secureJoin(accountId, invite);
       // Re-following a feed we previously `unfollow()`-ed (which calls
@@ -695,6 +735,12 @@ export const openTransport = async (
       // chat as a contact request. Blocking actually stops delivery.
       await rpc.blockChat(accountId, chatId);
       return true;
+    },
+
+    leaveChat: async (chatId: number) => {
+      // Broadcasts (incl. thread channels joined via securejoin) have no plain
+      // "leave" RPC — `blockChat` stops delivery (same as `unfollow`).
+      await rpc.blockChat(accountId, chatId);
     },
 
     timelineFrom: async (contactId, { limit, maxId, minId }: TimelineQuery) => {

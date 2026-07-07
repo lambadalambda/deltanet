@@ -7,7 +7,7 @@ import {
   buildInviteGrantText,
   buildInviteRequestText,
 } from '../src/protocol.js';
-import { buildInviteGrantEnvelope } from '../src/envelope.js';
+import { buildInviteGrantEnvelope, buildInviteRequestEnvelope } from '../src/envelope.js';
 import {
   deriveFollowbackActions,
   executeFollowbackAction,
@@ -224,5 +224,27 @@ describe('followback control DMs do not register edges or notifications', () => 
     expect(deriveOnIngest(store, inviteRequestMsg(), 'req-mid@example.org')).toEqual([]);
     expect(deriveOnIngest(store, inviteGrantMsg(), 'grant-mid@example.org')).toEqual([]);
     expect(store.listNotifications({})).toHaveLength(0);
+  });
+});
+
+describe('deriveFollowbackActions: thread-scoped requests are NOT feed follow-backs', () => {
+  const ROOT = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+
+  it('a THREAD-scoped invite-request derives NO feed grant-invite action', async () => {
+    const { buildThreadInviteRequestEnvelope } = await import('../src/envelope.js');
+    const msg = makeMessage({ id: 20, fromId: 11, text: buildThreadInviteRequestEnvelope(ROOT), sender: { address: ALICE } as any });
+    expect(deriveFollowbackActions(store, msg, false)).toEqual([]);
+  });
+
+  it('a THREAD-scoped invite-grant derives NO feed accept-grant action even when pending', async () => {
+    const { buildThreadInviteGrantEnvelope } = await import('../src/envelope.js');
+    store.addPendingFollowRequest(ALICE, 1); // an unrelated FEED pending
+    const msg = makeMessage({ id: 21, fromId: 11, text: buildThreadInviteGrantEnvelope(ROOT, INVITE), sender: { address: ALICE } as any });
+    expect(deriveFollowbackActions(store, msg, false)).toEqual([]);
+  });
+
+  it('an UNSCOPED invite-request still derives the feed grant-invite action (regression)', () => {
+    const msg = makeMessage({ id: 22, fromId: 11, text: buildInviteRequestEnvelope(), sender: { address: ALICE } as any });
+    expect(deriveFollowbackActions(store, msg, false)).toEqual([{ kind: 'grant-invite', toContactId: 11 }]);
   });
 });

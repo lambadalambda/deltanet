@@ -102,6 +102,18 @@ export type Envelope = {
   emoji?: string;
   /** The invite link of an invite-grant. */
   link?: string;
+  /**
+   * On an invite-request / invite-grant: the SCOPE the request/grant is for
+   * (thread-subscribe, design-sketch #3 / meta/issues/thread-subscribe.md).
+   * ABSENT = the existing follow-back flow (subscribe to the author's whole
+   * FEED) — unchanged, so old nodes and the follow-back regression tests keep
+   * working. `{ thread: 'u:<root-uuid>' }` = subscribe to a single THREAD:
+   * the requester wants the root author's per-thread broadcast channel. Parsed
+   * TOLERANTLY (unknown scope shapes degrade to unscoped) so a future scope kind
+   * never breaks an old node. The thread token is `u:<uuid>` (mirrors the wire
+   * ref-token grammar) rather than a bare uuid, so the scope space can grow.
+   */
+  scope?: { thread?: string };
   /** Author-declared ms epoch timestamp, signed on every content envelope (sketch #6). */
   ts?: number;
   /** base64 SPKI-DER ed25519 public key of the author (sketch #6). */
@@ -259,6 +271,51 @@ export const buildInviteRequestEnvelope = (): string =>
 /** An invite-grant control-DM envelope carrying the feed invite link. */
 export const buildInviteGrantEnvelope = (link: string): string =>
   serialize({ dn: DN_VERSION, type: 'invite-grant', link });
+
+/** The scope token for a thread subscription: `u:<root-uuid>` (mirrors the ref-token grammar). */
+export const threadScopeToken = (rootUuid: string): string => `u:${rootUuid}`;
+
+/**
+ * Recover the root UUID from a thread scope, or null if `scope` is absent /
+ * malformed / not a thread scope. Tolerant: an unknown scope shape yields null
+ * (treated as unscoped by callers), so a future scope kind never breaks parsing.
+ * Only the `u:<uuid>` grammar is accepted; a bare or empty token yields null.
+ */
+export const threadScopeRootUuid = (scope: Envelope['scope']): string | null => {
+  const token = scope?.thread;
+  if (typeof token !== 'string' || !token.startsWith('u:')) return null;
+  const uuid = token.slice('u:'.length);
+  return uuid.length > 0 ? uuid : null;
+};
+
+/**
+ * A SCOPED invite-request control DM (thread-subscribe): asks the root author to
+ * subscribe us to the thread rooted at `rootUuid`. Extends the existing
+ * invite-request type with a `scope` — an old node parsing this sees a plain
+ * invite-request (the scope is an unknown-but-ignored field) and would grant a
+ * FEED follow-back; a thread-aware host reads the scope and grants a thread
+ * channel instead.
+ */
+export const buildThreadInviteRequestEnvelope = (rootUuid: string): string =>
+  serialize({
+    dn: DN_VERSION,
+    type: 'invite-request',
+    scope: { thread: threadScopeToken(rootUuid) },
+  });
+
+/**
+ * A SCOPED invite-grant control DM (thread-subscribe): grants a subscriber the
+ * per-thread broadcast channel's invite `link` for the thread rooted at
+ * `rootUuid`. The subscriber's ingest joins it as a THREAD subscription (not a
+ * followed feed). The thread-so-far envelope-bundle DM(s) follow separately.
+ */
+export const buildThreadInviteGrantEnvelope = (rootUuid: string, link: string): string =>
+  serialize({
+    dn: DN_VERSION,
+    type: 'invite-grant',
+    link,
+    scope: { thread: threadScopeToken(rootUuid) },
+  });
 
 /**
  * An `envelope-request` control-DM envelope: a batch of post refs (uuid refs) we
