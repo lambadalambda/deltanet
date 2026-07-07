@@ -61,3 +61,18 @@ thread moderation the fediverse can't cleanly do). Wart: the 10-message
 join backfill — host should send a "thread so far" bundle to new
 subscribers; long-term, thread-as-webxdc gives full update-replay history
 and is probably webxdc's first natural use here.
+
+## 4. Expanding the join backfill (10 → N)
+
+The 10-message backfill lives in CORE on the channel owner's device
+(`resend_last_msgs()`, `N_MSGS_TO_NEW_BROADCAST_MEMBER` in constants.rs),
+not on the relay — i.e. inside our own daemon process. Expansion paths,
+ranked: (1) upstream a config knob (feature is new, PR #8151-era, active
+area); (2) app-layer backfill bundles: on SecurejoinInviterProgress our
+daemon DMs older posts to the joiner — original text carries `⚑` uuids so
+the joiner's store unifies them; requires admitting author-verified
+DM-carried posts into timelines + bundling for rate limits; (3) patched
+core binary (fork maintenance — avoid). Long-term structural answer is
+webxdc update-replay (full history for late joiners). Note: any expanded
+backfill is real re-transmission on the owner's node (bandwidth, 60/min
+budget), not a free outbox read like AP.
