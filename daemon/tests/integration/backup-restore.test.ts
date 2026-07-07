@@ -112,6 +112,21 @@ describe('backup & restore over the relay', () => {
     const pinnedBefore = bStore.pinnedKey(aCreds.addr);
     expect(pinnedBefore, "B pinned A's key from the pre-backup post").toBeTruthy();
 
+    // A sets a petname for B (real core changeContactName). It lives in dc.db,
+    // so the restore below must bring it back.
+    const bContactId = await a.contactIdByAddr(bCreds.addr);
+    expect(bContactId).not.toBeNull();
+    const petRes = await aApp.request(`/api/deltanet/contacts/${bContactId}/petname`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ petname: 'bobby' }),
+    });
+    expect(petRes.status).toBe(200);
+    const petAccount = (await petRes.json()) as any;
+    expect(petAccount.display_name).toBe('bobby');
+    expect(petAccount.pleroma.deltanet.petname).toBe('bobby');
+    expect((await a.contact(bContactId!))?.displayName).toBe('bobby');
+
     // Export a .dnbk through the endpoint (real core exportBackup underneath).
     const exportRes = await aApp.request('/api/deltanet/backup/export', {
       method: 'POST',
@@ -176,6 +191,13 @@ describe('backup & restore over the relay', () => {
     expect(follows.some((f) => f.addr === bCreds.addr), 'A still follows B').toBe(true);
     const timelineTexts = (await a2!.timeline({ limit: 60 })).map(bodyOf);
     expect(timelineTexts, 'pre-backup history restored').toContain(preText);
+
+    // The petname survived the wipe (it lives in dc.db inside the backup).
+    const bContactIdAfter = await a2!.contactIdByAddr(bCreds.addr);
+    expect(bContactIdAfter).not.toBeNull();
+    const bAfter = await a2!.contact(bContactIdAfter!);
+    expect(bAfter?.displayName, "A's petname for B survived the restore").toBe('bobby');
+    expect(bAfter?.name).toBe('bobby');
 
     // The last-backup stamp traveled inside the backup's config.
     const restoredInfo = (await (await a2App.request('/api/deltanet/backup')).json()) as any;
