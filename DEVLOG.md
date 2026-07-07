@@ -1,5 +1,36 @@
 # deltanet devlog
 
+## 2026-07-08 — visibility channels, part 1 (public + locked)
+
+The composer's visibility selector is no longer decorative: `private`
+("Followers") posts go to a second owned broadcast — the LOCKED channel —
+while public/unlisted stay on the original feed (which simply *is* the
+public channel; migration was free). Timeline aggregation was nearly free
+too: `feedChatIds()` already includes every OutBroadcast.
+
+- **Locked follows are approval-gated by construction**: securejoin links
+  are capability-based (no join-with-approval exists at the core level),
+  so the locked invite is never published — a requester sends a
+  locked-SCOPED invite-request (thread-scope precedent; old nodes safely
+  degrade to public auto-grant), the owner's daemon QUEUES it
+  (follow_request notification — the frontend's accept/decline UI existed
+  all along), and approving DMs the locked invite, which the requester's
+  existing follow-back machinery joins. Queueing happens on LIVE fresh
+  DMs only, so restarts never re-queue.
+- Own locked posts render `visibility: 'private'` via a store-backed
+  uuid set (non-derivable — which channel a post went to isn't in the
+  text — survives migrate like pins).
+- **Local leak guards shipped WITH part 1** so "Followers" isn't a false
+  promise: backfill serving refuses locked posts, and boosting one's own
+  locked post 422s. The remote/receiver-side surfaces (envelope
+  visibility marker, thread-channel gating, reply-privacy inheritance,
+  revocation) are DEFERRED, explicitly, to
+  meta/issues/visibility-leak-prevention.md.
+- Relay integration test: B requests + is approved into the locked
+  channel and sees both tiers; C (public-only) provably never receives
+  the locked post; A's follower/post counts aggregate both channels
+  deduped.
+
 ## 2026-07-07 — search
 
 `GET /api/v2/search` exists now — the frontend's search page and header
