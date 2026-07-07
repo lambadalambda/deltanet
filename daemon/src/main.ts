@@ -11,6 +11,14 @@ import { createStore } from './store.js';
 import { deriveOnIngest, runFollowbackOnIngest } from './ingest.js';
 import { createStatusMapper, mapNotification } from './mapping.js';
 import { createStreamingHub } from './streaming.js';
+import { createBackfiller, type SendRequest } from './backfill.js';
+import { buildEnvelopeRequest, type EnvelopeRef } from './envelope.js';
+import {
+  enqueueDangling,
+  handleBackfillControlDm,
+  seedBackfillQueue,
+  MAX_SERVE_RESPONSES_PER_MINUTE,
+} from './backfill-ingest.js';
 import type { T } from '@deltachat/jsonrpc-client';
 
 const PORT = Number(process.env['PORT'] ?? 4030);
@@ -32,6 +40,38 @@ const store = createStore(join(DATA_DIR, 'deltanet-store.json'));
 // `GET /api/v1/notifications`.
 const hub = createStreamingHub();
 const mapper = createStatusMapper(store, BASE_URL);
+
+// Thread auto-backfill (design-sketch #3): the auto-fetch loop that heals
+// dangling reply/boost/root refs by asking the peer who showed them to us. The
+// `send` seam emits ONE envelope-request control DM per peer batch, addressed by
+// the peer's MESSAGE-DERIVED contact id (`peerContactId`, captured at enqueue
+// from the surfacing message's `fromId`) — NEVER an addr lookup: DC core 2.x
+// separates key-contacts from keyless address-contacts, and an addr-resolved id
+// cannot be encrypted to even when the key-contact exists (see backfill.ts).
+// A send before the transport is assigned (startup race) throws — the ref stays
+// queued (not in-flight) for the next flush.
+const sendBackfillRequest: SendRequest = async (_peer, peerContactId, refs: EnvelopeRef[]) => {
+  const t = transport;
+  if (!t) throw new Error('transport not ready'); // keeps refs queued (not in-flight)
+  if (peerContactId === 1) throw new Error('unroutable backfill peer');
+  await t.sendControlDm(peerContactId, buildEnvelopeRequest(refs));
+};
+const backfiller = createBackfiller({ store, send: sendBackfillRequest });
+
+// Per-peer serve-side response rate limiter (max bundle replies/min per
+// requester), so answering backfill requests never starves user actions.
+const serveTimestamps = new Map<string, number[]>();
+const serveGuard = (peer: string): boolean => {
+  const now = Date.now();
+  const recent = (serveTimestamps.get(peer) ?? []).filter((t) => t > now - 60_000);
+  if (recent.length >= MAX_SERVE_RESPONSES_PER_MINUTE) {
+    serveTimestamps.set(peer, recent);
+    return false;
+  }
+  recent.push(now);
+  serveTimestamps.set(peer, recent);
+  return true;
+};
 
 // Memoized own account address, used to key SELF reaction re-derivation.
 // Prefers the live transport's `self()` (the authoritative canonical address),
@@ -131,6 +171,38 @@ const ingestOnMessage = async (
   // unsolicited `⇋ invite` DM from ever joining us to a feed.
   await runFollowbackOnIngest(store, transport, msg, isFeedMessage, phase, fresh);
 
+  // Thread auto-backfill (design-sketch #3): dangling-ref detection + serve +
+  // bundle receipt. All SUPPRESSED — no notifications, no streaming, held
+  // envelopes never enter timelines (see backfill-ingest.ts).
+  //  - On any freshly-indexed content message: enqueue its unresolved uuid refs
+  //    against the sender (a met contact) for the auto-fetch loop. Runs in
+  //    index/combined so the startup re-index seeds pre-existing dangling refs.
+  if ((phase === 'combined' || phase === 'index') && fresh) {
+    enqueueDangling(store, backfiller, msg);
+  }
+  //  - Live control DMs: serve an envelope-request / process an envelope-bundle.
+  //    Combined phase + a live transport only (a restart replaying old control
+  //    DMs must not re-serve; a served bundle is not persisted as sent). When
+  //    handled, SKIP the streaming/notification tail below (they carry none).
+  if (phase === 'combined' && transport) {
+    const handled = await handleBackfillControlDm(
+      store,
+      backfiller,
+      transport,
+      msg,
+      isFeedMessage,
+      Date.now(),
+      serveGuard,
+    ).catch((err) => {
+      console.error('backfill control-DM handling failed (non-fatal):', err);
+      return false;
+    });
+    if (handled) {
+      void backfiller.flush();
+      return;
+    }
+  }
+
   if (phase !== 'combined') return;
   const t = transport;
   if (!t) return;
@@ -189,6 +261,13 @@ if (creds) {
   transport = await openTransport(DATA_DIR, creds, { onMessage: ingestOnMessage });
   transport.onFollower(notifyFollower);
   await announce(transport);
+  // Thread auto-backfill startup seed: an existing store may already hold
+  // dangling refs predating this feature (carol's case). Local-message dangling
+  // refs are seeded by the startup re-index sweep (enqueueDangling runs in the
+  // 'index' phase); this seeds held envelopes' own transitive refs. Capped burst;
+  // the flush's global rate cap paces the actual sends.
+  seedBackfillQueue(store, backfiller);
+  void backfiller.flush();
 } else {
   console.log(
     `no account "${ACCOUNT}" configured yet — POST /api/deltanet/signup to create one`,

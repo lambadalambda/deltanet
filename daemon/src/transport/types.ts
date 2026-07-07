@@ -59,6 +59,17 @@ export interface Transport {
    * key-exchange path), so callers must treat sends to such contacts as
    * best-effort. Returns SELF's id for our own address. Used by the reply
    * root-DM copy. Null only if the address is invalid / creation fails.
+   *
+   * KEY-CONTACTS vs ADDRESS-CONTACTS (DC core 2.x): core keeps these as
+   * SEPARATE contact rows. A key-contact is derived from securejoin or a
+   * received message and is e2ee-capable; an address-contact (what
+   * `createContact`/`lookupContactIdByAddr` yield) is KEYLESS
+   * (`e2eeAvail:false`) — sending to it fails with "e2e encryption
+   * unavailable" EVEN WHEN a key-contact for the same address exists. So when
+   * you hold a message from the peer, always send to the MESSAGE-DERIVED id
+   * (`msg.fromId` / `msg.sender.id`) — as the reply DM copy
+   * (`target.sender.id`) and the backfill request (`QueuedRef.peerContactId`)
+   * do — and reach for this method only for genuinely address-only targets.
    */
   ensureContactIdByAddr(addr: string): Promise<number | null>;
   avatarPath(contactId: number): Promise<string | null>;
