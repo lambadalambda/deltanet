@@ -5,7 +5,12 @@ import { WebSocketServer } from 'ws';
 import { readAccounts, writeAccount } from './config.js';
 import { createApp, type AppContext } from './server.js';
 import { registerAccount } from './signup.js';
-import { openTransport, type ChatmailCredentials, type IngestPhase } from './transport/deltachat.js';
+import {
+  openTransport,
+  restoreTransport,
+  type ChatmailCredentials,
+  type IngestPhase,
+} from './transport/deltachat.js';
 import type { Transport } from './transport/types.js';
 import { createStore } from './store.js';
 import { deriveOnIngest, runFollowbackOnIngest } from './ingest.js';
@@ -323,6 +328,27 @@ const ctx: AppContext = {
     opened.onFollower(notifyFollower);
     transport = opened;
     await announce(opened);
+    return opened;
+  },
+  // Restore-instead-of-signup: the API layer has already unpacked the .dnbk
+  // container (sidecar files written + store/attestor reloaded); this imports
+  // the core tar and boots the transport like a signup would, persisting the
+  // recovered credentials so the next plain daemon start finds the account.
+  restore: async (backupTarPath, passphrase) => {
+    const { transport: opened, creds: restoredCreds } = await restoreTransport(
+      DATA_DIR,
+      backupTarPath,
+      passphrase,
+      { onMessage: ingestOnMessage },
+    );
+    writeAccount(ACCOUNTS_FILE, ACCOUNT, restoredCreds);
+    opened.onFollower(notifyFollower);
+    transport = opened;
+    await announce(opened);
+    // Same startup seeding a normal boot does: the restored store may carry
+    // dangling refs whose backfill the pre-wipe node never finished.
+    seedBackfillQueue(store, backfiller);
+    void backfiller.flush();
     return opened;
   },
 };
