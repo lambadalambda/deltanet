@@ -150,13 +150,72 @@ export const createApp = (
 
   /**
    * Attest a content envelope: stamp `{ ts, pubkey, sig }` over its canonical
-   * payload, signed as `addr` (the daemon's own address). Returns the serialized
-   * signed wire string. The single place send paths turn an envelope object into
-   * a signed message body.
+   * payload, signed as `addr` (the daemon's own address), plus the UNSIGNED
+   * in-band `invite` when provided (outside the canonical payload by design —
+   * see envelope.ts). Returns the serialized signed wire string. The single
+   * place send paths turn an envelope object into a signed message body.
    */
-  const signEnvelope = (env: Envelope, addr: string): string => {
+  const signEnvelope = (env: Envelope, addr: string, invite?: string | null): string => {
     const { ts, pubkey, sig } = attestor.sign(env, addr);
-    return serializeEnvelope({ ...env, ts, pubkey, sig });
+    return serializeEnvelope({ ...env, ...(invite ? { invite } : {}), ts, pubkey, sig });
+  };
+
+  // Our own multi-use contact invite link (in-band introduction), minted once
+  // per daemon lifetime and stamped onto every outgoing content envelope so
+  // strangers holding our posts can securejoin us. Failure → envelopes simply
+  // omit it (mixed-era behavior).
+  let cachedContactInvite: string | null | undefined;
+  const ownContactInvite = async (transport: Transport): Promise<string | null> => {
+    if (cachedContactInvite === undefined) {
+      cachedContactInvite = await transport.contactInvite().catch(() => null);
+    }
+    return cachedContactInvite;
+  };
+
+  /**
+   * The in-band contact invite carried by the thread-root post `rootUuid`, from
+   * our local copy or a held envelope — the introduction payload for reaching a
+   * never-met root author. Null when we don't hold the root or it carries none.
+   */
+  const rootPostInvite = async (
+    transport: Transport,
+    rootUuid: string,
+  ): Promise<string | null> => {
+    const localId = store.resolveKey(rootUuid);
+    if (localId !== null) {
+      const msg = await transport.message(localId);
+      const env = msg ? parseEnvelope(msg.text) : null;
+      if (env?.invite) return env.invite;
+    }
+    return store.heldEnvelope(rootUuid)?.env.invite ?? null;
+  };
+
+  // Failed introductions, negative-cached per addr so a dead invite isn't
+  // re-joined on every reply into the same thread. In-memory (retrying after a
+  // restart is fine); successful introductions need no cache — the key-contact
+  // then exists and the direct path wins.
+  const failedIntroductions = new Map<string, number>();
+  const INTRODUCTION_RETRY_MS = 10 * 60_000;
+
+  /**
+   * Resolve a sendable KEY-contact for `addr`, introducing ourselves in-band
+   * via `invite` when we've never met them. Introduction is EXPLICIT-need-only
+   * (callers are our own outgoing copies / a user-triggered subscribe — never
+   * plain ingest), slow (securejoin), and negative-cached on failure.
+   */
+  const keyContactOrIntroduce = async (
+    transport: Transport,
+    addr: string,
+    invite: string | null,
+  ): Promise<number | null> => {
+    const direct = await transport.keyContactIdForAddr(addr);
+    if (direct !== null) return direct;
+    if (!invite) return null;
+    const failedAt = failedIntroductions.get(addr.toLowerCase());
+    if (failedAt !== undefined && Date.now() - failedAt < INTRODUCTION_RETRY_MS) return null;
+    const introduced = await transport.introduceViaInvite(invite, addr);
+    if (introduced === null) failedIntroductions.set(addr.toLowerCase(), Date.now());
+    return introduced;
   };
 
   /**
@@ -363,7 +422,7 @@ export const createApp = (
   const resolveThreadRoot = async (
     transport: Transport,
     parsed: { kind: 'msg'; msgId: number } | { kind: 'orig'; uuid: string },
-  ): Promise<{ rootUuid: string; rootAddr: string } | null> => {
+  ): Promise<{ rootUuid: string; rootAddr: string; rootInvite: string | null } | null> => {
     let env: Envelope | null = null;
     let ownUuid: string | undefined;
     let ownAddr: string | undefined;
@@ -391,14 +450,22 @@ export const createApp = (
       ownUuid = env?.uuid ?? parseWireUuid(msg.text) ?? undefined;
       ownAddr = msg.sender.address;
     }
-    // A reply carries the signed root ref (uuid + signed addr).
+    // A reply carries the signed root ref (uuid + signed addr). The reply's own
+    // invite is the PARENT author's, not the root's — resolve the root post's.
     const root = env?.root;
     if (root && 'u' in root && root.u && root.addr) {
-      return { rootUuid: root.u, rootAddr: root.addr };
+      return {
+        rootUuid: root.u,
+        rootAddr: root.addr,
+        rootInvite: await rootPostInvite(transport, root.u),
+      };
     }
-    // Otherwise the target IS the root (a non-reply post) — subscribe to its uuid.
+    // Otherwise the target IS the root (a non-reply post) — subscribe to its
+    // uuid, and its own envelope carries its author's in-band invite (if any).
     if (env?.type === 'reply') return null; // a reply with no resolvable root: can't
-    if (ownUuid && ownAddr) return { rootUuid: ownUuid, rootAddr: ownAddr };
+    if (ownUuid && ownAddr) {
+      return { rootUuid: ownUuid, rootAddr: ownAddr, rootInvite: env?.invite ?? null };
+    }
     return null;
   };
 
@@ -858,6 +925,7 @@ export const createApp = (
       const replyText = signEnvelope(
         buildReplyObject(text, uuid, envRef, mediaFields, root),
         await mapper.ownAddr(transport),
+        await ownContactInvite(transport),
       );
 
       const msg = await transport.post(replyText, media ? { file: media.path } : undefined);
@@ -883,12 +951,14 @@ export const createApp = (
 
       // Root DM copy (thread completeness by construction): also copy the SAME
       // reply envelope to the ROOT author when known, distinct from the parent
-      // author and not SELF, so the root accumulates the full thread (a future
-      // thread host must be complete). BEST-EFFORT: delivery to a NEVER-MET
-      // root author fails at the core level ("e2e encryption unavailable" —
-      // securejoin is the substrate's only key-exchange path; an in-band
-      // introduction mechanism is future work), and a failure here must never
-      // fail the reply, feed post, or parent copy.
+      // author and not SELF, so the root accumulates the full thread (a thread
+      // host must be complete). Delivery targets a KEY-contact; for a NEVER-MET
+      // root author we introduce ourselves IN-BAND via the invite carried by
+      // the root post we hold (backfill fetches roots, roots carry invites).
+      // The introduction path runs in the BACKGROUND — a securejoin is a
+      // multi-message email exchange and must never delay the reply response —
+      // and everything here is BEST-EFFORT: no failure may fail the reply,
+      // feed post, or parent copy.
       const rootAddr = root ? envelopeRefAddr(root) : undefined;
       const parentAddr = target.sender.address.toLowerCase();
       const myAddr = (await mapper.ownAddr(transport)).toLowerCase();
@@ -897,15 +967,17 @@ export const createApp = (
         rootAddr.toLowerCase() !== parentAddr &&
         rootAddr.toLowerCase() !== myAddr
       ) {
-        await transport
-          .ensureContactIdByAddr(rootAddr)
-          .then((rootContactId) => {
-            if (rootContactId === null || rootContactId === DC_CONTACT_ID_SELF) return;
-            return transport.sendControlDm(rootContactId, replyText);
-          })
-          .catch((err) => {
-            console.error('root sendControlDm failed (non-fatal):', err);
-          });
+        const rootUuidForInvite = root && 'u' in root ? root.u : null;
+        void (async () => {
+          const invite = rootUuidForInvite
+            ? await rootPostInvite(transport, rootUuidForInvite)
+            : null;
+          const rootContactId = await keyContactOrIntroduce(transport, rootAddr, invite);
+          if (rootContactId === null || rootContactId === DC_CONTACT_ID_SELF) return;
+          await transport.sendControlDm(rootContactId, replyText);
+        })().catch((err) => {
+          console.error('root copy (incl. introduction) failed (non-fatal):', err);
+        });
       }
 
       return c.json(await toStatus(transport, msg, media?.description ?? null));
@@ -922,6 +994,7 @@ export const createApp = (
     const postText = signEnvelope(
       buildPostObject(text, mintUuid(), postMedia),
       await mapper.ownAddr(transport),
+      await ownContactInvite(transport),
     );
     const msg = await transport.post(postText, media ? { file: media.path } : undefined);
     if (media) mediaStore.tagMessage(msg.id, media.description);
@@ -992,6 +1065,7 @@ export const createApp = (
         embedOrig ? orig! : undefined,
       ),
       await mapper.ownAddr(transport),
+      await ownContactInvite(transport),
     );
 
     const msg = await transport.post(
@@ -1233,7 +1307,11 @@ export const createApp = (
     if (root.rootAddr.toLowerCase() === myAddr) {
       return c.json({ error: "can't subscribe to your own thread", code: 'own_thread' }, 422);
     }
-    const rootContactId = await transport.keyContactIdForAddr(root.rootAddr);
+    // Never met the root author → introduce ourselves IN-BAND via the invite
+    // their root post carries (user-triggered, so attempted inline; a securejoin
+    // takes seconds — acceptable for an explicit subscribe click). No invite or
+    // a failed handshake → the same clean 422.
+    const rootContactId = await keyContactOrIntroduce(transport, root.rootAddr, root.rootInvite);
     if (rootContactId === null || rootContactId === DC_CONTACT_ID_SELF) {
       return c.json(
         { error: "can't reach the thread author yet", code: 'unreachable_author' },

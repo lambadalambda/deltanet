@@ -54,6 +54,8 @@ const makeFakeTransport = () => {
   const chatPosts: Array<{ chatId: number; text: string }> = [];
   const leftChats: number[] = [];
   const keyReachable = new Map<string, number>([[BOB.address.toLowerCase(), 11]]);
+  // In-band introductions attempted via introduceViaInvite (for assertions).
+  const introductions: Array<{ invite: string; expectedAddr: string }> = [];
   const posts: Array<{ text: string; file?: string; quotedText?: string }> = [];
   const dms: Array<{ contactId: number; text: string; quotedText?: string }> = [];
   const deleted: number[] = [];
@@ -166,6 +168,16 @@ const makeFakeTransport = () => {
       if (handle === selfAddr || handle === selfAddr.split('@')[0]) return 1;
       return keyReachable.get(handle) ?? null;
     },
+    contactInvite: async () => 'OPENPGP4FPR:SELF-CONTACT-INVITE',
+    // In-band introduction fake: a successful securejoin makes the addr key-
+    // reachable (recorded in `introductions` for assertions). Tests can replace
+    // this to model failure.
+    introduceViaInvite: async (invite, expectedAddr) => {
+      introductions.push({ invite, expectedAddr });
+      const id = nextContactId++;
+      keyReachable.set(expectedAddr.toLowerCase(), id);
+      return id;
+    },
     leaveChat: async (chatId) => {
       leftChats.push(chatId);
     },
@@ -177,7 +189,7 @@ const makeFakeTransport = () => {
   const emitFollower = (contactId: number) => {
     for (const handler of followerHandlers) handler(contactId);
   };
-  return { transport, messages, posts, dms, deleted, unfollowed, following, mids, emitFollower, profileUpdates, createdContacts, broadcasts, chatPosts, leftChats, keyReachable };
+  return { transport, messages, posts, dms, deleted, unfollowed, following, mids, emitFollower, profileUpdates, createdContacts, broadcasts, chatPosts, leftChats, keyReachable, introductions };
 };
 
 /** A context that's already configured with a fixed fake transport. */
@@ -833,13 +845,19 @@ describe('reply thread-root ref derivation + root DM copy', () => {
    * (uuid=B_REPLY_UUID, ref=ALICE, root=ALICE) both held locally + indexed. SELF
    * then replies to BOB's reply → root should resolve to ALICE.
    */
-  const withThread = async (opts: { bReplyRoot?: any } = {}) => {
+  const withThread = async (
+    opts: { bReplyRoot?: any; rootInvite?: string; rootReachable?: boolean } = {},
+  ) => {
     const h = makeFakeTransport();
     const { buildPostObject, buildReplyObject } = await import('../src/envelope.js');
     const store = createStore(ephemeralStorePath());
 
-    // ALICE's root post (v2, signed, carries ROOT_UUID).
-    const rootText = await sign(buildPostObject('the root', ROOT_UUID), ROOT_ADDR);
+    // ALICE's root post (v2, signed, carries ROOT_UUID; optionally an in-band
+    // contact invite — unsigned by design, so splicing it in keeps the sig valid).
+    const rootEnv = opts.rootInvite
+      ? { ...buildPostObject('the root', ROOT_UUID), invite: opts.rootInvite }
+      : buildPostObject('the root', ROOT_UUID);
+    const rootText = await sign(rootEnv, ROOT_ADDR);
     const rootMsg = makeMessage({ id: 300, text: rootText, fromId: 21, sender: ROOT_CONTACT });
 
     // BOB's reply to ALICE (ref=ALICE root, root=ALICE unless overridden).
@@ -860,6 +878,10 @@ describe('reply thread-root ref derivation + root DM copy', () => {
     h.mids.set(301, 'breply@example.org');
     store.ingestMessage(rootMsg, 'root@example.org', true);
     store.ingestMessage(bReplyMsg, 'breply@example.org', true);
+    // SELF has met ALICE by default (a key path exists) — the root DM copy tests
+    // are about recipient DERIVATION; the introduction-fallback tests pass
+    // `rootReachable: false` to model a never-met root author.
+    if (opts.rootReachable !== false) h.keyReachable.set(ROOT_ADDR.toLowerCase(), 21);
     return { ...h, store };
   };
 
@@ -935,12 +957,11 @@ describe('reply thread-root ref derivation + root DM copy', () => {
     expect(res.status).toBe(200);
     const replyText = posts.at(-1)!.text;
 
-    // Parent author (BOB, id 11) + root author (ALICE, cold contact, minted id).
-    const aliceId = createdContacts.get(ROOT_ADDR.toLowerCase());
-    expect(aliceId).toBeDefined();
+    // Parent author (BOB, id 11) + root author (ALICE via her KEY-contact, 21 —
+    // never an addr-minted keyless row, which cannot be encrypted to).
     const recipients = dms.map((d) => d.contactId);
     expect(recipients).toContain(11); // parent author BOB
-    expect(recipients).toContain(aliceId); // root author ALICE (cold contact)
+    expect(recipients).toContain(21); // root author ALICE (key-contact)
     // Both copies are byte-identical to the feed copy (same uuid).
     for (const d of dms) expect(d.text).toBe(replyText);
   });
@@ -1000,20 +1021,13 @@ describe('reply thread-root ref derivation + root DM copy', () => {
   });
 
   it('root DM send failure does not fail the reply (best-effort)', async () => {
-    const { transport, posts, store } = await withThread();
-    // Make the root DM (to the cold ALICE contact) throw; parent DM (BOB) is fine.
+    const h = await withThread();
+    const { transport, posts, store, keyReachable } = h;
+    // ALICE's key-contact send throws; parent DM (BOB, 11) is fine.
+    keyReachable.set(ROOT_ADDR.toLowerCase(), 999);
     const origSend = transport.sendControlDm;
-    const aliceIds = new Set<number>();
-    transport.ensureContactIdByAddr = async (addr) => {
-      if (addr.toLowerCase() === ROOT_ADDR.toLowerCase()) {
-        const id = 999;
-        aliceIds.add(id);
-        return id;
-      }
-      return null;
-    };
     transport.sendControlDm = async (contactId, text, quotedText) => {
-      if (aliceIds.has(contactId)) throw new Error('cold encrypt failed');
+      if (contactId === 999) throw new Error('cold encrypt failed');
       return origSend(contactId, text, quotedText);
     };
     const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
@@ -1026,6 +1040,84 @@ describe('reply thread-root ref derivation + root DM copy', () => {
     // The reply itself + feed post still succeed despite the root-copy failure.
     expect(res.status).toBe(200);
     expect(posts).toHaveLength(1);
+  });
+
+  it('stamps our contact invite (unsigned) onto outgoing content envelopes', async () => {
+    const { transport, posts, store } = await withThread();
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
+    for (const body of [
+      { status: 'a plain post' },
+      { status: 'a reply', in_reply_to_id: '301' },
+    ]) {
+      const res = await app.request('/api/v1/statuses', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      expect(res.status).toBe(200);
+      expect(parseLast(posts).invite).toBe('OPENPGP4FPR:SELF-CONTACT-INVITE');
+    }
+  });
+
+  it('unreachable root author: introduces via the root post invite, then delivers the copy', async () => {
+    const h = await withThread({
+      rootReachable: false,
+      rootInvite: 'OPENPGP4FPR:ALICE-INVITE',
+    });
+    const app = createApp(makeConfiguredCtx(h.transport), { baseUrl: BASE, store: h.store });
+
+    const res = await app.request('/api/v1/statuses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'self replies deep', in_reply_to_id: '301' }),
+    });
+    expect(res.status).toBe(200);
+    // The introduction runs in the background (a securejoin is slow) — flush it.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(h.introductions).toEqual([
+      { invite: 'OPENPGP4FPR:ALICE-INVITE', expectedAddr: ROOT_ADDR },
+    ]);
+    // The copy went to the freshly-introduced key-contact.
+    const introducedId = h.keyReachable.get(ROOT_ADDR.toLowerCase());
+    expect(introducedId).toBeDefined();
+    expect(h.dms.map((d) => d.contactId)).toContain(introducedId);
+  });
+
+  it('failed introductions are negative-cached and never fail the reply', async () => {
+    const h = await withThread({
+      rootReachable: false,
+      rootInvite: 'OPENPGP4FPR:ALICE-INVITE',
+    });
+    const attempts: string[] = [];
+    h.transport.introduceViaInvite = async (invite) => {
+      attempts.push(invite);
+      return null; // dead invite / handshake never completes
+    };
+    const app = createApp(makeConfiguredCtx(h.transport), { baseUrl: BASE, store: h.store });
+
+    for (const text of ['first deep reply', 'second deep reply']) {
+      const res = await app.request('/api/v1/statuses', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: text, in_reply_to_id: '301' }),
+      });
+      expect(res.status).toBe(200);
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    // One attempt only — the failure is negative-cached per addr.
+    expect(attempts).toHaveLength(1);
+    // No root copy, but parent copies (BOB) went out for both replies.
+    expect(h.dms.filter((d) => d.contactId === 11)).toHaveLength(2);
+  });
+
+  it('plain ingest never triggers an introduction (safety)', async () => {
+    // A foreign message CARRYING an invite must not make the daemon securejoin
+    // anyone — introductions run only on explicit need (own sends, subscribe).
+    const h = await withThread({ rootInvite: 'OPENPGP4FPR:ALICE-INVITE' });
+    const app = createApp(makeConfiguredCtx(h.transport), { baseUrl: BASE, store: h.store });
+    await app.request('/api/v1/timelines/home'); // ingests all fake messages
+    await app.request('/api/v1/statuses/300/context');
+    expect(h.introductions).toEqual([]);
   });
 });
 
@@ -2050,15 +2142,53 @@ describe('thread subscription endpoints (thread-subscribe)', () => {
     expect(store.hasPendingThreadRequest(THREAD_ROOT_UUID)).toBe(true);
   });
 
-  it('422 (unreachable_author) with NO cold send when there is no key path', async () => {
+  it('422 (unreachable_author) with NO cold send when there is no key path AND no invite', async () => {
     const { app, store, fake } = setup({ reachable: false });
     const res = await app.request('/api/v1/pleroma/statuses/500/subscribe', { method: 'POST' });
     expect(res.status).toBe(422);
     const body = (await res.json()) as any;
     expect(body.code).toBe('unreachable_author');
-    // No invite-request DM was attempted (no cold send).
+    // No invite-request DM was attempted (no cold send), no introduction either
+    // (the root envelope carries no invite to introduce through).
     expect(fake.dms.some((d) => parseEnv(d.text).type === 'invite-request')).toBe(false);
+    expect(fake.introductions).toEqual([]);
     expect(store.hasPendingThreadRequest(THREAD_ROOT_UUID)).toBe(false);
+  });
+
+  it('unreachable author WITH a root invite: introduces in-band, then subscribes', async () => {
+    const fake = makeFakeTransport();
+    const rootMsg = bobRootMessage(500);
+    rootMsg.text = JSON.stringify({ ...JSON.parse(rootMsg.text), invite: 'OPENPGP4FPR:BOB-INVITE' });
+    fake.messages.push(rootMsg);
+    fake.keyReachable.clear(); // never met BOB
+    const store = createStore(ephemeralStorePath());
+    const app = createApp(makeConfiguredCtx(fake.transport), { baseUrl: BASE, store });
+
+    const res = await app.request('/api/v1/pleroma/statuses/500/subscribe', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(fake.introductions).toEqual([
+      { invite: 'OPENPGP4FPR:BOB-INVITE', expectedAddr: BOB.address },
+    ]);
+    // The scoped request went to the freshly-introduced key-contact.
+    const req = fake.dms.find((d) => parseEnv(d.text).type === 'invite-request');
+    expect(req?.contactId).toBe(fake.keyReachable.get(BOB.address.toLowerCase()));
+    expect(store.hasPendingThreadRequest(THREAD_ROOT_UUID)).toBe(true);
+  });
+
+  it('unreachable author, introduction fails: clean 422, no DM', async () => {
+    const fake = makeFakeTransport();
+    const rootMsg = bobRootMessage(500);
+    rootMsg.text = JSON.stringify({ ...JSON.parse(rootMsg.text), invite: 'OPENPGP4FPR:DEAD' });
+    fake.messages.push(rootMsg);
+    fake.keyReachable.clear();
+    fake.transport.introduceViaInvite = async () => null;
+    const store = createStore(ephemeralStorePath());
+    const app = createApp(makeConfiguredCtx(fake.transport), { baseUrl: BASE, store });
+
+    const res = await app.request('/api/v1/pleroma/statuses/500/subscribe', { method: 'POST' });
+    expect(res.status).toBe(422);
+    expect(((await res.json()) as any).code).toBe('unreachable_author');
+    expect(fake.dms.some((d) => parseEnv(d.text).type === 'invite-request')).toBe(false);
   });
 
   it('422 (own_thread) when the root is our own post', async () => {
