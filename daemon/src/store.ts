@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import type { T } from '@deltachat/jsonrpc-client';
 import { parseCanonicalMid, parseMarkers } from './protocol.js';
 import { parseWire, parseWireUuid } from './wire.js';
+import type { Envelope } from './envelope.js';
 
 const DC_CONTACT_ID_SELF = 1;
 
@@ -39,8 +40,20 @@ const DC_CONTACT_ID_SELF = 1;
  * `postKey` exactly as the v1 `⚑` marker did — so dedupe keys are continuous:
  * legacy messages still derive the same `type:addr:mid[:emoji]` keys (they
  * carry no uuid, so `postKey` falls back to the canonical mid, as before).
+ * Version 6 introduced thread auto-backfill state (see
+ * ../meta/issues/thread-auto-backfill.md): a HELD-ENVELOPE section (verified
+ * foreign envelopes not backed by a local DC message, keyed by post uuid) plus a
+ * backfill ATTEMPT-STATE section (negative cache: per-ref attempt count +
+ * last-attempt ts for exponential backoff). BOTH are trust/cache roots, NOT
+ * derivable indices — like notifications/pinnedKeys they SURVIVE a `migrate`
+ * re-index (a held envelope came from a peer bundle we cannot re-derive from a
+ * local sweep; the attempt state records network history a sweep cannot know).
+ * They are additive fields (the `{...emptyData(), ...raw}` load defaults them to
+ * `{}` for pre-v6 stores), so an existing v5 store gains them on load without
+ * losing anything; the version bump itself is what forces the derived-index
+ * re-index that seeds the backfill queue from pre-existing dangling refs.
  */
-export const STORE_SCHEMA_VERSION = 5;
+export const STORE_SCHEMA_VERSION = 6;
 
 export type NotificationType =
   | 'follow'
@@ -82,6 +95,51 @@ export type NotificationInput = {
 };
 
 type StoredReactions = Record<string, Record<string, string[]>>;
+
+/**
+ * A held foreign envelope (thread auto-backfill): the RAW envelope object a peer
+ * bundled to us, plus provenance. NEVER trusted at ingest — verification runs at
+ * RENDER time (pins can change; a bundle is relayed content), so we store the
+ * envelope verbatim and decide validity later (see heldenvelopes.ts / mapping).
+ */
+export type HeldEnvelope = {
+  /** The verbatim envelope object as the peer bundled it (a signed message body). */
+  env: Envelope;
+  /** The addr of the peer who served this bundle item (provenance, not attribution). */
+  from: string;
+  /**
+   * The serving peer's MESSAGE-DERIVED DC contact id (the bundle DM's
+   * `msg.fromId`). Persisted so the startup seed can address transitive
+   * follow-up requests to the peer's KEY-contact — an addr lookup would land on
+   * the keyless address-contact row and fail to encrypt (see backfill.ts
+   * `QueuedRef.peerContactId`).
+   */
+  fromContactId: number;
+  /**
+   * The ORIGINAL author's address, as attributed by the ref that surfaced this
+   * uuid (a reply/root ref carries the author's addr). A signed envelope does not
+   * carry its own author addr as a top-level field — `verify()` needs it — so we
+   * capture it here at store time. This is what render-time verification + status
+   * attribution check the signature against (contact-first attribution then falls
+   * back to this addr's shell, exactly like a verified boost embed).
+   */
+  authorAddr: string;
+  /** ms epoch we received it. */
+  receivedAt: number;
+};
+
+/**
+ * Negative-cache attempt state for one backfill ref (thread auto-backfill): how
+ * many times we've asked for this uuid and when we last tried, so the auto-fetch
+ * loop can apply exponential backoff and give up after N attempts (peers go
+ * offline; accounts expire). Persisted so a restart doesn't reset the backoff.
+ */
+export type BackfillAttempt = {
+  /** Number of request DMs sent targeting this ref so far. */
+  attempts: number;
+  /** ms epoch of the last attempt. */
+  lastAttemptAt: number;
+};
 
 type StoreData = {
   /** Store schema version; absent/older triggers a derived-index re-index on load. */
@@ -179,6 +237,20 @@ type StoreData = {
    * pin).
    */
   pinnedKeys: Record<string, string>;
+  /**
+   * Held foreign envelopes (thread auto-backfill), keyed by post uuid: verified-
+   * at-render foreign content a peer bundled to us, not backed by a local DC
+   * message. Persisted; survives restart + migrate (not derivable from a local
+   * sweep). NEVER TOFU-pinned from — bundles are relayed content, so no pubkey
+   * here ever seeds `pinnedKeys`.
+   */
+  heldEnvelopes: Record<string, HeldEnvelope>;
+  /**
+   * Backfill negative-cache attempt state (thread auto-backfill), keyed by the
+   * ref uuid we've been asking peers for. Drives exponential backoff + give-up.
+   * Persisted; survives migrate (records network history a re-index can't know).
+   */
+  backfillAttempts: Record<string, BackfillAttempt>;
 };
 
 const emptyData = (): StoreData => ({
@@ -202,6 +274,8 @@ const emptyData = (): StoreData => ({
   nextNotificationId: 1,
   pendingFollowRequests: {},
   pinnedKeys: {},
+  heldEnvelopes: {},
+  backfillAttempts: {},
 });
 
 /**
@@ -233,6 +307,12 @@ const migrate = (old: StoreData): StoreData => ({
   // a re-index exactly like notifications/pending (never re-derivable from a
   // sweep: pinning happens only on live direct delivery, first-wins).
   pinnedKeys: old.pinnedKeys ?? {},
+  // Held envelopes + backfill attempt state are ALSO non-derivable roots: a held
+  // envelope arrived in a peer's bundle (no local message to re-derive it from),
+  // and the attempt state records request history a local sweep cannot know.
+  // Preserve both across a re-index exactly like pins/notifications.
+  heldEnvelopes: old.heldEnvelopes ?? {},
+  backfillAttempts: old.backfillAttempts ?? {},
 });
 
 export type ReactionTally = { emoji: string; count: number; reactors: string[] };
@@ -332,6 +412,43 @@ export type Store = {
   pinKey(addr: string, pubkey: string): string;
   /** The pinned pubkey for `addr`, or null if none pinned yet. */
   pinnedKey(addr: string): string | null;
+
+  // --- thread auto-backfill: held envelopes + negative cache ---
+
+  /**
+   * Store a held foreign envelope (thread auto-backfill) under its uuid, unless a
+   * LOCAL message already resolves that uuid OR a held entry already exists —
+   * neither is overwritten (a live delivery and an existing held copy both win
+   * over a fresh bundle item, so we never regress a stronger source). No-op (and
+   * returns false) when the envelope carries no uuid or is already superseded;
+   * returns true iff it was freshly stored. NEVER TOFU-pins from `env.pubkey`
+   * (bundles are relayed content). Verification happens at render, not here.
+   */
+  addHeldEnvelope(env: Envelope, from: string, fromContactId: number, authorAddr: string, receivedAt: number): boolean;
+  /** The held envelope for a uuid (verbatim), or null. Verification is the caller's (render-time) job. */
+  heldEnvelope(uuid: string): HeldEnvelope | null;
+  /** Drop a held envelope (e.g. when render-time verification fails hard). No-op if absent. */
+  dropHeldEnvelope(uuid: string): void;
+  /** Every held-envelope uuid currently stored (for startup queue seeding / thread traversal). */
+  heldEnvelopeUuids(): string[];
+  /**
+   * The uuids of held envelopes that are REPLIES to `parentUuid` (their `ref`
+   * points at it). Computed by scanning held envelopes — held content carries no
+   * `replyChildren` edge (that index is derived from local messages and dropped
+   * on migrate; held content survives migrate but has no local message to
+   * re-derive from), so the thread descendant walk reads the held reply graph
+   * straight off the stored envelopes' own refs. Deduped, insertion-ordered.
+   */
+  heldChildrenOf(parentUuid: string): string[];
+  /**
+   * Record a backfill attempt for `refUuid` at `nowMs`: increments the attempt
+   * count and stamps the time (negative cache / backoff bookkeeping). Persisted.
+   */
+  recordBackfillAttempt(refUuid: string, nowMs: number): void;
+  /** The attempt state for a ref (attempts + lastAttemptAt), or null if never attempted. */
+  backfillAttempt(refUuid: string): BackfillAttempt | null;
+  /** Clear a ref's attempt state (e.g. once it resolves). No-op if absent. */
+  clearBackfillAttempt(refUuid: string): void;
 };
 
 /** A fresh scratch path for callers (tests, `createApp` defaults) that don't need cross-restart persistence. */
@@ -777,5 +894,58 @@ export const createStore = (filePath: string): Store => {
     },
 
     pinnedKey: (addr) => load().pinnedKeys[addr] ?? null,
+
+    // --- thread auto-backfill ---
+
+    addHeldEnvelope: (env, from, fromContactId, authorAddr, receivedAt) => {
+      const uuid = env.uuid;
+      if (!uuid) return false;
+      const d = load();
+      // Never overwrite a stronger source: a locally-held copy of this uuid (we
+      // received the real message) always wins, and an existing held entry is
+      // kept (first bundle wins; re-serving is a no-op — no churn, stable render).
+      if (resolve(d, uuid) !== null) return false;
+      if (d.heldEnvelopes[uuid] !== undefined) return false;
+      // Store verbatim. Deliberately NO pinKey call: bundle content is relayed,
+      // never a direct delivery, so it must never seed a TOFU pin.
+      d.heldEnvelopes[uuid] = { env, from, fromContactId, authorAddr, receivedAt };
+      save();
+      return true;
+    },
+    heldEnvelope: (uuid) => load().heldEnvelopes[uuid] ?? null,
+    dropHeldEnvelope: (uuid) => {
+      const d = load();
+      if (d.heldEnvelopes[uuid] === undefined) return;
+      delete d.heldEnvelopes[uuid];
+      save();
+    },
+    heldEnvelopeUuids: () => Object.keys(load().heldEnvelopes),
+    heldChildrenOf: (parentUuid) => {
+      const out: string[] = [];
+      for (const [uuid, held] of Object.entries(load().heldEnvelopes)) {
+        const ref = held.env.ref;
+        // Only uuid refs participate in the held reply graph (legacy mid refs
+        // aren't backfillable and can't key by uuid).
+        if (ref && 'u' in ref && ref.u === parentUuid && !out.includes(uuid)) out.push(uuid);
+      }
+      return out;
+    },
+
+    recordBackfillAttempt: (refUuid, nowMs) => {
+      const d = load();
+      const prev = d.backfillAttempts[refUuid];
+      d.backfillAttempts[refUuid] = {
+        attempts: (prev?.attempts ?? 0) + 1,
+        lastAttemptAt: nowMs,
+      };
+      save();
+    },
+    backfillAttempt: (refUuid) => load().backfillAttempts[refUuid] ?? null,
+    clearBackfillAttempt: (refUuid) => {
+      const d = load();
+      if (d.backfillAttempts[refUuid] === undefined) return;
+      delete d.backfillAttempts[refUuid];
+      save();
+    },
   };
 };

@@ -936,7 +936,7 @@ describe('createStore: schema migration / re-index', () => {
     expect(store.listNotifications({})).toHaveLength(1);
 
     const raw = JSON.parse(readFileSync(filePath, 'utf8'));
-    expect(raw.schemaVersion).toBe(5);
+    expect(raw.schemaVersion).toBe(6);
     expect(raw.schemaVersion).toBe(STORE_SCHEMA_VERSION);
   });
 
@@ -1052,7 +1052,7 @@ describe('createStore: schema migration / re-index', () => {
     expect(store.listNotifications({})).toHaveLength(2);
 
     const raw = JSON.parse(readFileSync(filePath, 'utf8'));
-    expect(raw.schemaVersion).toBe(5);
+    expect(raw.schemaVersion).toBe(6);
     expect(raw.schemaVersion).toBe(STORE_SCHEMA_VERSION);
   });
 });

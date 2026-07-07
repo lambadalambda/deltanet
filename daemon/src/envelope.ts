@@ -33,7 +33,20 @@ export type EnvelopeType =
   | 'react'
   | 'unreact'
   | 'invite-request'
-  | 'invite-grant';
+  | 'invite-grant'
+  // Thread auto-backfill (design-sketch #3, meta/issues/thread-auto-backfill.md).
+  // Two control DMs a daemon exchanges to heal dangling reply/boost/root refs:
+  | 'envelope-request'
+  | 'envelope-bundle';
+
+/**
+ * Max refs carried in one `envelope-request` control DM (the batch cap). Bounds
+ * a single request DM's size and the responder's per-request work; the auto-fetch
+ * loop chunks a larger pending set across several requests, subject to the global
+ * rate cap (see backfill.ts). Chosen at 50 (well under the 60 msgs/min relay
+ * budget when batched, and a comfortable ceiling on JSON size for uuid refs).
+ */
+export const MAX_REFS_PER_REQUEST = 50;
 
 /**
  * A typed ref on the wire: uuid-first (`{ u }`) targeting an author-minted
@@ -103,6 +116,22 @@ export type Envelope = {
    * unsigned/legacy (nothing to attest → recipient gets the placeholder ladder).
    */
   orig?: Envelope;
+  /**
+   * On an `envelope-request` (thread auto-backfill): the batch of post refs being
+   * asked for (uuid refs only — legacy mid refs are not requestable). Unsigned,
+   * like the react/invite-request control DMs — a request carries no attributable
+   * claim, only a question.
+   */
+  refs?: EnvelopeRef[];
+  /**
+   * On an `envelope-bundle` (thread auto-backfill): the array of SIGNED envelopes
+   * the responder holds for the requested refs, embedded VERBATIM (each is a
+   * message-body object, same rule as a boost `orig`). The responder never
+   * fabricates and never includes unsigned/legacy content — omission is always
+   * valid (0002). Each item is re-verified at RENDER time by the recipient
+   * (relayed content is never trusted at ingest, never TOFU-pinned).
+   */
+  envs?: Envelope[];
 };
 
 /** Mint a fresh logical-post UUIDv4 (author-side). Same generator as v1. */
@@ -232,6 +261,22 @@ export const buildInviteGrantEnvelope = (link: string): string =>
   serialize({ dn: DN_VERSION, type: 'invite-grant', link });
 
 /**
+ * An `envelope-request` control-DM envelope: a batch of post refs (uuid refs) we
+ * ask a peer to serve. Unsigned (parity with react/invite-request control DMs).
+ * The caller caps the batch at `MAX_REFS_PER_REQUEST`.
+ */
+export const buildEnvelopeRequest = (refs: EnvelopeRef[]): string =>
+  serialize({ dn: DN_VERSION, type: 'envelope-request', refs });
+
+/**
+ * An `envelope-bundle` control-DM envelope: the SIGNED envelopes we hold for a
+ * peer's request, embedded verbatim. Unsigned wrapper (the trust is per-item:
+ * each embedded envelope carries its own `sig`/`pubkey`, re-verified at render).
+ */
+export const buildEnvelopeBundle = (envs: Envelope[]): string =>
+  serialize({ dn: DN_VERSION, type: 'envelope-bundle', envs });
+
+/**
  * Strict parse: returns the envelope iff `text` is a single JSON object with
  * `dn === 2` and a known `type`. Anything else — malformed JSON, a non-object,
  * a wrong/missing `dn`, an unknown `type` — returns null, so the message falls
@@ -289,6 +334,8 @@ const ENVELOPE_TYPES: ReadonlySet<string> = new Set<EnvelopeType>([
   'unreact',
   'invite-request',
   'invite-grant',
+  'envelope-request',
+  'envelope-bundle',
 ]);
 
 const isEnvelopeType = (v: unknown): v is EnvelopeType =>
