@@ -1,5 +1,49 @@
 # deltanet devlog
 
+## 2026-07-07 — whole-code security/QA review, hardening, CI
+
+A pass over the whole daemon (crypto trust boundary, backfill/thread-channel
+abuse surface, HTTP API) plus fixes for what it surfaced, regression tests, and
+GitHub Actions.
+
+Trust boundary came back clean: relayed/held/embedded content only ever renders
+attributed after `verify()` passes; TOFU pins are written only from direct
+deliveries (never relayed content); introduction is user/self-triggered only,
+gated on `checkQr` kind + a post-join address check. Fixed four real issues:
+
+- **Unbounded held-envelope growth (HIGH).** Held envelopes are not
+  request-gated (unsolicited bundles, proactive thread-so-far / channel
+  bundles), so a met contact could push signed junk without limit. Added a
+  `HELD_ENVELOPE_CAP` (5000) with oldest-by-`receivedAt` eviction; a re-opened
+  thread simply re-backfills anything dropped. Cap is injectable via
+  `createStore(path, { heldEnvelopeCap })` for fast tests.
+- **Republication without re-verify (MED, defense in depth).** The thread host
+  broadcast a reply into its channel checking only that a signature was
+  *present*. Now `republishReplyToThread` calls `verify(env, msg.sender.address)`
+  before posting (and before burning the dedupe slot), so a tampered/forged
+  reply is never amplified to subscribers.
+- **`in_reply_to_id` 500 (QA).** A non-numeric, non-`orig` reply target fell
+  through to `Number(NaN)` -> `transport.message(NaN)`. Now a clean 404 via
+  `parseStatusId`.
+- **Header route missing Content-Type (QA).** The SELF custom-header response
+  now sets `contentTypeForPath(headerPath)` instead of defaulting to
+  octet-stream.
+
+Confirmed-safe-and-left-alone (documented for future readers): boost/held
+`authorAddr` is attacker-influenced but any wrong addr fails `verify()` and
+drops the entry (no mis-attribution); the unsigned `invite` field is
+self-authenticating; per-peer serve rate-limiting is bypassable only by minting
+real relay identities (substrate-inherent); other unbounded maps
+(`republishedUuids`, `pendingThreadRequests`) grow only under host/user action.
+
+Regression cover: new `tests/integration/embed-interactions.test.ts` -- C
+favourites + boosts a post it holds only via backfill; A tallies the favourite,
+the boost re-embeds A''s signed envelope verbatim and verifies. Unit suite 1050;
+full integration 13/13.
+
+CI: `.github/workflows/ci.yml` runs daemon typecheck+unit and frontend
+typecheck+Playwright on every push/PR. Integration stays local (needs podman).
+
 ## 2026-07-07 — embed-only interactions: act on posts you never received
 
 Issue `meta/issues/interact-with-embed-only-posts.md`, the last "can't interact
