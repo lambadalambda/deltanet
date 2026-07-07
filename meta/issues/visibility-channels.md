@@ -1,5 +1,33 @@
 # Visibility tiers via multiple channels (public + locked)
 
+## Scope decision (2026-07-08, picked up)
+
+Split into PART 1 (this issue) and PART 2 (leak-prevention sweep, split
+out to [[visibility-leak-prevention]] when reached):
+
+- Part 1A: the locked channel (lazy, config key next to the feed's),
+  `post()` channel choice, composer visibility mapped (public/unlisted →
+  public channel, `private` "Followers" → locked; `direct` stays
+  unimplemented for now), own locked posts render `visibility: private`,
+  stats/timelineFrom/invites aggregate or parameterize over both
+  channels. Migration free: the existing feed IS the public channel.
+- Part 1B: locked follow-request flow. Substrate reality: securejoin
+  links are capability-based — there is no join-with-approval. So the
+  locked invite is NEVER published; a requester sends a `locked`-scoped
+  invite-request (the existing wire convention, thread-scoping
+  precedent), the owner's daemon QUEUES it (follow_request notification +
+  `/api/v1/follow_requests` endpoints — the frontend UI for these already
+  exists), and approval DMs the locked invite, which the requester's
+  existing follow-back machinery joins.
+- Part 1C: minimal LOCAL leak guards so "Followers" isn't a false
+  promise: locked post uuids recorded in the store (non-derivable root,
+  survives migrate), backfill serving refuses them, and boosting one's
+  own locked post is refused. DEFERRED to part 2 (documented, not
+  silent): envelope visibility markers + remote honoring (other daemons
+  refusing to boost/serve), thread-channel gating for locked roots, and
+  reply-privacy inheritance (a locked follower's reply goes to their own
+  public feed today).
+
 ## Summary
 
 Design sketch #1 (docs/design-sketches.md). One account owns two broadcast
