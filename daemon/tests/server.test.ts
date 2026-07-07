@@ -2534,9 +2534,12 @@ describe('backup endpoints', () => {
       signup: async () => {
         throw new Error('unused');
       },
-      restore: async (tarPath, passphrase) => {
+      restore: async (tarPath, passphrase, beforeOpen) => {
         restoredTarBytes = readFileSync(tarPath);
         restoredPassphrase = passphrase;
+        // Mirror restoreTransport: the sidecar-writing hook runs after the
+        // core import succeeded, before the transport goes live.
+        beforeOpen();
         live = transport;
         return transport;
       },

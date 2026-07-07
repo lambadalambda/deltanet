@@ -1,3 +1,5 @@
+import { readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import { startDeltaChat } from '@deltachat/stdio-rpc-server';
 import type { T } from '@deltachat/jsonrpc-client';
 import type { PostOptions, ProfileUpdate, TimelineQuery, Transport } from './types.js';
@@ -280,6 +282,16 @@ export const restoreTransport = async (
   backupTarPath: string,
   passphrase: string,
   options: OpenTransportOptions = {},
+  /**
+   * Runs after the core import succeeded but BEFORE IO starts and any
+   * ingestion can fire — the window where the API layer writes the deltanet
+   * sidecar files (store + signing key) into the data dir. It cannot write
+   * them any earlier: core REFUSES to initialize an accounts structure in a
+   * non-empty directory ("<dir> is not empty", exits immediately — observed
+   * live), so the data dir must stay untouched until the import has created
+   * that structure.
+   */
+  beforeOpen?: () => void,
 ): Promise<{ transport: DeltaChatTransport; creds: ChatmailCredentials }> => {
   const dc = startDeltaChat(dataDir, { muteStdErr: true });
   const rpc = dc.rpc;
@@ -298,6 +310,13 @@ export const restoreTransport = async (
     ]);
     const creds = credsFromConfig({ configuredAddr, addr, password, displayName });
     if (!creds) throw new Error('restored account carries no address');
+    // A freshly restored node IS fully backed up (its state equals the backup
+    // it came from), so stamp the restore moment as the last backup. Without
+    // this the settings nag would claim "never backed up" right after a
+    // restore: `exportBackup` stamps AFTER exporting, so the stamp inside the
+    // tar always points at the previous export (null for a first backup).
+    await rpc.setConfig(accountId, LAST_BACKUP_AT_KEY, String(Date.now()));
+    beforeOpen?.();
     await rpc.startIo(accountId);
     return { transport: buildTransport(dc, accountId, creds, options), creds };
   } catch (err) {
@@ -556,7 +575,18 @@ const buildTransport = (
 
   return {
     accountId,
-    close: () => dc.close(),
+    close: () => {
+      // The jsonrpc client's event loop has no stop mechanism: after the core
+      // process is killed it issues one more getNextEventBatch, whose write to
+      // the dead child's stdin raises an UNHANDLED 'error' (EPIPE) that would
+      // crash the caller. Swallow errors on the pipe before killing. Reaches
+      // into the (exact-version-pinned) client's transport internals.
+      (dc as { transport?: { input?: NodeJS.WritableStream } }).transport?.input?.on?.(
+        'error',
+        () => {},
+      );
+      dc.close();
+    },
 
     waitForEvent: <K extends T.EventType['kind']>(
       kind: K,
@@ -653,25 +683,23 @@ const buildTransport = (
     },
 
     exportBackup: async (destDir: string, passphrase: string) => {
-      // Core picks the tar's filename; `ImexFileWritten` reports it. Subscribe
-      // before starting the export so the write can't race the listener.
-      let written: string | null = null;
-      const onWritten = (eventAccountId: number, event: { path: string }) => {
-        if (eventAccountId === accountId) written = event.path;
-      };
-      dc.on('ImexFileWritten', onWritten);
-      try {
-        await rpc.exportBackup(accountId, destDir, passphrase);
-      } finally {
-        dc.off('ImexFileWritten', onWritten);
-      }
-      if (!written) throw new Error('backup export produced no file');
+      await rpc.exportBackup(accountId, destDir, passphrase);
+      // Core picks the tar's filename and has fully written it by the time the
+      // RPC resolves, so take the newest entry in the (scratch) dest dir. NOT
+      // the `ImexFileWritten` event: that arrives on the event channel and can
+      // land after the RPC response, so a listener scoped to the call misses
+      // it (observed live against the podman relay).
+      const newest = readdirSync(destDir)
+        .map((name) => join(destDir, name))
+        .map((path) => ({ path, mtime: statSync(path).mtimeMs }))
+        .sort((x, y) => y.mtime - x.mtime)[0];
+      if (!newest) throw new Error('backup export produced no file');
       // Stamped only AFTER a successful export, so the nag never reads a
       // failed attempt as a backup. Lives in config (not the store) so the
       // value travels inside future backups: a restored node knows when its
       // dc.db was last exported.
       await rpc.setConfig(accountId, LAST_BACKUP_AT_KEY, String(Date.now()));
-      return written;
+      return newest.path;
     },
 
     lastBackupAt: async () => {

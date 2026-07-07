@@ -334,12 +334,13 @@ const ctx: AppContext = {
   // container (sidecar files written + store/attestor reloaded); this imports
   // the core tar and boots the transport like a signup would, persisting the
   // recovered credentials so the next plain daemon start finds the account.
-  restore: async (backupTarPath, passphrase) => {
+  restore: async (backupTarPath, passphrase, beforeOpen) => {
     const { transport: opened, creds: restoredCreds } = await restoreTransport(
       DATA_DIR,
       backupTarPath,
       passphrase,
       { onMessage: ingestOnMessage },
+      beforeOpen,
     );
     writeAccount(ACCOUNTS_FILE, ACCOUNT, restoredCreds);
     opened.onFollower(notifyFollower);

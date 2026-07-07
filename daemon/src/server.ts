@@ -102,11 +102,14 @@ export type AppContext = {
    * Restore-instead-of-signup (see ../meta/issues/backup-second-device.md):
    * import a CORE backup tar into this node's data dir, open the transport,
    * and persist the recovered credentials — main.ts's mirror of `signup`.
-   * The API layer has already unpacked the `.dnbk` container and written the
-   * sidecar files by the time this runs. Optional so test contexts without a
-   * real data dir stay minimal; the endpoint answers 501 when absent.
+   * `beforeOpen` MUST be invoked after the core import succeeded but before
+   * IO/ingestion starts: it writes the `.dnbk` sidecar files (store + signing
+   * key) into the data dir, which can't happen any earlier — core refuses to
+   * initialize an accounts structure in a non-empty directory. Optional so
+   * test contexts without a real data dir stay minimal; the endpoint answers
+   * 501 when absent.
    */
-  restore?(backupTarPath: string, passphrase: string): Promise<Transport>;
+  restore?(backupTarPath: string, passphrase: string, beforeOpen: () => void): Promise<Transport>;
 };
 
 type TransportEnv = { Variables: { transport: Transport } };
@@ -668,18 +671,27 @@ export const createApp = (
       throw err;
     }
 
-    // Write the sidecar files BEFORE the transport opens, so its startup
-    // re-index sweep runs against the restored non-derivable state (held
-    // envelopes, pins, thread chatIds) instead of an empty store — then drop
-    // the in-memory caches so the running app serves the restored state too.
-    // Previous contents are snapshotted so a failed core import rolls back to
-    // an untouched node.
+    // The sidecar files (store + signing key) are written by the `beforeOpen`
+    // hook — i.e. INSIDE the restore, after the core import created the
+    // account structure (core refuses to initialize in a non-empty data dir,
+    // so they can't land earlier) but before IO/ingestion starts (so the
+    // startup re-index sweep runs against the restored non-derivable state:
+    // held envelopes, pins, thread chatIds). The in-memory caches reload in
+    // the same synchronous hook, so the running app serves the restored state
+    // with no restart and no ingest race. Previous contents are snapshotted
+    // so a failure after the hook rolls the node back to untouched.
     const previous = new Map<string, string | null>();
     const writeSidecarFile = (path: string, contents: string | undefined, secret: boolean) => {
       if (contents === undefined) return;
       previous.set(path, existsSync(path) ? readFileSync(path, 'utf8') : null);
       mkdirSync(dirname(path), { recursive: true });
       writeFileSync(path, contents, secret ? { mode: 0o600 } : {});
+    };
+    const writeSidecarFiles = () => {
+      writeSidecarFile(store.filePath, sidecar.store, false);
+      writeSidecarFile(attestorKeyPath, sidecar.signingKey, true);
+      store.reload();
+      attestor.reload();
     };
     const rollbackSidecarFiles = () => {
       for (const [path, contents] of previous) {
@@ -692,16 +704,11 @@ export const createApp = (
 
     const scratch = mkdtempSync(join(tmpdir(), 'deltanet-restore-'));
     try {
-      writeSidecarFile(store.filePath, sidecar.store, false);
-      writeSidecarFile(attestorKeyPath, sidecar.signingKey, true);
-      store.reload();
-      attestor.reload();
-
       const tarPath = join(scratch, 'core-backup.tar');
       writeFileSync(tarPath, coreTar);
       let transport: Transport;
       try {
-        transport = await ctx.restore(tarPath, passphrase);
+        transport = await ctx.restore(tarPath, passphrase, writeSidecarFiles);
       } catch (err) {
         rollbackSidecarFiles();
         const message = err instanceof Error ? err.message : 'restore failed';
