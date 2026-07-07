@@ -1,5 +1,149 @@
 # deltanet devlog
 
+## 2026-07-07 — thread auto-backfill: heal dangling ancestors from the peer who showed them
+
+Issue `meta/issues/thread-auto-backfill.md` (design-sketch #3, layer 1). The QA
+case: alice↔bob talk a thread; carol follows only bob, so she holds bob's half
+with reply refs dangling at alice's posts. Her daemon now heals these
+automatically — on ingest of a message whose reply/boost/root ref doesn't
+resolve, it asks the SENDER (who provably holds the target — you can't reference
+what you never held) for the signed envelope, stores it as a HELD envelope, and
+renders it into thread views verified + attributed. No boost involved.
+
+### New protocol (v2 control envelopes)
+
+- `envelope-request` (`{refs:[{u,addr}...]}`) — unsigned control DM, a batch of
+  uuid refs (cap 50). `envelope-bundle` (`{envs:[<signed envelope>...]}`) — the
+  reply, SIGNED content envelopes embedded VERBATIM (same rule as a boost
+  `orig`; never fabricated, unsigned/legacy omitted — omission always valid,
+  0002). Both added to `EnvelopeType` + `parseEnvelope`. Mixed-era: an old node's
+  `parseEnvelope` doesn't know these types → returns null → the DM degrades to
+  plain text, invisibly ignored (verified: unknown type → null).
+
+### New modules
+
+- **`src/heldenvelopes.ts`** (pure): `danglingTargets` (a message's unresolved
+  uuid refs + peer=sender + author addr from the ref), `heldDanglingTargets`
+  (transitive refs of a held envelope), `storableBundleItem` (signed-content
+  gate), `verifyHeld` (render-time ladder: `verify()` + TOFU-pin consistency,
+  reusing the EXACT boost-embed seam, minus media — media isn't bundled).
+- **`src/backfill.ts`** (auto-fetch loop): `createBackfiller` — per-peer batching
+  with a flush delay, global rate cap (4 req/min, a slice of the 60/min relay
+  budget so user actions never starve), in-flight dedupe, exponential backoff
+  (1m·4^n, give up after 5 attempts) via a persisted negative cache, and a
+  per-peer transitive round bound (10). Pure scheduling helpers
+  (`nextEligibleAt`/`isEligible`/`chunkRefs`/`remainingBudget`) unit-tested
+  directly.
+- **`src/bundle.ts`** (pure serve side): `servableEnvelope` (verbatim signed-only)
+  + `chunkBundles` (~100KB cap, oversized item ships alone, never dropped).
+- **`src/backfill-ingest.ts`** (ingest wiring): `enqueueDangling`,
+  `buildServeBundles` (serve from a local msg body OR a held envelope we relay),
+  `processBundle` (validate → `addHeldEnvelope` → mark resolved → re-chase
+  transitive refs), `handleBackfillControlDm` (serve/process, DM-only, per-peer
+  serve rate-limit 10/min), `seedBackfillQueue` (startup seed from held state).
+  Returns `true` for a backfill control DM so the caller SKIPS the notification/
+  streaming tail.
+
+### Store (schema v5 → v6)
+
+Two new sections, both NON-derivable roots that SURVIVE `migrate` (like
+pins/notifications): `heldEnvelopes` (uuid → `{env, from, authorAddr, receivedAt}`
+— verbatim foreign content + the author addr from the surfacing ref, needed for
+`verify()`) and `backfillAttempts` (uuid → `{attempts, lastAttemptAt}` — the
+negative cache). Additive fields, so a v5 store gains them on load; the version
+bump forces the derived-index re-index that seeds the queue from pre-existing
+dangling refs. `addHeldEnvelope` never overwrites a local resolution or an
+existing held entry, and NEVER TOFU-pins (bundles are relayed content).
+`heldChildrenOf` computes the held reply graph off stored refs (held content has
+no `replyChildren` edge to re-derive).
+
+### Render integration (server.ts + mapping.ts + entities.ts)
+
+- `resolveOrigStatus` gains a held-envelope step (local → HELD → boost-embed
+  walk): `mapper.heldStatus(uuid)` verifies at RENDER (pins can change) through
+  the exact ladder, drops the entry on hard failure, and renders `orig-<uuid>`
+  with contact-first attribution.
+- The **context endpoint** now traverses held envelopes exactly like local
+  messages: the ancestor climb crosses freely local↔held by uuid, and the
+  descendant BFS unions `replyChildMids` (local) with `heldChildrenOf` (held).
+  Carol's thread of bob's reply surfaces alice's held posts as real, verified,
+  attributed statuses. A tampered held ancestor renders nothing and stops the
+  climb (no placeholder for ancestors).
+- New `heldEnvelopeToStatus` (entities.ts) renders a held envelope as a
+  thread-participating status WITH `in_reply_to_id` (unlike a boost's leaf embed)
+  so the thread links; new `StatusResolver.heldOrigId` lets a LOCAL reply to a
+  backfilled parent link via the parent's `orig-<uuid>`.
+
+### Suppression (enforced structurally)
+
+Held-envelope ingest + bundle processing create NO notifications and NO streaming
+events, and held envelopes NEVER enter home/public timelines — they exist for
+thread views + status fetch only (other people's backfilled history). Enforced by
+construction: the backfill paths only call `addHeldEnvelope`/the backfiller/the
+bundle send, none of which touch the notification store, the streaming hub, or the
+timeline read path; control DMs are `isFeedMessage:false` (never streamed as
+updates) and `handleBackfillControlDm` returning `true` makes the ingest hook skip
+the notification/stream tail.
+
+### Media deferral
+
+Media is NOT bundled (per the issue): a backfilled post with media renders with
+its alt text (federated `media.description`) and no attachment. The author-signed
+`media.sha256` stays in the held envelope so a later per-item verified fetch can
+re-attach + verify the bytes — that lazy fetch is OUT of scope here and folds into
+the interactions follow-up.
+
+### FINDING — key-contacts vs address-contacts: addr lookups yield keyless rows
+
+The first integration run failed with `e2e encryption unavailable` on the C→B
+request DM and looked like a substrate wall ("a broadcast follower has no 1:1
+key relationship with the feed owner" — `e2eeAvail:false, isKeyContact:false` on
+the probed contact). That diagnosis was WRONG; the real lesson is a DC core 2.x
+contact-model distinction:
+
+**Core keeps KEY-contacts and ADDRESS-contacts as separate rows.** A key-contact
+is derived from securejoin or a received message and is e2ee-capable. An
+address-contact — what `createContact`/`lookupContactIdByAddr` (our
+`ensureContactIdByAddr`/`contactIdByAddr`) return — is KEYLESS
+(`e2eeAvail:false`), and sending to it fails with "e2e encryption unavailable"
+EVEN WHEN a key-contact for the same address exists. The original send path
+resolved the peer BY ADDRESS and landed on the keyless row; the probe then
+"confirmed" the wall because it, too, probed the address-resolved row. Every
+DM send that works in this codebase (the reply copy, the follow-back grant)
+targets a MESSAGE-DERIVED id (`target.sender.id` / `msg.fromId`) — never an
+addr lookup.
+
+Fix: the backfill queue carries the dangling-ref message's SENDER CONTACT ID
+(`QueuedRef.peerContactId`, captured from `msg.fromId` at enqueue; persisted as
+`HeldEnvelope.fromContactId` for transitive/startup follow-ups), and
+`sendControlDm` targets that id; the addr remains only a dedupe/label/
+negative-cache key. The serve side was already correct (replies via the request
+DM's own `fromId`). With this, the FULL round-trip delivers over the real relay:
+C's request DM reaches B, B's bundle DM reaches C, C's thread renders from
+actually-delivered bundles — no in-process bridging, in a broadcast-only
+topology (C never 1:1-introduced to B beyond following his feed).
+`ensureContactIdByAddr`'s doc comment (transport/types.ts) now records the
+distinction. The wire-thread-root-ref cold-DM finding STANDS unchanged — that
+case is genuinely cold (no securejoin ever happened between C and A, so no
+key-contact exists to target).
+
+### Tests
+
+`pnpm test` 952 (was 773): new `backfill-envelope`, `backfill-store` (held
+round-trip + migration survival + never-pin-from-bundle), `heldenvelopes`
+(dangling/transitive detection, storable gate, verify ladder incl. tamper +
+pin-conflict), `bundle` (verbatim-only + chunking), `backfill` (batching/dedupe/
+in-flight/rate-cap/backoff/negative-cache/rounds/attribution + send targets the
+message-derived contact id), `backfill-ingest` (enqueue, serve
+verbatim+signed-only+omit, bundle receipt + transitive + no-overwrite +
+tampered-sibling-survives, serve rate-limit, suppression),
+`backfill-thread-render` (resolveOrigStatus held path, context ancestor/descendant
+held traversal, tampered held ancestor renders nothing, timeline suppression).
+`pnpm check` green. Integration `thread-auto-backfill.test.ts` green with REAL
+end-to-end delivery over the podman relay (~18s test): C's request DM → B's
+bundle DM → complete verified thread in C's context, no notifications, A absent
+from C's home timeline. Full integration suite green.
+
 ## 2026-07-07 — signed thread-root ref on replies + root DM copy
 
 Issue `meta/issues/wire-thread-root-ref.md` (prereq for thread auto-backfill +

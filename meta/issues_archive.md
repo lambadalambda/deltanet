@@ -27,3 +27,4 @@
 - [x] [Verified boost embeds ignore known contacts](issues/verified-embed-known-contact.md)
 - [x] [Clicking a verified boost embed 500s the thread view](issues/orig-status-thread-view.md)
 - [x] [Wire: signed thread-root ref on replies + DM copy to root author](issues/wire-thread-root-ref.md)
+- [x] [Thread auto-backfill: fetch dangling ancestors from the peer who showed them to us](issues/thread-auto-backfill.md)

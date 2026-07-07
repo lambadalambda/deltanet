@@ -66,3 +66,56 @@ Blocked by: wire-thread-root-ref (root refs make thread membership
 knowable; the request/bundle format should carry them from day one).
 Related: interact-with-embed-only-posts (interactions on held envelopes),
 thread-subscribe (same bundle format for "thread so far").
+
+## Current Status
+
+Implemented (2026-07-07, see DEVLOG). Full pipeline:
+
+- **Protocol**: `envelope-request` / `envelope-bundle` v2 control envelopes
+  (`EnvelopeType` + `parseEnvelope`; unknown-type degrades to null on old
+  nodes). Refs capped at 50/request; bundles chunked at ~100KB.
+- **Held-envelope store** (schema **v5 → v6**, additive fields that SURVIVE
+  `migrate` like pins/notifications — a held envelope + its negative-cache
+  attempt state are non-derivable roots; the version bump forces the derived-
+  index re-index that seeds the queue from pre-existing dangling refs).
+  Never overwrites a local/held resolution; never TOFU-pins from bundle content.
+- **Render**: `resolveOrigStatus` + the context endpoint (ancestor climb +
+  descendant BFS) traverse held envelopes exactly like local messages, verified
+  at RENDER through the exact `verify()` + pin ladder (tampered → renders
+  nothing + self-drops). Contact-first attribution; `orig-<uuid>`
+  non-actionable identity.
+- **Auto-fetch loop** (`src/backfill.ts`): per-peer batching + flush delay,
+  global cap 4 req/min, exponential backoff (1m·4^n, give up after 5), in-flight
+  dedupe, per-peer transitive round bound 10, persisted negative cache. Serve
+  side rate-limited 10/min/peer.
+- **Suppression** (structural): no notifications, no streaming, held envelopes
+  never in home/public timelines — thread views + status fetch only.
+
+**MEDIA DEFERRAL (decision recorded):** media is NOT bundled. A backfilled post
+with media renders with its alt text and no attachment; the signed
+`media.sha256` stays in the envelope so a later per-item verified fetch can
+re-attach + verify. Per-item lazy media fetch is OUT of scope here and joins the
+interactions follow-up — this keeps the issue focused.
+
+`pnpm test` (952 unit, was 773), `pnpm check`, and `pnpm test:integration`
+(8 files / 10 tests) all green.
+
+**RESOLVED FINDING — key-contacts vs address-contacts (DC core 2.x).** The
+first integration run failed C→B request delivery with "e2e encryption
+unavailable" and was briefly misdiagnosed as a substrate wall. The real cause:
+core keeps KEY-contacts (securejoin/message-derived, e2ee-capable) and
+ADDRESS-contacts (`createContact`/addr lookup, KEYLESS) as SEPARATE rows —
+resolving a peer BY ADDRESS lands on the keyless row even when the key-contact
+exists. Fix: the backfill queue carries the dangling-ref message's SENDER
+CONTACT ID (`QueuedRef.peerContactId` from `msg.fromId`; persisted as
+`HeldEnvelope.fromContactId`) and `sendControlDm` targets that id — the addr is
+only a dedupe/label/negative-cache key. (The serve side already replied via the
+request DM's own `fromId`.) The integration test
+(`tests/integration/thread-auto-backfill.test.ts`) now proves REAL end-to-end
+delivery over the relay in the pure broadcast-only topology: C's request DM
+reaches B, B's bundle DM reaches C, and C's context for the root renders the
+complete verified thread from actually-delivered bundles — no in-process
+bridging. The issue's premise ("the dangling-ref sender is always a MET,
+reachable contact") HOLDS, provided sends target message-derived contact ids.
+The wire-thread-root-ref cold-DM limitation stands unchanged (genuinely cold:
+no securejoin ever happened with that peer, so no key-contact exists).
