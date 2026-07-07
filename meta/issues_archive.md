@@ -31,3 +31,4 @@
 - [x] [Subscribe to thread: per-thread channel hosted by the root author](issues/thread-subscribe.md)
 - [x] [Attachment posts sometimes render/ingest as naked JSON](issues/attachment-transient-text.md)
 - [x] [Context ancestors stop at the uuid→mid era boundary](issues/mixed-era-ancestor-climb.md)
+- [x] [In-band introduction: content carries the author's contact invite](issues/in-band-introduction.md)

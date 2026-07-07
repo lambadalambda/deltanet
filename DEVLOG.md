@@ -1,5 +1,24 @@
 # deltanet devlog
 
+## 2026-07-07 — in-band introduction: content carries the author's contact invite
+
+Issue `meta/issues/in-band-introduction.md`. Closes the substrate's last
+reachability gap: there is no cold 1:1 send (securejoin or a received message is
+the only key path), which blocked stranger-subscribes and the deep-replier root
+copy. Content envelopes now carry the author's multi-use CONTACT invite link —
+UNSIGNED by design: securejoin links are self-authenticating, and the joiner's
+mandatory post-join address check (implemented as "poll until an e2ee-capable
+key-contact for the EXPECTED addr exists") is the authenticator, so no dn4
+canonical bump and invites stay rotatable. `introduceViaInvite` refuses any QR
+kind but `askVerifyContact` (a smuggled broadcast invite cannot join us to
+anything), and introductions run only on EXPLICIT need — user-triggered
+subscribe (inline) and our own outgoing root copies (background,
+negative-cached) — never from ingest. Integration proves the full stranger
+arc over the real relay: C, who never met A in any way, backfills A's root via
+B, securejoins A through the invite it carries, subscribes, receives A's next
+reply via the thread channel, and C's own deep reply root-copies to A — the
+cold-DM gap documented in wire-thread-root-ref heals.
+
 ## 2026-07-07 — live-QA fixes: DC transient text suffix; mixed-era ancestor climb
 
 Two bugs from live QA, one shared root cause discovered. (1) While an attachment
