@@ -38,6 +38,7 @@ import {
 } from './envelope.js';
 import { parseWire, parseWireUuid } from './wire.js';
 import { openAttestor, sha256File } from './attest.js';
+import { parseBodyMentions, rankedContactMatches } from './mentions.js';
 import {
   BackupDecodeError,
   backupFilename,
@@ -179,6 +180,36 @@ export const createApp = (
   const signEnvelope = (env: Envelope, addr: string, invite?: string | null): string => {
     const { ts, pubkey, sig } = attestor.sign(env, addr);
     return serializeEnvelope({ ...env, ...(invite ? { invite } : {}), ts, pubkey, sig });
+  };
+
+  /**
+   * Mention delivery — the send half of addressing (see
+   * ../meta/issues/mention-addressing-autocomplete.md): copy the SAME signed
+   * wire text as a control DM to every `@addr` mentioned in the body, so a
+   * mention reaches its target even when they don't follow the poster. The
+   * receive side derives the mention notification from the same body grammar.
+   * Targets KEY-contacts only (autocomplete only offers those; anything else
+   * is skipped) — no in-band introductions here, so awaiting stays fast.
+   * `skipAddrs` excludes recipients already getting a copy (the author, the
+   * reply parent/root). Best-effort per recipient.
+   */
+  const deliverMentionCopies = async (
+    transport: Transport,
+    wireText: string,
+    bodyText: string,
+    skipAddrs: (string | undefined)[],
+  ): Promise<void> => {
+    const skip = new Set(
+      skipAddrs.filter((a): a is string => Boolean(a)).map((a) => a.toLowerCase()),
+    );
+    for (const addr of parseBodyMentions(bodyText)) {
+      if (skip.has(addr)) continue;
+      const contactId = await transport.keyContactIdForAddr(addr).catch(() => null);
+      if (contactId === null || contactId === DC_CONTACT_ID_SELF) continue;
+      await transport.sendControlDm(contactId, wireText).catch((err) => {
+        console.error('mention copy failed (non-fatal):', err);
+      });
+    }
   };
 
   // Our own multi-use contact invite link (in-band introduction), minted once
@@ -940,6 +971,18 @@ export const createApp = (
     return c.json(contactToAccount(contact, baseUrl, relationship));
   });
 
+  // Mention autocomplete (see ../meta/issues/mention-addressing-autocomplete.md):
+  // known key-contacts matching `q`, petname match first, then their name,
+  // then the address. Registered before `/:id` so the static segment wins.
+  app.get('/api/v1/accounts/search', requireTransport, async (c) => {
+    const transport = c.get('transport');
+    const q = (c.req.query('q') ?? '').trim();
+    const limit = Math.max(0, Math.min(intParam(c.req.query('limit')) ?? 5, 40));
+    if (!q || limit === 0) return c.json([]);
+    const matches = rankedContactMatches(await transport.contacts(), q, limit);
+    return c.json(matches.map((contact) => contactToAccount(contact, baseUrl)));
+  });
+
   app.get('/api/v1/accounts/:id', requireTransport, async (c) => {
     const contact = await c.get('transport').contact(Number(c.req.param('id')));
     if (!contact) return c.json({ error: 'Record not found' }, 404);
@@ -1118,6 +1161,11 @@ export const createApp = (
             }
           }
         })().catch((err) => console.error('orig reply copies failed (non-fatal):', err));
+        await deliverMentionCopies(transport, replyText, text, [
+          myAddr,
+          orig.authorAddr,
+          root ? envelopeRefAddr(root) : undefined,
+        ]);
         return c.json(await toStatus(transport, msg, media?.description ?? null));
       }
       // A non-numeric, non-orig id (e.g. junk) is a clean 404, never a
@@ -1205,6 +1253,7 @@ export const createApp = (
         });
       }
 
+      await deliverMentionCopies(transport, replyText, text, [myAddr, parentAddr, rootAddr]);
       return c.json(await toStatus(transport, msg, media?.description ?? null));
     }
 
@@ -1224,6 +1273,9 @@ export const createApp = (
     const msg = await transport.post(postText, media ? { file: media.path } : undefined);
     if (media) mediaStore.tagMessage(msg.id, media.description);
     await ingest(transport, msg);
+    await deliverMentionCopies(transport, postText, text, [
+      (await mapper.ownAddr(transport)).toLowerCase(),
+    ]);
     return c.json(await toStatus(transport, msg, media?.description ?? null));
   });
 

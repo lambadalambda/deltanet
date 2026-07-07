@@ -129,6 +129,7 @@ const makeFakeTransport = () => {
     },
     follow: async () => 99,
     contact: async (id) => (id === 1 ? self : id === 11 ? bobWithPetname() : null),
+    contacts: async () => [self, bobWithPetname()],
     contactIdByAddr: async (addr) => {
       const handle = addr.toLowerCase();
       const selfAddr = self.address.toLowerCase();
@@ -2640,5 +2641,123 @@ describe('POST /api/deltanet/contacts/:id/petname', () => {
     ]);
     expect(account.display_name).toBe('bob');
     expect(account.pleroma.deltanet).toEqual({ auth_name: 'bob' });
+  });
+});
+
+// --- mention autocomplete + addressing (meta/issues/mention-addressing-autocomplete.md)
+
+describe('GET /api/v1/accounts/search', () => {
+  it('401s when unconfigured', async () => {
+    const app = createApp(makeUnconfiguredCtx(), { baseUrl: BASE });
+    expect((await app.request('/api/v1/accounts/search?q=car')).status).toBe(401);
+  });
+
+  it('returns ranked known contacts (petname first), never SELF', async () => {
+    const { transport } = makeFakeTransport();
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    // Give bob a petname so the petname-rank path is exercised end to end.
+    await app.request('/api/deltanet/contacts/11/petname', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ petname: 'bobcat' }),
+    });
+    const res = await app.request('/api/v1/accounts/search?q=bob');
+    expect(res.status).toBe(200);
+    const accounts = (await res.json()) as any[];
+    expect(accounts.length).toBe(1);
+    expect(accounts[0].id).toBe('11');
+    expect(accounts[0].display_name).toBe('bobcat');
+    expect(accounts[0].pleroma.deltanet).toEqual({ auth_name: 'bob', petname: 'bobcat' });
+  });
+
+  it('returns [] for a blank query and respects the limit', async () => {
+    const { transport } = makeFakeTransport();
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    expect(await (await app.request('/api/v1/accounts/search?q=')).json()).toEqual([]);
+    const limited = (await (await app.request('/api/v1/accounts/search?q=b&limit=0')).json()) as any[];
+    expect(limited).toEqual([]);
+  });
+});
+
+describe('mention addressing on POST /api/v1/statuses', () => {
+  it('DM-copies the same signed envelope to a mentioned key-contact', async () => {
+    const { transport, dms, posts } = makeFakeTransport();
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const res = await app.request('/api/v1/statuses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: `hey @${BOB.address} look` }),
+    });
+    expect(res.status).toBe(200);
+    expect(dms).toHaveLength(1);
+    expect(dms[0]!.contactId).toBe(11);
+    // Verbatim copy of the posted wire text (same signed envelope).
+    expect(dms[0]!.text).toBe(posts[0]!.text);
+  });
+
+  it('skips unknown addresses and never DMs itself', async () => {
+    const { transport, dms } = makeFakeTransport();
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const res = await app.request('/api/v1/statuses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'cc @stranger@nowhere.example and @p6yalimhl@nine.testrun.org' }),
+    });
+    expect(res.status).toBe(200);
+    expect(dms).toHaveLength(0);
+  });
+
+  it('does not double-DM the reply parent when the reply also mentions them', async () => {
+    const { transport, dms } = makeFakeTransport();
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    // Message 12 is authored by BOB in the fake timeline.
+    const res = await app.request('/api/v1/statuses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: `agreed @${BOB.address}`, in_reply_to_id: '12' }),
+    });
+    expect(res.status).toBe(200);
+    // Exactly ONE DM to bob: the reply copy. No extra mention copy.
+    const bobDms = dms.filter((dm) => dm.contactId === 11);
+    expect(bobDms).toHaveLength(1);
+  });
+});
+
+describe('body mentions on status JSON', () => {
+  it('resolves @addr body tokens to mention entries with names', async () => {
+    const { transport } = makeFakeTransport();
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const res = await app.request('/api/v1/statuses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: `hey @${BOB.address}!` }),
+    });
+    expect(res.status).toBe(200);
+    const status = (await res.json()) as any;
+    expect(status.mentions).toEqual([
+      {
+        id: '11',
+        username: 'zbie604yz',
+        acct: BOB.address,
+        url: `${BASE}/deltanet/contact/11`,
+        display_name: 'bob',
+        auth_name: 'bob',
+      },
+    ]);
+  });
+
+  it('does not duplicate the reply parent in mentions', async () => {
+    const { transport } = makeFakeTransport();
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    // Message 12 is authored by BOB; mentioning him in the reply body too
+    // must yield ONE mention entry.
+    const res = await app.request('/api/v1/statuses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: `right @${BOB.address}?`, in_reply_to_id: '12' }),
+    });
+    expect(res.status).toBe(200);
+    const status = (await res.json()) as any;
+    expect(status.mentions.filter((m: any) => m.acct === BOB.address)).toHaveLength(1);
   });
 });

@@ -799,6 +799,8 @@ const buildTransport = (
 
     contact: async (contactId) => rpc.getContact(accountId, contactId).catch(() => null),
 
+    contacts: async () => rpc.getContacts(accountId, 0, null).catch(() => []),
+
     setContactName: async (contactId, name) => {
       await rpc.changeContactName(accountId, contactId, name);
     },

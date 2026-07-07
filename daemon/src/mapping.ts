@@ -10,13 +10,16 @@ import type { T } from '@deltachat/jsonrpc-client';
 import {
   addrToAccount,
   contactToAccount,
+  contactToMention,
   heldEnvelopeToStatus,
   messageToStatus,
   type BoostEmbed,
   type MastodonAccount,
+  type MastodonMention,
   type MastodonStatus,
   type StatusResolver,
 } from './mastodon/entities.js';
+import { parseBodyMentions } from './mentions.js';
 import { parseWire } from './wire.js';
 import { verify, sha256File } from './attest.js';
 import { verifyHeld } from './heldenvelopes.js';
@@ -180,6 +183,15 @@ export const createStatusMapper = (store: Store, baseUrl: string): StatusMapper 
     // appear later). Contact-first, addr-shell fallback.
     const embedAccount =
       boostEmbed?.kind === 'verified' ? await resolveEmbedAccount(transport, boostEmbed.addr) : undefined;
+    // Body-mention entries (mention addressing): resolve each @addr token in
+    // the body to a known contact so the UI renders names instead of random
+    // local parts. Unknown addrs simply stay plain text.
+    const bodyMentions: MastodonMention[] = [];
+    for (const addr of parseBodyMentions(parsed.body ?? '')) {
+      const contactId = await transport.contactIdByAddr(addr).catch(() => null);
+      const contact = contactId !== null ? await transport.contact(contactId) : null;
+      if (contact) bodyMentions.push(contactToMention(contact, baseUrl));
+    }
     const mapped = messageToStatus(
       msg,
       baseUrl,
@@ -188,6 +200,7 @@ export const createStatusMapper = (store: Store, baseUrl: string): StatusMapper 
       (msgId) => resolvedById.get(msgId) ?? null,
       boostEmbed,
       embedAccount,
+      bodyMentions,
     );
     // A verified embed's nested orig-<uuid> reblog: overlay uuid-keyed tallies
     // (embed-only interactions) so favourites/reactions on it render everywhere.

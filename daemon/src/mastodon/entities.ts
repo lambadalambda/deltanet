@@ -244,7 +244,7 @@ export const addrToAccount = (addr: string, baseUrl: string, displayName?: strin
 };
 
 /** A Mastodon mention entry for `contact`, using the same id/username/acct/url values `contactToAccount` would. */
-const contactToMention = (contact: T.Contact, baseUrl: string): MastodonMention => {
+export const contactToMention = (contact: T.Contact, baseUrl: string): MastodonMention => {
   const username = contact.address.split('@')[0] ?? contact.address;
   return {
     id: String(contact.id),
@@ -542,6 +542,13 @@ export const messageToStatus = (
    * verified). Absent → the addr shell inside `verifiedEmbedToStatus`.
    */
   embedAccount?: MastodonAccount,
+  /**
+   * Pre-resolved mention entries for `@addr` tokens in the BODY (mention
+   * addressing — see ../../meta/issues/mention-addressing-autocomplete.md).
+   * Contact resolution is async, so the mapping layer resolves and injects
+   * them, keeping this render sync. Deduped against the reply-parent mention.
+   */
+  bodyMentions?: MastodonMention[],
 ): MastodonStatus => {
   const parsed = parseWire(msg.text);
   // `parsed.body` is the human text with all protocol structure removed (v2:
@@ -575,7 +582,13 @@ export const messageToStatus = (
   // self-reply's `mentions` array).
   const parentMsg = replyToMsgId !== null ? resolveMessage(replyToMsgId) : null;
   const inReplyToAccountId = parentMsg ? String(parentMsg.sender.id) : null;
-  const mentions = parentMsg ? [contactToMention(parentMsg.sender, baseUrl)] : [];
+  const parentMention = parentMsg ? contactToMention(parentMsg.sender, baseUrl) : null;
+  const mentions = [
+    ...(parentMention ? [parentMention] : []),
+    ...(bodyMentions ?? []).filter(
+      (mention) => mention.acct.toLowerCase() !== parentMention?.acct.toLowerCase(),
+    ),
+  ];
 
   // Boost rendering ladder (post attestations, sketch #6 / decision 0002):
   //  (a) own-copy: the target resolves LOCALLY → embed the recipient's own

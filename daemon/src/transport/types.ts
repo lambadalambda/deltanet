@@ -98,6 +98,13 @@ export interface Transport {
   introduceViaInvite(invite: string, expectedAddr: string): Promise<number | null>;
   contact(contactId: number): Promise<T.Contact | null>;
   /**
+   * ALL known contacts (mention-autocomplete candidate pool). The caller
+   * filters/ranks (see ../mentions.ts) — single-user nodes have small
+   * contact lists, so fetching all and ranking in the daemon keeps the
+   * ordering fully under our control.
+   */
+  contacts(): Promise<T.Contact[]>;
+  /**
    * Set (or clear, with '') the LOCAL name override for a contact — the
    * petname (see ../meta/issues/petnames.md). Key-bound: it lives on the
    * contact row, so it follows the cryptographic identity, not the string
