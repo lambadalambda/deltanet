@@ -24,6 +24,7 @@ import {
   buildPostObject,
   buildReactEnvelope,
   buildReplyObject,
+  buildThreadInviteRequestEnvelope,
   buildUnreactEnvelope,
   envelopeRefAddr,
   mintUuid,
@@ -39,6 +40,7 @@ import { createStore, ephemeralStorePath, type Store } from './store.js';
 import { deriveOnIngest } from './ingest.js';
 import { createStatusMapper, mapNotification } from './mapping.js';
 import { createStreamingEvents, type StreamingHub } from './streaming.js';
+import { republishReplyToThread } from './thread-subscribe.js';
 
 const DC_CONTACT_ID_SELF = 1;
 const FAVOURITE_EMOJI = '❤';
@@ -346,6 +348,94 @@ export const createApp = (
     return undefined;
   };
 
+  /**
+   * Resolve a `/statuses/:id` target to its THREAD ROOT (uuid + author addr) for
+   * thread-subscribe: identify the thread via the SIGNED `root` ref when the
+   * target is a reply, else the target's own uuid+author when it IS the root.
+   *   - `orig-<uuid>` id: the target is a HELD envelope — use its signed root, or
+   *     its own uuid+authorAddr when it's the root of the thread.
+   *   - numeric id: the local message — same logic over its envelope.
+   * Returns null when no uuid-rooted thread is determinable (legacy/uuid-less).
+   * The root ADDR is a signed routing target (root.addr / the message's sender),
+   * so a subscriber contacts the RIGHT author, not a swappable display attr.
+   */
+  const resolveThreadRoot = async (
+    transport: Transport,
+    parsed: { kind: 'msg'; msgId: number } | { kind: 'orig'; uuid: string },
+  ): Promise<{ rootUuid: string; rootAddr: string } | null> => {
+    let env: Envelope | null = null;
+    let ownUuid: string | undefined;
+    let ownAddr: string | undefined;
+    if (parsed.kind === 'orig') {
+      const held = store.heldEnvelope(parsed.uuid);
+      if (held) {
+        env = held.env;
+        ownUuid = env.uuid;
+        ownAddr = held.authorAddr;
+      } else {
+        // We may hold the original LOCALLY (e.g. we also follow the author's
+        // feed) — resolve the real message, so subscribing on an `orig-<uuid>`
+        // whose post we hold locally still works.
+        const localMsgId = store.resolveKey(parsed.uuid);
+        const msg = localMsgId !== null ? await transport.message(localMsgId) : null;
+        if (!msg) return null;
+        env = parseEnvelope(msg.text);
+        ownUuid = env?.uuid ?? parseWireUuid(msg.text) ?? undefined;
+        ownAddr = msg.sender.address;
+      }
+    } else {
+      const msg = await transport.message(parsed.msgId);
+      if (!msg) return null;
+      env = parseEnvelope(msg.text);
+      ownUuid = env?.uuid ?? parseWireUuid(msg.text) ?? undefined;
+      ownAddr = msg.sender.address;
+    }
+    // A reply carries the signed root ref (uuid + signed addr).
+    const root = env?.root;
+    if (root && 'u' in root && root.u && root.addr) {
+      return { rootUuid: root.u, rootAddr: root.addr };
+    }
+    // Otherwise the target IS the root (a non-reply post) — subscribe to its uuid.
+    if (env?.type === 'reply') return null; // a reply with no resolvable root: can't
+    if (ownUuid && ownAddr) return { rootUuid: ownUuid, rootAddr: ownAddr };
+    return null;
+  };
+
+  /**
+   * The status JSON the subscribe/unsubscribe endpoints return: the target status
+   * re-rendered so `pleroma.deltanet.thread_subscribed` reflects the post-mutation
+   * store state (the mapper reads it from `store.isSubscribedToThread`). When the
+   * subscription is merely PENDING (request sent, grant not yet arrived), the
+   * store isn't subscribed yet, so `forcePending` overlays the flag optimistically
+   * so the UI can show the toggle flipped immediately. Falls back to a minimal
+   * shape if the status can't be re-rendered (still reports the flag).
+   */
+  const toSubscribeStatus = async (
+    transport: Transport,
+    parsed: { kind: 'msg'; msgId: number } | { kind: 'orig'; uuid: string },
+    rootUuid: string,
+    forcePending = false,
+  ): Promise<Record<string, unknown>> => {
+    let status: MastodonStatus | null = null;
+    if (parsed.kind === 'msg') {
+      const msg = await transport.message(parsed.msgId).catch(() => null);
+      if (msg) status = await toStatus(transport, msg, mediaStore.descriptionForMessage(msg.id));
+    } else {
+      status = await resolveOrigStatus(transport, parsed.uuid);
+    }
+    const subscribed = forcePending || store.isSubscribedToThread(rootUuid);
+    if (!status) {
+      return { id: parsed.kind === 'msg' ? String(parsed.msgId) : `orig-${parsed.uuid}`, pleroma: { deltanet: { thread_subscribed: subscribed } } };
+    }
+    return {
+      ...status,
+      pleroma: {
+        ...status.pleroma,
+        deltanet: { ...(status.pleroma.deltanet ?? {}), thread_subscribed: subscribed },
+      },
+    };
+  };
+
   app.use(
     '*',
     cors({
@@ -576,7 +666,7 @@ export const createApp = (
     const transport = c.get('transport');
     const raw = c.req.queries('id[]') ?? c.req.queries('id') ?? [];
     const ids = raw.map(Number);
-    const followedIds = new Set((await transport.following()).map((f) => f.contactId));
+    const followedIds = new Set((await followedFeeds(transport)).map((f) => f.contactId));
     const contacts = await Promise.all(ids.map((id) => transport.contact(id)));
     return c.json(
       ids.map((id, i) => {
@@ -600,7 +690,7 @@ export const createApp = (
     const contactId = await transport.contactIdByAddr(handle);
     const contact = contactId !== null ? await transport.contact(contactId) : null;
     if (!contact) return c.json({ error: 'Record not found' }, 404);
-    const followedIds = new Set((await transport.following()).map((f) => f.contactId));
+    const followedIds = new Set((await followedFeeds(transport)).map((f) => f.contactId));
     const relationship = relationshipForContact(contact, followedIds);
     return c.json(contactToAccount(contact, baseUrl, relationship));
   });
@@ -608,7 +698,7 @@ export const createApp = (
   app.get('/api/v1/accounts/:id', requireTransport, async (c) => {
     const contact = await c.get('transport').contact(Number(c.req.param('id')));
     if (!contact) return c.json({ error: 'Record not found' }, 404);
-    const followedIds = new Set((await c.get('transport').following()).map((f) => f.contactId));
+    const followedIds = new Set((await followedFeeds(c.get('transport'))).map((f) => f.contactId));
     const relationship = relationshipForContact(contact, followedIds);
     return c.json(contactToAccount(contact, baseUrl, relationship));
   });
@@ -631,7 +721,7 @@ export const createApp = (
     const contact = await transport.contact(contactId);
     if (!contact) return c.json({ error: 'Record not found' }, 404);
 
-    const followedIds = new Set((await transport.following()).map((f) => f.contactId));
+    const followedIds = new Set((await followedFeeds(transport)).map((f) => f.contactId));
     // Already following: no-op, return the current relationship unchanged.
     if (followedIds.has(contactId)) {
       return c.json(relationshipForContact(contact, followedIds));
@@ -662,14 +752,46 @@ export const createApp = (
 
   // --- Timelines ----------------------------------------------------------
 
+  /**
+   * Filter out messages that arrived on a THREAD-SUBSCRIPTION channel
+   * (thread-subscribe): a subscribed thread's chat is an InBroadcast just like a
+   * followed feed, so its republished replies would otherwise leak into the home
+   * timeline. Subscribed content belongs to the THREAD VIEW only (context
+   * endpoint), never the home/public timeline. Keyed off the store's
+   * `threadSubscriptions` map — the transport-neutral way to tell a thread
+   * channel apart from a real feed.
+   */
+  const excludeThreadSubscriptionMessages = (messages: T.Message[]): T.Message[] => {
+    const excluded = new Set(store.threadSubscriptionChatIds());
+    if (excluded.size === 0) return messages;
+    return messages.filter((m) => !excluded.has(m.chatId));
+  };
+
+  /**
+   * Followed FEEDS only — `transport.following()` minus any InBroadcast chat we
+   * joined as a THREAD SUBSCRIPTION (thread-subscribe). A subscribed thread's
+   * channel is an InBroadcast too, so without this filter it would pollute the
+   * following list / relationship computations. Distinguished purely by the
+   * store's `threadSubscriptions` map (chatId), never a transport-level hack.
+   */
+  const followedFeeds = async (
+    transport: Transport,
+  ): Promise<Awaited<ReturnType<Transport['following']>>> => {
+    const excluded = new Set(store.threadSubscriptionChatIds());
+    const feeds = await transport.following();
+    return excluded.size === 0 ? feeds : feeds.filter((f) => !excluded.has(f.chatId));
+  };
+
   const timeline = async (c: Context<TransportEnv>) => {
     const transport = c.get('transport');
     const limit = intParam(c.req.query('limit')) ?? DEFAULT_PAGE;
-    const messages = await transport.timeline({
-      limit,
-      maxId: intParam(c.req.query('max_id')),
-      minId: intParam(c.req.query('min_id')) ?? intParam(c.req.query('since_id')),
-    });
+    const messages = excludeThreadSubscriptionMessages(
+      await transport.timeline({
+        limit,
+        maxId: intParam(c.req.query('max_id')),
+        minId: intParam(c.req.query('min_id')) ?? intParam(c.req.query('since_id')),
+      }),
+    );
     for (const msg of messages) await ingest(transport, msg);
     const statuses: MastodonStatus[] = await Promise.all(
       messages.map((msg) => toStatus(transport, msg, mediaStore.descriptionForMessage(msg.id))),
@@ -740,6 +862,16 @@ export const createApp = (
       const msg = await transport.post(replyText, media ? { file: media.path } : undefined);
       if (media) mediaStore.tagMessage(msg.id, media.description);
       await ingest(transport, msg);
+
+      // Thread-subscribe (host side): if WE host the thread this reply belongs to,
+      // republish our OWN reply into the channel now — a self-authored feed post
+      // never re-arrives via the ingest hook (no IncomingMsg for own sends), so the
+      // republication must be triggered at post time. Dedupe + signed-only gating
+      // live in `republishReplyToThread`; idempotent with the ingest-hook path for
+      // replies we RECEIVE from others. Best-effort.
+      await republishReplyToThread(store, transport, msg, true).catch((err) => {
+        console.error('own-reply thread republication failed (non-fatal):', err);
+      });
 
       if (target.sender.id !== DC_CONTACT_ID_SELF) {
         // DM copy: byte-identical envelope, SAME uuid as the feed copy.
@@ -1089,6 +1221,69 @@ export const createApp = (
     descendants.sort((a, b) => a.sortTs - b.sortTs);
 
     return c.json({ ancestors, descendants: descendants.map((e) => e.status) });
+  });
+
+  // --- Thread subscription (thread-subscribe) ------------------------------
+  //
+  // POST/DELETE /api/v1/pleroma/statuses/:id/subscribe (mirrors Pleroma's
+  // status-subscription naming). `:id` is the thread ROOT status (numeric or
+  // `orig-<uuid>`). Subscribe: DM a SCOPED invite-request to the root author via
+  // a KEY-contact (honest reachability — no cold send); the host auto-grants a
+  // per-thread channel our ingest joins as a thread subscription. Unsubscribe:
+  // leave/block the channel + drop the subscription.
+
+  app.post('/api/v1/pleroma/statuses/:id/subscribe', requireTransport, async (c) => {
+    const transport = c.get('transport');
+    const parsed = parseStatusId(c.req.param('id'));
+    if (parsed === null) return c.json({ error: 'Record not found' }, 404);
+    const root = await resolveThreadRoot(transport, parsed);
+    if (!root) return c.json({ error: 'Record not found' }, 404);
+
+    // Already subscribed: idempotent success.
+    if (store.isSubscribedToThread(root.rootUuid)) {
+      return c.json(await toSubscribeStatus(transport, parsed, root.rootUuid));
+    }
+
+    // Reachability gate: we can only DM the root author if we hold a KEY path to
+    // them (a received message / securejoin). A keyless address-contact would
+    // fail "e2e encryption unavailable" — so probe honestly and 422 with a
+    // distinguishable error the UI shows, NEVER a cold send. Subscribing to our
+    // OWN thread is nonsensical (we already host/hold it) → also 422.
+    const myAddr = (await mapper.ownAddr(transport)).toLowerCase();
+    if (root.rootAddr.toLowerCase() === myAddr) {
+      return c.json({ error: "can't subscribe to your own thread", code: 'own_thread' }, 422);
+    }
+    const rootContactId = await transport.keyContactIdForAddr(root.rootAddr);
+    if (rootContactId === null || rootContactId === DC_CONTACT_ID_SELF) {
+      return c.json(
+        { error: "can't reach the thread author yet", code: 'unreachable_author' },
+        422,
+      );
+    }
+
+    await transport.sendControlDm(rootContactId, buildThreadInviteRequestEnvelope(root.rootUuid));
+    store.addPendingThreadRequest(root.rootUuid, Date.now());
+    return c.json(await toSubscribeStatus(transport, parsed, root.rootUuid, true));
+  });
+
+  app.delete('/api/v1/pleroma/statuses/:id/subscribe', requireTransport, async (c) => {
+    const transport = c.get('transport');
+    const parsed = parseStatusId(c.req.param('id'));
+    if (parsed === null) return c.json({ error: 'Record not found' }, 404);
+    const root = await resolveThreadRoot(transport, parsed);
+    if (!root) return c.json({ error: 'Record not found' }, 404);
+
+    // Leave/block the channel chat + drop both the subscription and any pending
+    // request (idempotent — reports unsubscribed even if we weren't subscribed).
+    const chatId = store.threadSubscriptionChatId(root.rootUuid);
+    if (chatId !== null) {
+      await transport.leaveChat(chatId).catch((err) => {
+        console.error('thread channel leave failed (non-fatal):', err);
+      });
+    }
+    store.removeThreadSubscription(root.rootUuid);
+    store.clearPendingThreadRequest(root.rootUuid);
+    return c.json(await toSubscribeStatus(transport, parsed, root.rootUuid));
   });
 
   app.get('/api/v1/statuses/:id', requireTransport, async (c) => {

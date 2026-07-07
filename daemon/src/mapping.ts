@@ -76,6 +76,8 @@ export const createStatusMapper = (store: Store, baseUrl: string): StatusMapper 
     // (backfilled) links via the parent's `orig-<uuid>` id. Only for uuid keys.
     heldOrigId: (keyString) =>
       !keyString.includes('@') && store.heldEnvelope(keyString) ? `orig-${keyString}` : null,
+    // thread-subscribe: flag a thread root the user subscribes to.
+    isThreadSubscribed: (uuid) => store.isSubscribedToThread(uuid),
   };
 
   const ownAddr = async (transport: Transport): Promise<string> => {
@@ -220,7 +222,8 @@ export const createStatusMapper = (store: Store, baseUrl: string): StatusMapper 
     // Contact-first attribution (the recipient may have met the author even
     // though they never held the post), addr-shell fallback — same as the embed.
     const account = await resolveEmbedAccount(transport, held.authorAddr);
-    return heldEnvelopeToStatus(held.env, held.authorAddr, baseUrl, inReplyToId, account);
+    const threadSubscribed = store.isSubscribedToThread(uuid);
+    return heldEnvelopeToStatus(held.env, held.authorAddr, baseUrl, inReplyToId, account, threadSubscribed);
   };
 
   return { resolver, ownAddr, toStatus, heldStatus };

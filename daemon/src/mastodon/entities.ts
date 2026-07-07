@@ -86,10 +86,15 @@ export type MastodonStatus = {
      *    verification (bad sig, pin conflict, or media-hash mismatch) — the
      *    republisher may have tampered, so we show a distinguishable
      *    "cannot be verified" affordance instead of the content.
+     * `thread_subscribed` is true iff this status is a thread ROOT the user is
+     * currently subscribed to (thread-subscribe) — drives the Subscribe/Unsubscribe
+     * toggle on the thread view's root status. Present (true) only when subscribed;
+     * absent/false otherwise.
      */
     deltanet?: {
-      placeholder: 'boost' | 'boost-unverified';
-      ref: { key: string; addr: string };
+      placeholder?: 'boost' | 'boost-unverified';
+      ref?: { key: string; addr: string };
+      thread_subscribed?: boolean;
     };
   };
 };
@@ -370,6 +375,7 @@ export const heldEnvelopeToStatus = (
   baseUrl: string,
   inReplyToId: string | null,
   account?: MastodonAccount,
+  threadSubscribed = false,
 ): MastodonStatus => {
   const parsed = parseWire(env.text ?? '');
   const bodyText = env.type === 'boost' ? '' : (env.text ?? parsed.body);
@@ -411,6 +417,7 @@ export const heldEnvelopeToStatus = (
       quote: null,
       quote_id: null,
       quote_visible: false,
+      ...deltanetPleroma(null, threadSubscribed),
     },
   };
 };
@@ -441,6 +448,12 @@ export type StatusResolver = {
    * local `resolveMid` misses.
    */
   heldOrigId?(keyString: string): string | null;
+  /**
+   * thread-subscribe: is this uuid a thread ROOT the user currently subscribes
+   * to? Drives `pleroma.deltanet.thread_subscribed` on the root status so the UI
+   * shows Subscribe vs Unsubscribe. Default false (no subscriptions).
+   */
+  isThreadSubscribed?(uuid: string): boolean;
 };
 
 export const noopResolver: StatusResolver = {
@@ -452,6 +465,7 @@ export const noopResolver: StatusResolver = {
   reactionTallies: () => [],
   ownAddr: () => null,
   heldOrigId: () => null,
+  isThreadSubscribed: () => false,
 };
 
 const FAVOURITE_EMOJI = '❤';
@@ -568,6 +582,8 @@ export const messageToStatus = (
   const repliesCount = ownMid ? resolver.childrenCount(ownMid) : 0;
   const reblogsCount = ownMid ? resolver.boostCount(ownMid) : 0;
   const reblogged = ownMid ? resolver.isOwnBoost(ownMid) : false;
+  // thread-subscribe: flag a status that IS a thread root the user subscribes to.
+  const threadSubscribed = parsed.uuid ? resolver.isThreadSubscribed?.(parsed.uuid) ?? false : false;
 
   const tallies = ownMid ? (resolver.reactionTallies?.(ownMid) ?? []) : [];
   const ownAddr = resolver.ownAddr?.() ?? null;
@@ -614,14 +630,30 @@ export const messageToStatus = (
       quote: null,
       quote_id: null,
       quote_visible: false,
+      ...deltanetPleroma(boostPlaceholder, threadSubscribed),
+    },
+  };
+};
+
+/**
+ * Build the optional `pleroma.deltanet` object from a boost placeholder and/or a
+ * thread-subscription flag — merged so a status can carry either or both without
+ * clobbering. Omitted entirely when neither applies (the common case).
+ */
+const deltanetPleroma = (
+  boostPlaceholder: { placeholder: 'boost' | 'boost-unverified'; key: string; addr: string } | null,
+  threadSubscribed: boolean,
+): { deltanet: NonNullable<MastodonStatus['pleroma']['deltanet']> } | {} => {
+  if (!boostPlaceholder && !threadSubscribed) return {};
+  return {
+    deltanet: {
       ...(boostPlaceholder
         ? {
-            deltanet: {
-              placeholder: boostPlaceholder.placeholder,
-              ref: { key: boostPlaceholder.key, addr: boostPlaceholder.addr },
-            },
+            placeholder: boostPlaceholder.placeholder,
+            ref: { key: boostPlaceholder.key, addr: boostPlaceholder.addr },
           }
         : {}),
+      ...(threadSubscribed ? { thread_subscribed: true } : {}),
     },
   };
 };

@@ -14,6 +14,8 @@ import {
   parseWireInviteGrant,
   parseWireInviteRequest,
   parseWireReaction,
+  parseWireThreadInviteGrant,
+  parseWireThreadInviteRequest,
 } from './wire.js';
 import type { Notification, Store } from './store.js';
 import type { Transport } from './transport/types.js';
@@ -212,6 +214,14 @@ export const deriveFollowbackActions = (
   if (isFeedMessage) return [];
   if (msg.fromId === DC_CONTACT_ID_SELF) return [];
   const text = msg.text;
+
+  // A THREAD-scoped invite-request/grant is NOT a feed follow-back — it belongs
+  // to the thread-subscribe path (handled separately in main.ts). Skip it here so
+  // a "subscribe to your thread" DM never makes us grant a FEED follow-back, and a
+  // scoped grant never joins us to a feed. Unscoped requests/grants (the existing
+  // follow-back flow) are unchanged.
+  if (parseWireThreadInviteRequest(text) !== null) return [];
+  if (parseWireThreadInviteGrant(text) !== null) return [];
 
   if (parseWireInviteRequest(text)) {
     return [{ kind: 'grant-invite', toContactId: msg.fromId }];

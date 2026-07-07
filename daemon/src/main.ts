@@ -19,6 +19,12 @@ import {
   seedBackfillQueue,
   MAX_SERVE_RESPONSES_PER_MINUTE,
 } from './backfill-ingest.js';
+import {
+  handleThreadChannelBundle,
+  handleThreadInviteGrant,
+  handleThreadInviteRequest,
+  republishReplyToThread,
+} from './thread-subscribe.js';
 import type { T } from '@deltachat/jsonrpc-client';
 
 const PORT = Number(process.env['PORT'] ?? 4030);
@@ -201,6 +207,39 @@ const ingestOnMessage = async (
       void backfiller.flush();
       return;
     }
+  }
+
+  // Thread subscribe (design-sketch #3, layers 2–3): all SUPPRESSED like backfill
+  // (no notifications, no streaming, held content never in timelines).
+  //  - Live SUBSCRIBER: an envelope-bundle arriving on a subscribed thread channel
+  //    is admitted through the backfill held-envelope ingest (render-time verify).
+  //  - Live control DMs: a scoped invite-request (host auto-grants + sends the
+  //    thread-so-far) / a scoped invite-grant we solicited (join as a thread sub).
+  //    Each returns handled=true → skip the streaming/notification tail.
+  if (phase === 'combined' && transport) {
+    const t = transport;
+    if (handleThreadChannelBundle(store, backfiller, msg, Date.now())) {
+      void backfiller.flush();
+      return;
+    }
+    const handledThread = await (async () => {
+      if (await handleThreadInviteRequest(store, t, msg, isFeedMessage)) return true;
+      if (await handleThreadInviteGrant(store, t, msg, isFeedMessage)) return true;
+      return false;
+    })().catch((err) => {
+      console.error('thread-subscribe control-DM handling failed (non-fatal):', err);
+      return false;
+    });
+    if (handledThread) return;
+  }
+
+  //  - Live HOST republication: a freshly-ingested reply whose SIGNED root names a
+  //    hosted thread is wrapped verbatim in a bundle + posted into the channel.
+  //    Runs on the fresh FEED copy; store dedupes per uuid. Non-fatal on failure.
+  if (phase === 'combined' && transport && fresh) {
+    await republishReplyToThread(store, transport, msg, isFeedMessage).catch((err) => {
+      console.error('thread republication failed (non-fatal):', err);
+    });
   }
 
   if (phase !== 'combined') return;
