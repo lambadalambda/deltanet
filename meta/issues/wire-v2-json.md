@@ -39,3 +39,32 @@ envelope as the entire message body for all statuses and control messages.
 - A post whose text starts with legacy marker glyphs (e.g. "♻ hello")
   round-trips as plain content — the in-band ambiguity class is gone.
 - No emitted message contains marker lines or quotedText compat text.
+
+## Current Status
+
+**DONE (2026-07-07).** Implemented in full; see DEVLOG "wire convention v2".
+
+- Envelope: `src/envelope.ts` — `{"dn":2,"type":...}` as the whole body, strict
+  `dn===2` gate, unknown-fields-ignored, malformed→plain-text. Typed refs
+  (`{u,addr}` / `{mid,addr}`), `media.description` (federated alt text,
+  replaces the in-memory mediaStore hack — registry kept for upload staging
+  only), reserved `pubkey`/`sig` (never emitted). Read seam: `src/wire.ts`
+  (v2-first, then v0/v1 markers read-side, then plain).
+- Emission v2-only across posts/replies (incl. byte-identical DM copy, same
+  uuid)/boosts/react-unreact/invite-request-grant. No quotedText anywhere.
+  Boost = `type:"boost"` + ref, no embedded content (0002).
+- `synthesizeStatus`/`synthesizeAccount` REMOVED (grep-clean). Unresolvable
+  boost → booster's own status with `[boosted post unavailable]`, `reblog:null`,
+  `pleroma.deltanet:{placeholder:"boost",ref}`.
+- Store `schemaVersion=5`; v4→v5 dedupe continuity proven (no re-notify).
+- Also (this issue's item 6, overlaps the hygiene issue's core-pin half):
+  `@deltachat/*` pinned to exact `2.53.0` with a package.json comment.
+- Tests: 643 unit (was 580) all green; 7 integration green against the local
+  podman relay (extended to assert DM/feed copies share one uuid + cross-node
+  v2 reply→v2 parent resolution). `pnpm check` clean.
+
+Follow-ups (out of scope here): drop read-side v0/v1 parsers once test-era data
+stops mattering; `pubkey`/`sig` attestations (sketch #6) upgrade placeholder
+boosts to verified embeds. The transport still exposes an unused `quotedText`
+passthrough (`PostOptions`/`sendControlDm`) — nothing populates it; removable
+later.

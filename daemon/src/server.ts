@@ -17,21 +17,18 @@ import {
 } from './mastodon/entities.js';
 import type { Transport } from './transport/types.js';
 import { createMediaStore, isSupportedImageMime } from './media.js';
+import { parseCanonicalMid, type RefToken } from './protocol.js';
 import {
-  buildBoostText,
-  buildInviteRequestText,
-  buildPostText,
-  buildQuotedText,
-  buildReactionText,
-  buildReplyText,
-  buildUnreactionText,
-  mintPostUuid,
-  parseCanonicalMid,
-  parseMarkers,
-  parsePostUuid,
-  refFromToken,
-  type RefToken,
-} from './protocol.js';
+  buildBoostEnvelope,
+  buildInviteRequestEnvelope,
+  buildPostEnvelope,
+  buildReactEnvelope,
+  buildReplyEnvelope,
+  buildUnreactEnvelope,
+  mintUuid,
+  refTokenToEnvelopeRef,
+} from './envelope.js';
+import { parseWire, parseWireUuid } from './wire.js';
 import { createStore, ephemeralStorePath, type Store } from './store.js';
 import { deriveOnIngest } from './ingest.js';
 import { createStatusMapper, mapNotification } from './mapping.js';
@@ -39,9 +36,6 @@ import { createStreamingEvents, type StreamingHub } from './streaming.js';
 
 const DC_CONTACT_ID_SELF = 1;
 const FAVOURITE_EMOJI = '❤';
-const QUOTE_EXCERPT_CAP = 120;
-const BOOST_QUOTE_CAP = 500;
-const REACTION_QUOTE_CAP = 120;
 const MAX_CONTEXT_ANCESTORS = 20;
 const MAX_CONTEXT_DESCENDANTS = 100;
 
@@ -198,7 +192,7 @@ export const createApp = (
    * Returns null iff none of the above yields a token.
    */
   const targetRef = async (transport: Transport, target: T.Message): Promise<RefToken | null> => {
-    const uuid = parsePostUuid(target.text);
+    const uuid = parseWireUuid(target.text);
     if (uuid) return { kind: 'uuid', uuid };
     const canonical = parseCanonicalMid(target.text);
     if (canonical) return { kind: 'mid', mid: canonical };
@@ -501,9 +495,8 @@ export const createApp = (
       return c.json(relationshipForContact(contact, followedIds));
     }
 
-    const self = await transport.self();
-    const quotedText = `${self.displayName} would like to follow you`;
-    await transport.sendControlDm(contactId, buildInviteRequestText(), quotedText);
+    // v2 invite-request envelope (no human quotedText bubble — 0001).
+    await transport.sendControlDm(contactId, buildInviteRequestEnvelope());
     store.addPendingFollowRequest(contact.address, Date.now());
 
     return c.json(relationshipFor(false, contactId, true));
@@ -576,39 +569,39 @@ export const createApp = (
       const target = await transport.message(Number(inReplyToId));
       if (!target) return c.json({ error: 'Record not found' }, 404);
       // The reply target's ref TOKEN: its logical-post uuid if it carries one,
-      // else a canonical/mid ref (wire convention v1). A uuid ref resolves on
-      // any node holding any copy of the target — including a third party who
-      // only has the feed copy — which is exactly what mid refs couldn't do.
+      // else a canonical/mid ref. A uuid ref resolves on any node holding any
+      // copy of the target — including a third party who only has the feed copy.
       const ref = await targetRef(transport, target);
       if (!ref) return c.json({ error: 'cannot resolve message id for reply target' }, 422);
-      const parentRef = refFromToken(ref, target.sender.address);
+      const envRef = refTokenToEnvelopeRef(ref, target.sender.address);
       await ingest(transport, target);
 
-      // Mint ONE logical-post UUID for THIS reply and embed it in BOTH copies —
-      // the feed broadcast copy and the DM copy to the parent author — so a node
-      // holding either copy (or only a ref to it) unifies the one logical post.
-      // The DM copy no longer needs the `⚓` canonical marker: the shared uuid
-      // subsumes it.
-      const uuid = mintPostUuid();
-      const replyText = buildReplyText(text, parentRef, uuid);
-      const quotedText = buildQuotedText(target.sender.displayName, target.text, QUOTE_EXCERPT_CAP);
+      // Mint ONE logical-post UUID for THIS reply and emit the SAME v2 envelope
+      // (byte-identical) as BOTH copies — the feed broadcast copy and the DM
+      // copy to the parent author — so a node holding either copy (or only a
+      // ref) unifies the one logical post. No quotedText bubble (0001).
+      const uuid = mintUuid();
+      const replyText = buildReplyEnvelope(text, uuid, envRef, media ? { description: media.description } : undefined);
 
-      const msg = await transport.post(replyText, { quotedText });
+      const msg = await transport.post(replyText, media ? { file: media.path } : undefined);
+      if (media) mediaStore.tagMessage(msg.id, media.description);
       await ingest(transport, msg);
 
       if (target.sender.id !== DC_CONTACT_ID_SELF) {
-        // DM copy: same body, same reply ref, SAME uuid as the feed copy.
-        await transport.sendControlDm(target.sender.id, replyText, quotedText).catch((err) => {
+        // DM copy: byte-identical envelope, SAME uuid as the feed copy.
+        await transport.sendControlDm(target.sender.id, replyText).catch((err) => {
           console.error('sendControlDm failed (non-fatal):', err);
         });
       }
 
-      return c.json(await toStatus(transport, msg));
+      return c.json(await toStatus(transport, msg, media?.description ?? null));
     }
 
-    // A plain post carries its own minted logical-post UUID marker so replies/
-    // boosts/reactions to it can target it by uuid (resolvable on any node).
-    const postText = buildPostText(text, mintPostUuid());
+    // A plain post carries its own minted logical-post UUID (v2 envelope) so
+    // replies/boosts/reactions can target it by uuid (resolvable on any node).
+    // Alt text rides in the envelope's `media.description` (persistent +
+    // federated), replacing the in-memory mediaStore alt-text hack.
+    const postText = buildPostEnvelope(text, mintUuid(), media ? { description: media.description } : undefined);
     const msg = await transport.post(postText, media ? { file: media.path } : undefined);
     if (media) mediaStore.tagMessage(msg.id, media.description);
     await ingest(transport, msg);
@@ -649,10 +642,12 @@ export const createApp = (
     if (!ref) return c.json({ error: 'cannot resolve message id to boost' }, 422);
     await ingest(transport, target);
 
-    const boostText = buildBoostText(refFromToken(ref, target.sender.address), mintPostUuid());
-    const quotedText = buildQuotedText(target.sender.displayName, target.text, BOOST_QUOTE_CAP);
+    // Boost envelope: type:"boost" + ref, minted uuid. Per 0002 we do NOT embed
+    // the original content (no quotedText, no unverifiable copy) — embedding
+    // returns WITH attestations later.
+    const boostText = buildBoostEnvelope(mintUuid(), refTokenToEnvelopeRef(ref, target.sender.address));
 
-    const msg = await transport.post(boostText, { quotedText });
+    const msg = await transport.post(boostText);
     await ingest(transport, msg);
 
     // The response wraps our new boost message; it always reflects "you just
@@ -712,11 +707,11 @@ export const createApp = (
     else store.retractReaction(key, myAddr, emoji);
 
     if (target.sender.id !== DC_CONTACT_ID_SELF) {
-      // The control DM carries the KEY TOKEN (`u:<uuid>` or bare mid), which the
-      // recipient's `parseReaction` discriminates back to a ref token.
-      const text = action === 'react' ? buildReactionText(emoji, ref) : buildUnreactionText(emoji, ref);
-      const quotedText = buildQuotedText(target.sender.displayName, target.text, REACTION_QUOTE_CAP);
-      await transport.sendControlDm(target.sender.id, text, quotedText).catch((err) => {
+      // The control DM is a v2 react/unreact envelope carrying the typed ref,
+      // which the recipient's `parseWireReaction` recovers. No quotedText (0001).
+      const envRef = refTokenToEnvelopeRef(ref, target.sender.address);
+      const text = action === 'react' ? buildReactEnvelope(emoji, envRef) : buildUnreactEnvelope(emoji, envRef);
+      await transport.sendControlDm(target.sender.id, text).catch((err) => {
         console.error('sendControlDm failed (non-fatal):', err);
       });
     }
@@ -749,7 +744,7 @@ export const createApp = (
     const ancestorMsgs: T.Message[] = [];
     let current: T.Message | null = target;
     for (let depth = 0; depth < MAX_CONTEXT_ANCESTORS && current; depth++) {
-      const parsed = parseMarkers(current.text);
+      const parsed = parseWire(current.text);
       if (!parsed.reply) break;
       const parentMsgId = store.resolveKey(parsed.reply.keyString);
       if (parentMsgId === null) break;

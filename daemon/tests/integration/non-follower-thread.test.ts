@@ -11,6 +11,10 @@ import type { Transport } from '../../src/transport/types.js';
 import { createStore, type Store } from '../../src/store.js';
 import { createApp, type AppContext } from '../../src/server.js';
 import { deriveOnIngest } from '../../src/ingest.js';
+import { parseWire, parseWireUuid } from '../../src/wire.js';
+
+/** The human body of a wire message (v2 envelope `text`, or legacy body). */
+const bodyOf = (m: T.Message): string => parseWire(m.text).body;
 
 /**
  * Acceptance topology from ../meta/issues/non-follower-thread-rendering.md, over
@@ -76,16 +80,16 @@ describe('non-follower thread rendering + own-reaction re-index over chatmail', 
   };
 
   /**
-   * Locate the DM copy of a reply on the recipient: body starts with text AND
-   * carries the `⚑` logical-post uuid marker (wire convention v1 — the DM copy
-   * no longer carries the legacy `⚓` marker). Excludes feed copies by id.
+   * Locate the DM copy of a reply on the recipient: parsed body starts with
+   * text AND carries a logical-post uuid (a wire v2 reply envelope — byte-
+   * identical to the feed copy). Excludes feed copies by id.
    */
   const findCanonicalDm = async (t: Transport, text: string): Promise<T.Message | null> => {
     const feedIds = new Set((await t.timeline({ limit: 40 })).map((m) => m.id));
     for (let id = 1; id < 400; id++) {
       if (feedIds.has(id)) continue;
       const msg = await t.message(id).catch(() => null);
-      if (msg && msg.text.startsWith(text) && msg.text.includes('⚑')) return msg;
+      if (msg && bodyOf(msg).startsWith(text) && parseWireUuid(msg.text) !== null) return msg;
     }
     return null;
   };
@@ -134,7 +138,7 @@ describe('non-follower thread rendering + own-reaction re-index over chatmail', 
     const postText = `A original ${Date.now()}`;
     const aPost = await a.post(postText);
     const aPostId = aPost.id; // A's own feed copy of the original
-    const aPostOnB = await waitFor(b, (m) => m.text === postText);
+    const aPostOnB = await waitFor(b, (m) => bodyOf(m) === postText);
 
     // --- B replies to A's post (feed copy + DM copy to A) ---
     const bReplyText = `B reply ${Date.now()}`;
@@ -157,7 +161,9 @@ describe('non-follower thread rendering + own-reaction re-index over chatmail', 
       throw new Error('timed out waiting for DM copy on A');
     };
     const dmOnA = await waitDm();
-    expect(dmOnA.text).toContain('⚑');
+    // The DM copy is a wire v2 reply envelope (no marker glyphs) carrying a uuid.
+    expect(dmOnA.text).not.toContain('⚑');
+    expect(parseWireUuid(dmOnA.text)).not.toBeNull();
 
     // --- A reacts ❤ to B's reply AND replies to it (acting on the DM copy) ---
     const aFavRes = await aApp.request(`/api/v1/statuses/${dmOnA.id}/favourite`, { method: 'POST' });

@@ -11,7 +11,7 @@ import {
   noopResolver,
   type StatusResolver,
 } from '../src/mastodon/entities.js';
-import { buildBoostText, buildQuotedText, buildReplyText, refFromToken } from '../src/protocol.js';
+import { buildBoostText, buildReplyText, refFromToken } from '../src/protocol.js';
 
 const BASE = 'http://localhost:4030';
 const UUID = '11111111-2222-4333-8444-555555555555';
@@ -331,24 +331,27 @@ describe('messageToStatus: boost markers', () => {
     expect(status.reblog?.account.display_name).toBe('orig author');
   });
 
-  it('synthesizes a minimal status when the mid does not resolve', () => {
-    const quotedText = buildQuotedText('remote author', 'something interesting', 500);
+  it('renders an honest placeholder (no reblog, no synthesized content) when the boost target does not resolve', () => {
     const boostMsg = makeMessage({
       id: 9,
       text: buildBoostText(originalRef, UUID),
-      quote: { kind: 'JustText', text: quotedText },
     });
     const status = messageToStatus(boostMsg, BASE, null, noopResolver, () => null);
-    expect(status.reblog).not.toBeNull();
-    expect(status.reblog?.account.acct).toBe(originalRef.addr);
-    expect(status.reblog?.account.display_name).toBe('remote author');
-    expect(status.reblog?.content).toBe('<p>something interesting</p>');
+    // 0002: never synthesized/attributed content.
+    expect(status.reblog).toBeNull();
+    expect(status.content).toBe('<p>[boosted post unavailable]</p>');
+    // The booster's OWN status; frontend distinguishes via pleroma.deltanet.
+    expect(status.pleroma.deltanet).toEqual({
+      placeholder: 'boost',
+      ref: { key: originalRef.keyString, addr: originalRef.addr },
+    });
   });
 
-  it('strips the boost marker itself from the outer status content', () => {
+  it('an unresolvable boost renders the placeholder text as content', () => {
     const boostMsg = makeMessage({ id: 9, text: buildBoostText(originalRef, UUID) });
     const status = messageToStatus(boostMsg, BASE);
-    expect(status.content).toBe('<p></p>');
+    expect(status.content).toBe('<p>[boosted post unavailable]</p>');
+    expect(status.reblog).toBeNull();
   });
 
   it('reports reblogs_count and reblogged from the resolver keyed by this message own mid', () => {
@@ -419,6 +422,34 @@ describe('messageToStatus: reaction tallies', () => {
     };
     const status = messageToStatus(msg, BASE, null, resolver);
     expect(status.pleroma.emoji_reactions).toEqual([{ name: '🎉', count: 2, me: true }]);
+  });
+});
+
+describe('messageToStatus: v2 envelope alt text (federated, replaces the mediaStore hack)', () => {
+  it('reads alt text from a v2 post envelope media.description when no explicit description is passed', async () => {
+    const { buildPostEnvelope } = await import('../src/envelope.js');
+    const msg = makeMessage({
+      id: 77,
+      text: buildPostEnvelope('a photo', UUID, { description: 'a sunset over the sea' }),
+      file: '/blob/x.png',
+      fileMime: 'image/png',
+    });
+    // No explicit `description` arg — the alt text comes from the envelope.
+    const status = messageToStatus(msg, BASE);
+    expect(status.content).toBe('<p>a photo</p>');
+    expect(status.media_attachments[0]?.description).toBe('a sunset over the sea');
+  });
+
+  it('an explicit description arg wins over the envelope value', async () => {
+    const { buildPostEnvelope } = await import('../src/envelope.js');
+    const msg = makeMessage({
+      id: 78,
+      text: buildPostEnvelope('a photo', UUID, { description: 'envelope alt' }),
+      file: '/blob/x.png',
+      fileMime: 'image/png',
+    });
+    const status = messageToStatus(msg, BASE, 'explicit alt');
+    expect(status.media_attachments[0]?.description).toBe('explicit alt');
   });
 });
 

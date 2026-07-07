@@ -7,11 +7,17 @@ import { writeFileSync } from 'node:fs';
 import { createStore, STORE_SCHEMA_VERSION } from '../src/store.js';
 import {
   buildBoostText,
+  buildPostText,
   buildReplyText,
   mintPostUuid,
   refFromToken,
   type RefToken,
 } from '../src/protocol.js';
+import {
+  buildBoostEnvelope,
+  buildPostEnvelope,
+  buildReplyEnvelope,
+} from '../src/envelope.js';
 import { makeMessage } from './entities.test.js';
 
 let dir: string;
@@ -930,7 +936,7 @@ describe('createStore: schema migration / re-index', () => {
     expect(store.listNotifications({})).toHaveLength(1);
 
     const raw = JSON.parse(readFileSync(filePath, 'utf8'));
-    expect(raw.schemaVersion).toBe(4);
+    expect(raw.schemaVersion).toBe(5);
     expect(raw.schemaVersion).toBe(STORE_SCHEMA_VERSION);
   });
 
@@ -989,6 +995,107 @@ describe('createStore: schema migration / re-index', () => {
 
     const raw = JSON.parse(readFileSync(filePath, 'utf8'));
     expect(raw.schemaVersion).toBe(STORE_SCHEMA_VERSION);
+  });
+
+  it('v4 -> v5 migration does not re-notify for legacy events (dedupe continuity across the JSON-envelope switch)', () => {
+    // v4->v5 concern: wire v2 (JSON envelopes) changes how a message's uuid is
+    // read, but NOT the keyspace. Legacy messages carry no uuid at all (neither
+    // a `⚑` marker nor a v2 `uuid` field), so `postKey` falls back to the
+    // canonical mid — the SAME key era-3/era-4 dedupe used. A v4->v5 re-index
+    // therefore recomputes identical `type:addr:mid[:emoji]` keys, preserved by
+    // migration, so a historical event never re-notifies.
+    const v4 = {
+      schemaVersion: 4,
+      midToMsgId: { 'reply@x': 5, 'p@x': 1 },
+      msgIdToMid: { 1: 'p@x', 5: 'reply@x' },
+      msgIdToKey: { 1: 'p@x', 5: 'reply@x' },
+      uuidToMsgIds: {},
+      uuidFeedMsgId: {},
+      replyChildren: { 'p@x': ['reply@x'] },
+      boostsByMid: {},
+      ownBoosts: {},
+      ingestedMsgIds: [1, 5],
+      ownMids: ['p@x'],
+      reactions: { 'p@x': { 'bob@x': ['❤'] } },
+      canonicalByMid: {},
+      feedTextToMid: {},
+      dmPendingText: {},
+      notifications: [
+        { id: '1', type: 'mention', createdAt: '2020-01-01T00:00:00.000Z', accountAddr: 'bob@x', statusMsgId: 5 },
+        { id: '2', type: 'favourite', createdAt: '2020-01-01T00:00:00.000Z', accountAddr: 'bob@x' },
+      ],
+      notificationDedupeKeys: ['mention:bob@x:p@x', 'favourite:bob@x:p@x:❤'],
+      nextNotificationId: 3,
+      pendingFollowRequests: {},
+    };
+    writeFileSync(filePath, JSON.stringify(v4));
+
+    const store = createStore(filePath);
+    // Both historical notifications preserved.
+    expect(store.listNotifications({})).toHaveLength(2);
+
+    // Re-deriving the SAME legacy events (post key = canonical mid) dedupes.
+    const dupeMention = store.addNotification({
+      type: 'mention',
+      accountAddr: 'bob@x',
+      statusMsgId: 5,
+      dedupeMid: 'p@x',
+    });
+    const dupeFav = store.addNotification({
+      type: 'favourite',
+      accountAddr: 'bob@x',
+      dedupeMid: 'p@x',
+      dedupeEmoji: '❤',
+    });
+    expect(dupeMention).toBeNull();
+    expect(dupeFav).toBeNull();
+    expect(store.listNotifications({})).toHaveLength(2);
+
+    const raw = JSON.parse(readFileSync(filePath, 'utf8'));
+    expect(raw.schemaVersion).toBe(5);
+    expect(raw.schemaVersion).toBe(STORE_SCHEMA_VERSION);
+  });
+});
+
+describe('createStore: mixed-era threads (v1 legacy parent + v2 reply/boost)', () => {
+  const PARENT_UUID = '11111111-2222-4333-8444-555555555555';
+  const REPLY_UUID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+  const BOOST_UUID = 'cccccccc-dddd-4eee-8fff-000000000000';
+  const AUTHOR = 'author@example.org';
+
+  it('a v2 reply targeting a legacy v1 parent uuid forms a thread edge', () => {
+    const store = createStore(filePath);
+    // Legacy v1 parent: `⚑` marker feeds postKey = PARENT_UUID.
+    store.ingestMessage(makeMessage({ id: 1, text: buildPostText('legacy parent', PARENT_UUID) }), 'parent@x', true);
+    // v2 reply targeting the parent's uuid.
+    const replyText = buildReplyEnvelope('a v2 reply', REPLY_UUID, { u: PARENT_UUID, addr: AUTHOR });
+    store.ingestMessage(makeMessage({ id: 2, text: replyText }), 'reply@x', true);
+
+    expect(store.childrenCount(PARENT_UUID)).toBe(1);
+    expect(store.replyChildren(PARENT_UUID)).toEqual([2]);
+    expect(store.resolveKey(REPLY_UUID)).toBe(2);
+  });
+
+  it('a v2 boost of a legacy v1 parent uuid registers a boost edge', () => {
+    const store = createStore(filePath);
+    store.ingestMessage(makeMessage({ id: 1, text: buildPostText('legacy parent', PARENT_UUID), fromId: 1 }), 'parent@x', true);
+    const boostText = buildBoostEnvelope(BOOST_UUID, { u: PARENT_UUID, addr: AUTHOR });
+    store.ingestMessage(makeMessage({ id: 3, text: boostText }), 'boost@x', true);
+
+    expect(store.boostCount(PARENT_UUID)).toBe(1);
+    expect(store.boostsByMid(PARENT_UUID)).toEqual([3]);
+  });
+
+  it('a legacy v1 reply targeting a v2 parent uuid also forms a thread edge (symmetric)', () => {
+    const store = createStore(filePath);
+    // v2 parent.
+    store.ingestMessage(makeMessage({ id: 1, text: buildPostEnvelope('v2 parent', PARENT_UUID) }), 'parent@x', true);
+    // Legacy v1 reply targeting the parent uuid.
+    const replyText = buildReplyText('legacy re', refFromToken({ kind: 'uuid', uuid: PARENT_UUID }, AUTHOR), REPLY_UUID);
+    store.ingestMessage(makeMessage({ id: 2, text: replyText }), 'reply@x', true);
+
+    expect(store.childrenCount(PARENT_UUID)).toBe(1);
+    expect(store.replyChildren(PARENT_UUID)).toEqual([2]);
   });
 });
 

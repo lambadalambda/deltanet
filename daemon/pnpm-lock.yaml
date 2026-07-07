@@ -9,10 +9,10 @@ importers:
   .:
     dependencies:
       '@deltachat/jsonrpc-client':
-        specifier: ^2.53.0
+        specifier: 2.53.0
         version: 2.53.0(ws@8.21.0)
       '@deltachat/stdio-rpc-server':
-        specifier: ^2.53.0
+        specifier: 2.53.0
         version: 2.53.0(@deltachat/jsonrpc-client@2.53.0(ws@8.21.0))
       '@hono/node-server':
         specifier: ^2.0.8

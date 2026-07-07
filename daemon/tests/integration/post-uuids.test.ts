@@ -13,6 +13,7 @@ import type { Transport } from '../../src/transport/types.js';
 import { createStore, type Store } from '../../src/store.js';
 import { createApp, type AppContext } from '../../src/server.js';
 import { deriveOnIngest } from '../../src/ingest.js';
+import { parseWire, parseWireUuid } from '../../src/wire.js';
 
 /**
  * Acceptance topology from ../meta/issues/post-uuids.md, over real chatmail
@@ -77,18 +78,22 @@ describe('post-uuid third-party thread resolution over chatmail', () => {
     throw new Error('timed out waiting for feed message');
   };
 
+  /** The human body of a wire message (v2 envelope `text`, or legacy body). */
+  const bodyOf = (m: T.Message): string => parseWire(m.text).body;
+
   /**
    * Locate the DM copy of a reply on a recipient who is NOT a follower of the
-   * replier: the message whose body starts with `text` and lands in a 1:1 chat
-   * (not any feed timeline). Under v1 the DM copy carries a `⚑` uuid marker (and
-   * NO `⚓` — the shared uuid subsumes it). Probes a small id window.
+   * replier: the message whose parsed body starts with `text` and lands in a
+   * 1:1 chat (not any feed timeline). Under wire v2 the DM copy is a JSON reply
+   * envelope carrying a `uuid` field (byte-identical to the feed copy). Probes a
+   * small id window.
    */
   const findDmCopy = async (t: Transport, text: string): Promise<T.Message | null> => {
     const feedIds = new Set((await t.timeline({ limit: 40 })).map((m) => m.id));
     for (let id = 1; id < 400; id++) {
       if (feedIds.has(id)) continue;
       const msg = await t.message(id).catch(() => null);
-      if (msg && msg.text.startsWith(text) && msg.text.includes('⚑')) return msg;
+      if (msg && bodyOf(msg).startsWith(text) && parseWireUuid(msg.text) !== null) return msg;
     }
     return null;
   };
@@ -163,10 +168,10 @@ describe('post-uuid third-party thread resolution over chatmail', () => {
     });
     expect(aPostRes.status).toBe(200);
 
-    // A plain v1 post carries a trailing `⚑ <uuid>` marker, so match on the body
-    // prefix rather than exact equality.
-    const aPostOnB = await waitFor(b, (m) => m.text.startsWith(postText));
-    const aPostOnC = await waitFor(c, (m) => m.text.startsWith(postText));
+    // A plain v2 post is a JSON envelope whose human text is a field, so match
+    // on the parsed body prefix rather than the raw text.
+    const aPostOnB = await waitFor(b, (m) => bodyOf(m).startsWith(postText));
+    const aPostOnC = await waitFor(c, (m) => bodyOf(m).startsWith(postText));
 
     // --- B replies to A's post (feed copy to C, DM copy to A) ---
     const bReplyText = `B reply ${Date.now()}`;
@@ -178,7 +183,7 @@ describe('post-uuid third-party thread resolution over chatmail', () => {
     expect(bReplyRes.status).toBe(200);
 
     // C receives B's reply on C's feed of B.
-    const bReplyOnC = await waitFor(c, (m) => m.text.startsWith(bReplyText));
+    const bReplyOnC = await waitFor(c, (m) => bodyOf(m).startsWith(bReplyText));
 
     // A receives B's reply ONLY as a DM copy (A doesn't follow B). It carries a
     // `⚑` uuid — the SAME uuid B's feed copy carries.
@@ -193,7 +198,14 @@ describe('post-uuid third-party thread resolution over chatmail', () => {
       throw new Error('timed out waiting for DM copy on A');
     };
     const dmOnA = await waitDm();
-    expect(dmOnA.text).toContain('⚑');
+    // The DM copy is a v2 reply envelope (no marker glyphs) carrying a uuid.
+    expect(dmOnA.text).not.toContain('⚑');
+    expect(dmOnA.text).not.toContain('↳re');
+    expect(parseWire(dmOnA.text).reply, 'DM copy is a v2 reply envelope').toBeDefined();
+    // The DM copy and B's FEED copy share ONE logical-post uuid (byte-identical
+    // envelopes), which is what lets A's reply-to-reply (minted against the DM
+    // copy) resolve to B's feed copy on C.
+    expect(parseWireUuid(dmOnA.text)).toBe(parseWireUuid(bReplyOnC.text));
 
     // --- A replies to B's reply (acting on the DM copy A holds) ---
     // A's reply refs B's reply by its UUID, so it resolves on any node holding
@@ -207,7 +219,7 @@ describe('post-uuid third-party thread resolution over chatmail', () => {
     expect(aReplyRes.status).toBe(200);
 
     // A is a follower target of C, so A's reply-to-reply reaches C on C's feed of A.
-    const aReplyOnC = await waitFor(c, (m) => m.text.startsWith(aReplyText));
+    const aReplyOnC = await waitFor(c, (m) => bodyOf(m).startsWith(aReplyText));
 
     // ---- The full thread renders connected on C (feed copies only) ----
     // C holds: A's post, B's feed reply, A's feed reply-to-reply. Assert:

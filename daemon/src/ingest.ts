@@ -7,14 +7,14 @@
  * `Store` + fake messages, no transport required.
  */
 import type { T } from '@deltachat/jsonrpc-client';
+import { type RefToken } from './protocol.js';
+import { buildInviteGrantEnvelope } from './envelope.js';
 import {
-  buildInviteGrantText,
-  parseInviteGrant,
-  parseInviteRequest,
-  parseMarkers,
-  parseReaction,
-  type RefToken,
-} from './protocol.js';
+  parseWire,
+  parseWireInviteGrant,
+  parseWireInviteRequest,
+  parseWireReaction,
+} from './wire.js';
 import type { Notification, Store } from './store.js';
 import type { Transport } from './transport/types.js';
 
@@ -77,7 +77,7 @@ export const deriveOnIngest = (
     // re-indexed store recovers reactions we made. Pure: only touches the
     // reaction store, keyed by our own address.
     if (ownAddr) {
-      const reaction = parseReaction(msg.text);
+      const reaction = parseWireReaction(msg.text);
       if (reaction) {
         const targetKey = refKey(store, reaction.ref);
         if (reaction.kind === 'react') store.applyReaction(targetKey, ownAddr, reaction.emoji);
@@ -91,7 +91,7 @@ export const deriveOnIngest = (
   const accountContactId = msg.fromId;
   const created: Notification[] = [];
 
-  const reaction = parseReaction(msg.text);
+  const reaction = parseWireReaction(msg.text);
   if (reaction) {
     // Resolve the target to its POST KEY (uuid, or the canonical mid for a mid
     // ref) so an interaction referencing a DM copy applies to (and notifies
@@ -125,7 +125,7 @@ export const deriveOnIngest = (
     return created;
   }
 
-  const parsed = parseMarkers(msg.text);
+  const parsed = parseWire(msg.text);
 
   if (parsed.reply) {
     const parentKey = refKey(store, parsed.reply.key);
@@ -202,11 +202,11 @@ export const deriveFollowbackActions = (
   if (msg.fromId === DC_CONTACT_ID_SELF) return [];
   const text = msg.text;
 
-  if (parseInviteRequest(text)) {
+  if (parseWireInviteRequest(text)) {
     return [{ kind: 'grant-invite', toContactId: msg.fromId }];
   }
 
-  const link = parseInviteGrant(text);
+  const link = parseWireInviteGrant(text);
   if (link) {
     const fromAddr = msg.sender.address;
     if (store.hasPendingFollowRequest(fromAddr)) {
@@ -234,7 +234,7 @@ export const executeFollowbackAction = async (
 ): Promise<void> => {
   if (action.kind === 'grant-invite') {
     const invite = await transport.feedInvite();
-    await transport.sendControlDm(action.toContactId, buildInviteGrantText(invite));
+    await transport.sendControlDm(action.toContactId, buildInviteGrantEnvelope(invite));
     return;
   }
 

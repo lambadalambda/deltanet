@@ -7,6 +7,7 @@ import {
   buildInviteGrantText,
   buildInviteRequestText,
 } from '../src/protocol.js';
+import { buildInviteGrantEnvelope } from '../src/envelope.js';
 import {
   deriveFollowbackActions,
   executeFollowbackAction,
@@ -114,7 +115,7 @@ describe('executeFollowbackAction: grant-invite', () => {
   it('replies to the requester with our feed invite', async () => {
     const { transport, dms } = makeFakeTransport();
     await executeFollowbackAction(store, transport, { kind: 'grant-invite', toContactId: 11 });
-    expect(dms).toEqual([{ contactId: 11, text: buildInviteGrantText(INVITE) }]);
+    expect(dms).toEqual([{ contactId: 11, text: buildInviteGrantEnvelope(INVITE) }]);
   });
 });
 
@@ -161,7 +162,7 @@ describe('runFollowbackOnIngest: execute-once gating (freshness)', () => {
     await liveIngest(transport, msg, 'req-mid@example.org'); // MsgsChanged double-delivery
 
     expect(dms).toHaveLength(1);
-    expect(dms[0]).toEqual({ contactId: 11, text: buildInviteGrantText(INVITE) });
+    expect(dms[0]).toEqual({ contactId: 11, text: buildInviteGrantEnvelope(INVITE) });
   });
 
   it('joins exactly once when the same grant msgId is processed twice', async () => {

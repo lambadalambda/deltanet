@@ -3,7 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { T } from '@deltachat/jsonrpc-client';
-import { parseCanonicalMid, parseMarkers, parsePostUuid } from './protocol.js';
+import { parseCanonicalMid, parseMarkers } from './protocol.js';
+import { parseWire, parseWireUuid } from './wire.js';
 
 const DC_CONTACT_ID_SELF = 1;
 
@@ -30,8 +31,16 @@ const DC_CONTACT_ID_SELF = 1;
  * `postKey(msg) = parsed uuid ?? canonicalize(mid)`, and a new uuid->msgId index
  * (preferring feed copies) backs `resolveKey`. The `migrate` drop covers the new
  * uuid index too, so a v3 store re-indexes into the post-key shape on restart.
+ * Version 5 introduced wire convention v2 (JSON envelopes, see ../DEVLOG.md +
+ * docs/decisions.md 0001): every ingest now parses through `parseWire`/
+ * `parseWireUuid` (v2 envelope first, then the v0/v1 markers for existing
+ * histories), so a re-index parses mixed-era data consistently. The post-key
+ * keyspace is unchanged conceptually — a v2 message's `uuid` field feeds
+ * `postKey` exactly as the v1 `⚑` marker did — so dedupe keys are continuous:
+ * legacy messages still derive the same `type:addr:mid[:emoji]` keys (they
+ * carry no uuid, so `postKey` falls back to the canonical mid, as before).
  */
-export const STORE_SCHEMA_VERSION = 4;
+export const STORE_SCHEMA_VERSION = 5;
 
 export type NotificationType =
   | 'follow'
@@ -189,14 +198,16 @@ const emptyData = (): StoreData => ({
  * notifications + dedupe keys + pending requests + the next notification id — so
  * re-derivation can never duplicate-notify and no user-visible history is lost.
  *
- * DEDUPE SAFETY across the v3->v4 post-key switch: legacy messages carry no `⚑`
- * uuid marker, so `postKey` falls back to the canonical mid for them — exactly
- * the key era-3 dedupe keys were computed under. Re-deriving notifications for
- * pre-v1 events therefore recomputes the SAME `type:addr:mid[:emoji]` dedupe
- * keys, which are preserved here, so a v3->v4 re-index never re-notifies for
- * historical events. (Only v1 messages, which never existed in a v3 store, key
- * by uuid.) Never touches any Delta Chat database; a QA node heals on a plain
- * restart. Pure.
+ * DEDUPE SAFETY across the post-key switches (v3->v4 uuid markers, v4->v5 JSON
+ * envelopes): legacy messages carry no uuid at all (neither a `⚑` marker nor a
+ * v2 `uuid` field), so `postKey` falls back to the canonical mid for them —
+ * exactly the key era-3 dedupe keys were computed under. Re-deriving
+ * notifications for pre-v1 events therefore recomputes the SAME
+ * `type:addr:mid[:emoji]` dedupe keys, which are preserved here, so a re-index
+ * never re-notifies for historical events. A v2 message keys by its `uuid`
+ * field exactly as a v1 message keyed by its `⚑` marker — same keyspace, so
+ * uuid-keyed dedupe is likewise continuous. Never touches any Delta Chat
+ * database; a QA node heals on a plain restart. Pure.
  */
 const migrate = (old: StoreData): StoreData => ({
   ...emptyData(),
@@ -357,7 +368,7 @@ export const createStore = (filePath: string): Store => {
    * keyspace all derived indices (edges, tallies, boosts, ownMids) key by.
    * Pure: `mid` is this message's own rfc724 Message-ID.
    */
-  const postKey = (text: string, mid: string): string => parsePostUuid(text) ?? canon(mid);
+  const postKey = (text: string, mid: string): string => parseWireUuid(text) ?? canon(mid);
 
   /**
    * The post key a reply/boost/reaction ref points at: a uuid ref targets that
@@ -523,7 +534,7 @@ export const createStore = (filePath: string): Store => {
       // canonicalizes correctly.
       learnAlias(d, msg, mid, isFeedMessage);
 
-      const parsed = parseMarkers(msg.text);
+      const parsed = parseWire(msg.text);
 
       // Register the uuid->msgId index for every copy carrying a `⚑` marker.
       // Record the feed copy specially so `resolveKey` can prefer it when

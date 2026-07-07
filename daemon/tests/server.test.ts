@@ -5,7 +5,8 @@ import type { T } from '@deltachat/jsonrpc-client';
 import { createApp, type AppContext } from '../src/server.js';
 import type { TimelineQuery, Transport } from '../src/transport/types.js';
 import { createStore, ephemeralStorePath } from '../src/store.js';
-import { buildInviteRequestText, buildReplyText, mintPostUuid, refFromToken, type RefToken } from '../src/protocol.js';
+import { buildReplyText, mintPostUuid, refFromToken, type RefToken } from '../src/protocol.js';
+import { buildInviteRequestEnvelope } from '../src/envelope.js';
 
 /** A mid-targeting ref token (legacy targets keyed by mid). */
 const midTok = (mid: string): RefToken => ({ kind: 'mid', mid });
@@ -609,7 +610,7 @@ describe('media uploads', () => {
 });
 
 describe('POST /api/v1/statuses with in_reply_to_id', () => {
-  it('posts a reply to own feed with a marker + quotedText, and DMs the author', async () => {
+  it('posts a reply to own feed as a v2 envelope (no quotedText) and DMs the author byte-identically', async () => {
     const { transport, posts, dms } = makeFakeTransport();
     const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
 
@@ -622,23 +623,25 @@ describe('POST /api/v1/statuses with in_reply_to_id', () => {
     const status = await res.json() as any;
     expect(status.in_reply_to_id).toBe('12');
 
-    // one post to our own feed, carrying the marker + quotedText
+    // One post to our own feed: a v2 reply envelope with the human text as a
+    // field and the parent ref. No quotedText bubble (0001).
     expect(posts).toHaveLength(1);
-    expect(posts[0]?.text).toContain('nice post!');
-    expect(posts[0]?.text).toContain('mid-12@example.org');
-    expect(posts[0]?.text).toContain(BOB.address);
-    expect(posts[0]?.quotedText).toContain('bob');
+    const env = JSON.parse(posts[0]!.text);
+    expect(env).toMatchObject({ dn: 2, type: 'reply', text: 'nice post!' });
+    expect(env.ref.mid).toBe('mid-12@example.org');
+    expect(env.ref.addr).toBe(BOB.address);
+    expect(posts[0]?.quotedText ?? null).toBeNull();
 
-    // a DM copy goes to the author (bob, contact id 11), byte-identical to the
-    // feed copy — both carry the SAME `⚑` logical-post uuid (wire convention
-    // v1), so a node holding either copy unifies the one logical reply. The DM
-    // copy no longer carries a `⚓` canonical marker (the shared uuid subsumes it).
+    // A DM copy goes to the author (bob, contact id 11), BYTE-IDENTICAL to the
+    // feed copy — same uuid — so a node holding either copy unifies the one
+    // logical reply.
     expect(dms).toHaveLength(1);
     expect(dms[0]?.contactId).toBe(11);
     expect(dms[0]?.text).toBe(posts[0]?.text);
-    // Both copies carry a `⚑` uuid marker; neither carries the legacy `⚓` marker.
-    expect(posts[0]?.text).toContain('⚑ ');
+    // No legacy marker glyphs anywhere.
+    expect(posts[0]?.text).not.toContain('⚑');
     expect(posts[0]?.text).not.toContain('⚓');
+    expect(posts[0]?.text).not.toContain('↳re');
   });
 
   it('does not send a DM when replying to your own post', async () => {
@@ -730,7 +733,7 @@ describe('acting on a DM copy uses the canonical mid (issue point 5)', () => {
 });
 
 describe('POST /api/v1/statuses/:id/reblog and unreblog', () => {
-  it('boosts a status: posts a marker to own feed and returns a status with reblog embedded', async () => {
+  it('boosts a status: posts a v2 boost envelope (ref only, no embedded content) and returns a status with reblog embedded', async () => {
     const { transport, posts } = makeFakeTransport();
     const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
 
@@ -742,10 +745,15 @@ describe('POST /api/v1/statuses/:id/reblog and unreblog', () => {
     expect(status.reblog.content).toBe('<p>newest, from bob</p>');
     expect(status.reblogged).toBe(true);
 
+    // The emitted boost is a v2 envelope: type:"boost" + ref, no embedded
+    // original content (0002 — embedding returns with attestations later).
     expect(posts).toHaveLength(1);
-    expect(posts[0]?.text).toContain('mid-12@example.org');
-    expect(posts[0]?.text).toContain(BOB.address);
-    expect(posts[0]?.quotedText).toContain('newest, from bob');
+    const env = JSON.parse(posts[0]!.text);
+    expect(env).toMatchObject({ dn: 2, type: 'boost' });
+    expect(env.ref.mid).toBe('mid-12@example.org');
+    expect(env.ref.addr).toBe(BOB.address);
+    expect(env.text).toBeUndefined();
+    expect(posts[0]?.quotedText ?? null).toBeNull();
   });
 
   it('404s boosting an unknown status', async () => {
@@ -777,27 +785,30 @@ describe('POST /api/v1/statuses/:id/reblog and unreblog', () => {
   });
 });
 
-describe('status mapping: boost from a follower (synthesized reblog)', () => {
-  it('synthesizes a reblog embed when the boosted mid is unknown locally', async () => {
+describe('status mapping: boost from a follower (unresolvable -> placeholder)', () => {
+  it('renders an honest placeholder (reblog:null) when the boosted target is unknown locally', async () => {
     const { transport, messages } = makeFakeTransport();
     const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
 
-    const { buildBoostText, buildQuotedText } = await import('../src/protocol.js');
+    const { buildBoostText } = await import('../src/protocol.js');
     const ref = midRef('unknown-mid@remote.org', 'remote@remote.org');
     messages.push({
       ...messages[0]!,
       id: 500,
       text: buildBoostText(ref, mintPostUuid()),
-      quote: { kind: 'JustText', text: buildQuotedText('remote person', 'something neat', 500) },
       fromId: 11,
       sender: BOB,
     } as any);
 
     const status = await (await app.request('/api/v1/statuses/500')).json() as any;
-    expect(status.reblog).not.toBeNull();
-    expect(status.reblog.account.acct).toBe('remote@remote.org');
-    expect(status.reblog.account.display_name).toBe('remote person');
-    expect(status.reblog.content).toBe('<p>something neat</p>');
+    // 0002: no synthesized/attributed content; the booster's own status carries
+    // the placeholder + a deltanet marker so the frontend can render it.
+    expect(status.reblog).toBeNull();
+    expect(status.content).toBe('<p>[boosted post unavailable]</p>');
+    expect(status.pleroma.deltanet).toEqual({
+      placeholder: 'boost',
+      ref: { key: 'unknown-mid@remote.org', addr: 'remote@remote.org' },
+    });
   });
 });
 
@@ -967,7 +978,10 @@ describe('POST /api/v1/statuses/:id/favourite and unfavourite', () => {
     expect(status.favourites_count).toBe(0);
 
     expect(dms).toHaveLength(2);
-    expect(dms[1]?.text).toContain('✖');
+    // The retraction DM is a v2 unreact envelope.
+    const env = JSON.parse(dms[1]!.text);
+    expect(env).toMatchObject({ dn: 2, type: 'unreact', emoji: '❤' });
+    expect(dms[1]?.text).not.toContain('✖');
   });
 
   it('404s favouriting an unknown status', async () => {
@@ -1104,11 +1118,11 @@ describe('POST /api/v1/accounts/:id/unfollow and /follow', () => {
     expect(rel.following).toBe(false);
     expect(rel.requested).toBe(true);
 
-    // An invite-request DM was sent to bob (contact 11), with a friendly quote.
+    // A v2 invite-request envelope DM was sent to bob (contact 11), no quote (0001).
     expect(dms).toHaveLength(1);
     expect(dms[0]?.contactId).toBe(11);
-    expect(dms[0]?.text).toBe(buildInviteRequestText());
-    expect(dms[0]?.quotedText).toBeTypeOf('string');
+    expect(dms[0]?.text).toBe(buildInviteRequestEnvelope());
+    expect(dms[0]?.quotedText ?? null).toBeNull();
 
     // Pending recorded against bob's address.
     expect(store.hasPendingFollowRequest(BOB.address)).toBe(true);

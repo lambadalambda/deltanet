@@ -1478,3 +1478,105 @@ throwaway test relay.
   (~146s), twice in a row including from a cold `podman rm`-ed state.
 
 Image ~1.1 GB. First build a few minutes; subsequent boots ~20-30s to healthy.
+
+## 2026-07-07 — wire convention v2: JSON envelope bodies (decisions 0001/0002)
+
+Per docs/decisions.md 0001 (hard cut from vanilla-DC rendering compat) and
+0002 (no synthesized statuses), the whole message body is now a single
+**versioned JSON envelope** instead of the v0/v1 text markers. This kills the
+in-band ambiguity class (a real chat message like `♻ hello` can no longer be
+misread as protocol) and lifts the one-glyph-per-verb ceiling.
+
+### The envelope (src/envelope.ts)
+
+The ENTIRE message text is one JSON object:
+
+```
+{"dn":2,"type":"post"|"reply"|"boost"|"react"|"unreact"
+        |"invite-request"|"invite-grant",
+ "uuid":"...", "text":"...", "ref":{...}, "media":{"description":...},
+ "emoji":"...", "link":"..."}
+```
+
+- `dn` gates parsing: **strict `dn===2`**. Wrong/missing `dn`, unknown `type`,
+  malformed JSON, a JSON array/scalar → `parseEnvelope` returns null and the
+  text is treated as **plain human content** (an external sender's real chat
+  message must never crash or misparse).
+- Refs are typed: `{"u":"<uuid>","addr":"..."}` (uuid-first) or
+  `{"mid":"<mid>","addr":"..."}` (legacy targets). `addr` rides along for
+  attribution/notification without a lookup.
+- `media.description` carries **persistent, federated alt text** on posts/
+  replies with attachments — this REPLACES the in-memory mediaStore alt-text
+  hack (chatmail has no per-attachment alt field). The mediaStore registry is
+  kept ONLY for pre-send upload staging (`/api/v1/media` → post attach).
+- Reserved and never emitted / never repurposed: **`pubkey`, `sig`** (post
+  attestations, design-sketch #6). Unknown fields are ignored (forward-compat).
+
+### Emission is v2-only; reads are mixed-era
+
+ALL protocol messages emit v2 (posts, replies incl. the DM copy — byte-
+identical to the feed copy, SAME uuid — boosts, react/unreact DMs, invite-
+request/grant). No `quotedText` anywhere (compat bubbles retired). Boost is
+`type:"boost"` + ref: per 0002 it does NOT embed the original content
+(unverifiable embedding returns WITH attestations later).
+
+`src/wire.ts` is the single read seam: `parseWire`/`parseWireUuid`/
+`parseWireReaction`/`parseWireInviteRequest`/`parseWireInviteGrant` try the v2
+envelope FIRST, then fall back to the v0/v1 marker parsers (src/protocol.ts,
+kept read-side for existing histories — NOT deleted), then plain text. Store,
+ingest, mapping, entities, and server all read through this seam, so a mixed-
+era thread (legacy `⚑`/`⚓`/`↳re` parent + v2 reply, or the reverse) resolves
+consistently. The post-key keyspace is unchanged: a v2 `uuid` field feeds
+`postKey` exactly as the v1 `⚑` marker did.
+
+### No synthesized statuses (0002)
+
+`synthesizeStatus`/`synthesizeAccount` are **removed entirely** (grep-clean).
+An unresolvable boost (any era) now renders as the BOOSTER's own status:
+`content` = a fixed placeholder (`[boosted post unavailable]`), `reblog: null`,
+plus `pleroma.deltanet: {placeholder:"boost", ref:{key,addr}}` so the frontend
+distinguishes it. A resolvable boost still embeds the recipient's own verified
+copy. The notification-account fallback (a real, core-PGP-verified interaction
+author whose Contact row we lack) moved to `addrToAccount` — NOT synthesized
+content attribution, just a display shell; id `0` marks it non-resolvable.
+
+### Store schema v5
+
+`STORE_SCHEMA_VERSION = 5` (re-index parses mixed-era data via `parseWire`).
+`migrate` drops the derived indices and keeps notifications/dedupe/pending as
+before. **Dedupe continuity**: legacy messages carry no uuid (neither `⚑` nor a
+v2 `uuid` field), so `postKey` falls back to the canonical mid — the same key
+era-3/era-4 dedupe used. A v4→v5 re-index recomputes identical
+`type:addr:mid[:emoji]` keys (preserved), so no historical event re-notifies
+(proven by a v4→v5 unit test).
+
+### Also: DC-core version pinning (separate small item)
+
+`@deltachat/stdio-rpc-server` and `@deltachat/jsonrpc-client` are pinned to
+EXACT `2.53.0` (dropped `^`) with a `comments.deltachat-core-pinning` note in
+package.json: the core is the federation substrate, so a bump changes wire/
+securejoin/RPC behavior and must be a deliberate, tested event — never an
+incidental float. Bump both together and re-run the integration suite.
+
+### Wire-convention status
+
+v2 (JSON envelope) is THE format. v0 (bare markers) / v1 (`⚑` uuid + `⚓`
+canonical) are **read-only legacy** — parsed for existing histories, never
+emitted. Revisit dropping the read-side parsers once test-era data stops
+mattering (per 0001).
+
+### Tests
+
+- Unit (643, was 580): NEW `envelope.test.ts` (round-trips, strict `dn===2`
+  gate, malformed-JSON→null, array/scalar rejection, unknown-field tolerance,
+  reserved-field absence, pretty-print) + `wire.test.ts` (v2-first then legacy
+  then plain, per verb). entities: unresolvable boost → placeholder (no
+  synthesize), v2 envelope federated alt text. store: mixed-era threads
+  (v1 parent + v2 reply, and the symmetric case), v2 boost of a legacy parent,
+  v4→v5 no-double-notify migration. server: reply/boost/react/invite paths
+  assert emitted v2 envelopes + no quotedText + no marker glyphs.
+- Integration (local podman relay): existing DM-copy detection switched from
+  `⚑`-marker sniffing to v2-envelope parse (`parseWireUuid`); `post-uuids`
+  extended to assert the DM copy and B's feed copy share ONE uuid (byte-
+  identical envelopes) and that a v2 reply resolves against a v2 parent cross-
+  node on third-party C.

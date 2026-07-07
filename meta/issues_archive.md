@@ -20,3 +20,4 @@
 - [x] [Wire convention v1: logical post UUIDs](issues/post-uuids.md)
 - [x] [Non-follower nodes: DM-only replies invisible; own reactions lost on re-index](issues/non-follower-thread-rendering.md)
 - [x] [Podman-based ephemeral chatmail relay for integration tests](issues/podman-test-relay.md)
+- [x] [Wire format v2: structured JSON bodies](issues/wire-v2-json.md)

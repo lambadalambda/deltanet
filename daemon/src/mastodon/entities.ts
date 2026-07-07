@@ -1,7 +1,16 @@
 import type { T } from '@deltachat/jsonrpc-client';
-import { parseMarkers, parseQuotedAuthor, type MsgRef } from '../protocol.js';
+import { parseWire } from '../wire.js';
 
 const DC_CONTACT_ID_SELF = 1;
+
+/**
+ * The fixed placeholder text for a boost whose target is not locally held
+ * (any era). Per decision 0002, deltanet never synthesizes attributed content:
+ * an unresolvable boost renders as the BOOSTER's own status with this honest
+ * placeholder body and `reblog: null` — never fabricated author content. The
+ * frontend distinguishes it via `pleroma.deltanet.placeholder`.
+ */
+export const BOOST_PLACEHOLDER_TEXT = '[boosted post unavailable]';
 
 export type MastodonAccount = ReturnType<typeof contactToAccount>;
 
@@ -36,7 +45,7 @@ export type MastodonStatus = {
   url: string;
   content: string;
   created_at: string;
-  account: MastodonAccount | ReturnType<typeof synthesizeAccount>;
+  account: MastodonAccount;
   in_reply_to_id: string | null;
   in_reply_to_account_id: string | null;
   favourites_count: number;
@@ -66,6 +75,13 @@ export type MastodonStatus = {
     quote: null;
     quote_id: null;
     quote_visible: boolean;
+    /**
+     * deltanet-specific marker for a status the frontend must render specially.
+     * Present only on an unresolvable boost (any era): `placeholder: 'boost'`
+     * with the target `ref` so the UI can show an honest "boosted a post that
+     * cannot be displayed" affordance instead of attributed content (0002).
+     */
+    deltanet?: { placeholder: 'boost'; ref: { key: string; addr: string } };
   };
 };
 
@@ -146,6 +162,41 @@ export const contactToAccount = (
   };
 };
 
+/**
+ * A minimal Mastodon account built from an address alone, for a notification
+ * whose sender is a real (core-PGP-verified on delivery) interaction author
+ * whose `Contact` object we don't currently hold. This is NOT synthesized
+ * content attribution (decision 0002 governs *statuses/status authors*): the
+ * interaction itself was verified by core, we simply lack the contact row to
+ * enrich the display. Id `0` marks it as non-resolvable to a local contact.
+ */
+export const addrToAccount = (addr: string, baseUrl: string) => {
+  const username = addr.split('@')[0] ?? addr;
+  return {
+    id: '0',
+    username,
+    acct: addr,
+    display_name: username,
+    note: '',
+    url: `${baseUrl}/deltanet/contact/0`,
+    avatar: `${baseUrl}/deltanet/avatar/0`,
+    avatar_static: `${baseUrl}/deltanet/avatar/0`,
+    header: `${baseUrl}/deltanet/header.png`,
+    header_static: `${baseUrl}/deltanet/header.png`,
+    created_at: new Date(0).toISOString(),
+    followers_count: 0,
+    following_count: 0,
+    statuses_count: 0,
+    locked: false,
+    bot: false,
+    discoverable: false,
+    fields: [],
+    emojis: [],
+    source: { note: '', fields: [] },
+    pleroma: { is_admin: false, is_moderator: false, tags: [] },
+  };
+};
+
 /** A Mastodon mention entry for `contact`, using the same id/username/acct/url values `contactToAccount` would. */
 const contactToMention = (contact: T.Contact, baseUrl: string): MastodonMention => {
   const username = contact.address.split('@')[0] ?? contact.address;
@@ -206,88 +257,22 @@ export const noopResolver: StatusResolver = {
 
 const FAVOURITE_EMOJI = '❤';
 
-/** A minimal, non-resolvable account for a boost/reply whose author we can't map to a real contact. */
-/** A minimal, non-resolvable account for an address we can't map to a real contact (e.g. a boost/reply author, or a notification's sender before their contact is known). */
-export const synthesizeAccount = (authorName: string | null, addr: string, baseUrl: string) => {
-  const username = addr.split('@')[0] ?? addr;
-  return {
-    id: '0',
-    username,
-    acct: addr,
-    display_name: authorName ?? username,
-    note: '',
-    url: `${baseUrl}/deltanet/contact/0`,
-    avatar: `${baseUrl}/deltanet/avatar/0`,
-    avatar_static: `${baseUrl}/deltanet/avatar/0`,
-    header: `${baseUrl}/deltanet/header.png`,
-    header_static: `${baseUrl}/deltanet/header.png`,
-    created_at: new Date(0).toISOString(),
-    followers_count: 0,
-    following_count: 0,
-    statuses_count: 0,
-    locked: false,
-    bot: false,
-    discoverable: false,
-    fields: [],
-    emojis: [],
-    source: { note: '', fields: [] },
-    pleroma: { is_admin: false, is_moderator: false, tags: [] },
-  };
-};
-
-/** A minimal, non-resolvable status embedded as `reblog` when we can't map the boosted mid to a real message. */
-const synthesizeStatus = (ref: MsgRef, quotedText: string | undefined, baseUrl: string): MastodonStatus => {
-  const { authorName, text } = parseQuotedAuthor(quotedText ?? '');
-  return {
-    id: `synthetic:${ref.keyString}`,
-    uri: `${baseUrl}/deltanet/synthetic/${encodeURIComponent(ref.keyString)}`,
-    url: `${baseUrl}/deltanet/synthetic/${encodeURIComponent(ref.keyString)}`,
-    content: textToHtml(text),
-    created_at: new Date(0).toISOString(),
-    account: synthesizeAccount(authorName, ref.addr, baseUrl),
-    in_reply_to_id: null,
-    in_reply_to_account_id: null,
-    favourites_count: 0,
-    reblogs_count: 0,
-    replies_count: 0,
-    favourited: false,
-    reblogged: false,
-    bookmarked: false,
-    muted: false,
-    pinned: false,
-    media_attachments: [],
-    sensitive: false,
-    spoiler_text: '',
-    visibility: 'public' as const,
-    language: null,
-    reblog: null,
-    application: { name: 'deltanet' },
-    emojis: [],
-    mentions: [],
-    tags: [],
-    card: null,
-    poll: null,
-    pleroma: {
-      local: false,
-      conversation_id: null,
-      emoji_reactions: [],
-      quote: null,
-      quote_id: null,
-      quote_visible: false,
-    },
-  };
-};
-
 /**
  * `description` is the uploaded alt text for this message's attachment, if
  * we have it on hand (in-memory registry keyed by media/msg id) — chatmail
  * itself has no per-attachment alt text field.
  *
- * `resolver` maps deltanet wire-convention markers (see ../protocol.ts) to
- * real ids/counts via the per-account Store; a boosted/replied-to mid that
- * resolves to a locally-known message needs `resolveMessage` (the raw
- * message + its mapping) to embed the real status — passed as `resolveMessage`
- * since a full recursive mapping needs the message, not just its id.
+ * `resolver` maps the deltanet wire convention (v2 JSON envelopes, or the v0/v1
+ * markers read-side — see ../wire.ts) to real ids/counts via the per-account
+ * Store; a boosted/replied-to post that resolves to a locally-known message
+ * needs `resolveMessage` (the raw message + its mapping) to embed the real
+ * status — passed as `resolveMessage` since a full recursive mapping needs the
+ * message, not just its id.
+ *
+ * `description` (explicit alt text passed by the caller) wins; otherwise a v2
+ * envelope's own `media.description` field (persistent, federated alt text) is
+ * used, so a boosted/timelined image carries its alt text without the caller
+ * holding an out-of-band registry entry.
  */
 export const messageToStatus = (
   msg: T.Message,
@@ -296,11 +281,14 @@ export const messageToStatus = (
   resolver: StatusResolver = noopResolver,
   resolveMessage: (msgId: number) => T.Message | null = () => null,
 ): MastodonStatus => {
-  const parsed = parseMarkers(msg.text);
-  // `parsed.body` has any marker line(s) stripped — the reply/boost marker AND
-  // the trailing `⚑ <uuid>` line every v1 message carries — so a plain v1 post
-  // never renders its uuid marker in content.
+  const parsed = parseWire(msg.text);
+  // `parsed.body` is the human text with all protocol structure removed (v2:
+  // the envelope's `text` field; legacy: marker/`⚑`/`⚓` lines stripped), so a
+  // plain post never renders wire structure in content.
   const bodyText = parsed.body;
+  // Alt text: explicit caller value wins; else the v2 envelope's federated
+  // `media.description`.
+  const altText = description ?? parsed.mediaDescription ?? null;
 
   // in_reply_to_id comes ONLY from a resolved reply-marker/uuid ref. We do NOT
   // fall back to `msg.parentId`: Delta Chat sets parentId from email References
@@ -320,13 +308,21 @@ export const messageToStatus = (
   const inReplyToAccountId = parentMsg ? String(parentMsg.sender.id) : null;
   const mentions = parentMsg ? [contactToMention(parentMsg.sender, baseUrl)] : [];
 
-  let reblog = null;
+  // A boost embeds the recipient's OWN verified copy when the target resolves
+  // locally; otherwise (any era) it renders as the BOOSTER's own status with a
+  // fixed placeholder body and `reblog: null` — never synthesized/attributed
+  // content (decision 0002). `boostPlaceholderRef` marks the latter so the
+  // frontend can render an honest "unavailable boost" affordance.
+  let reblog: MastodonStatus | null = null;
+  let boostPlaceholderRef: { key: string; addr: string } | null = null;
   if (parsed.boost) {
     const boostedMsgId = resolver.resolveMid(parsed.boost.keyString);
     const boostedMsg = boostedMsgId !== null ? resolveMessage(boostedMsgId) : null;
-    reblog = boostedMsg
-      ? messageToStatus(boostedMsg, baseUrl, null, resolver, resolveMessage)
-      : synthesizeStatus(parsed.boost, msg.quote?.text, baseUrl);
+    if (boostedMsg) {
+      reblog = messageToStatus(boostedMsg, baseUrl, null, resolver, resolveMessage);
+    } else {
+      boostPlaceholderRef = { key: parsed.boost.keyString, addr: parsed.boost.addr };
+    }
   }
 
   const ownMid = resolver.midForMsgId?.(msg.id) ?? null;
@@ -347,7 +343,7 @@ export const messageToStatus = (
     id: String(msg.id),
     uri: `${baseUrl}/deltanet/message/${msg.id}`,
     url: `${baseUrl}/deltanet/message/${msg.id}`,
-    content: textToHtml(bodyText),
+    content: textToHtml(boostPlaceholderRef ? BOOST_PLACEHOLDER_TEXT : bodyText),
     created_at: new Date(msg.timestamp * 1000).toISOString(),
     account: contactToAccount(msg.sender, baseUrl),
     in_reply_to_id: inReplyToId,
@@ -360,7 +356,7 @@ export const messageToStatus = (
     bookmarked: false,
     muted: false,
     pinned: false,
-    media_attachments: mediaAttachments(msg, baseUrl, description),
+    media_attachments: mediaAttachments(msg, baseUrl, altText),
     sensitive: false,
     spoiler_text: '',
     visibility: 'public' as const,
@@ -379,6 +375,9 @@ export const messageToStatus = (
       quote: null,
       quote_id: null,
       quote_visible: false,
+      ...(boostPlaceholderRef
+        ? { deltanet: { placeholder: 'boost' as const, ref: boostPlaceholderRef } }
+        : {}),
     },
   };
 };

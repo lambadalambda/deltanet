@@ -11,6 +11,7 @@ import {
 import { openRelayTransport, register } from './relay.js';
 import type { Transport } from '../../src/transport/types.js';
 import { createStore, type Store } from '../../src/store.js';
+import { buildInviteRequestEnvelope } from '../../src/envelope.js';
 import {
   deriveFollowbackActions,
   deriveOnIngest,
@@ -107,10 +108,10 @@ describe('follow-back via invite-request over chatmail', () => {
     const bobContactId = (await bJoinsA).contactId;
     expect(bobContactId).toBeGreaterThan(0);
 
-    // --- A follows B back: DM an invite-request, record pending ---
+    // --- A follows B back: DM a v2 invite-request envelope, record pending ---
     // This is exactly what the follow endpoint does; we drive the transport
     // directly here since the request must genuinely traverse the network.
-    await alice.sendControlDm(bobContactId, '⇋ invite-request', 'int-fb-alice would like to follow you');
+    await alice.sendControlDm(bobContactId, buildInviteRequestEnvelope());
     aliceStore.addPendingFollowRequest(bobCreds.addr, Date.now());
 
     // B's ingest sees the request, auto-grants (DMs its feed invite); A's

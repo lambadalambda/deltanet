@@ -8,13 +8,13 @@
  */
 import type { T } from '@deltachat/jsonrpc-client';
 import {
+  addrToAccount,
   contactToAccount,
   messageToStatus,
-  synthesizeAccount,
   type MastodonStatus,
   type StatusResolver,
 } from './mastodon/entities.js';
-import { parseMarkers } from './protocol.js';
+import { parseWire } from './wire.js';
 import type { Notification, Store } from './store.js';
 import type { Transport } from './transport/types.js';
 
@@ -59,7 +59,7 @@ export const createStatusMapper = (store: Store, baseUrl: string): StatusMapper 
     description: string | null = null,
   ): Promise<MastodonStatus> => {
     await ownAddr(transport); // warm the cache the resolver reads synchronously
-    const parsed = parseMarkers(msg.text);
+    const parsed = parseWire(msg.text);
     // At most one extra fetch each for the boosted message (embedded as
     // `reblog`) and the reply parent (used for `in_reply_to_account_id`/
     // `mentions`) — reused via `resolvedById` below so `messageToStatus`'s
@@ -93,7 +93,7 @@ export const mapNotification = async (
   mediaDescriptionFor: MediaDescriptionLookup,
 ): Promise<Record<string, unknown>> => {
   const contact = n.accountContactId !== undefined ? await transport.contact(n.accountContactId) : null;
-  const account = contact ? contactToAccount(contact, baseUrl) : synthesizeAccount(null, n.accountAddr, baseUrl);
+  const account = contact ? contactToAccount(contact, baseUrl) : addrToAccount(n.accountAddr, baseUrl);
   const status =
     n.statusMsgId !== undefined
       ? await (async () => {
