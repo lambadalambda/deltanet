@@ -1580,3 +1580,109 @@ mattering (per 0001).
   extended to assert the DM copy and B's feed copy share ONE uuid (byte-
   identical envelopes) and that a v2 reply resolves against a v2 parent cross-
   node on third-party C.
+
+## 2026-07-07 — post attestations: signed envelopes + verifiable boosts (sketch #6, 0002)
+
+Every content envelope (post/reply/boost) is now signed with a per-account
+ed25519 key; boosts embed the boosted post's COMPLETE signed envelope (+
+re-attached media, verified by content hash) as `orig`, so a recipient who never
+met the original author can verify it offline. Republishers can OMIT (reply
+control) but never ALTER or FABRICATE. Attestation is the ADMISSION rule for
+republished content, not an overlay — unverifiable embeds render placeholders
+(0002), never partial/attributed content.
+
+### Canonical payload (src/attest.ts)
+
+The signature covers a payload RECONSTRUCTED FROM FIELDS, never the raw JSON, so
+re-serialization (key order, whitespace, ignored fields) can't break
+verification. Fixed-order, per-field LENGTH-PREFIXED, version-prefixed:
+
+```
+lp(dn2) lp(type) lp(uuid) lp(addr) lp(ts) lp(text) lp(refToken) lp(mediaSha256)
+```
+
+concatenated with no separator, where `lp(x) = <utf8ByteLength(x)>:<x>`. Empty
+parts frame as `0:` (constant field count). `refToken` is the ref's opaque key
+string (uuid or bare mid); `mediaSha256` is the lowercase-hex sha256 of the
+attached file. Version prefix `dn2` gates the layout so it can evolve.
+
+**Why length-prefixing, not a bare NUL join** (review-caught bug, fixed same
+day, pre-deploy so no signatures existed to preserve): `text` and `refToken`
+are attacker-controlled JSON strings that CAN contain NUL, so a bare
+`join('\0')` was ambiguous — `(text:"a\0b", ref:"c")` and `(text:"a",
+ref:"b\0c")` concatenated to identical bytes, meaning ONE signature verified
+TWO different envelopes (e.g. a plain post re-presented as a reply to an
+attacker-chosen target). The decimal byte-length prefix makes every field
+self-delimiting: no byte value can shift a frame boundary, and there is no
+rejected-content class (NUL-bearing text still signs/verifies). Guarded by
+tamper-matrix tests: the exact re-split pair must not cross-verify, NUL text
+round-trips, and framing-mimicking content (`text` ending in `"<len>:<next>"`)
+doesn't collide with the honest split.
+
+### Keys (src/attest.ts)
+
+`openAttestor(keyPath)` — path injected exactly like the store path (data dir).
+Lazy `generateKeyPairSync('ed25519')`, persisted as `deltanet-signing-key.json`
+(PKCS#8-PEM private + base64 SPKI-DER public), mode 0600, NEVER logged. `pubkey`
+on the wire is the base64 SPKI DER (carries the algorithm OID; a raw 32-byte key
+is ambiguous). `sign(env, addr)` → `{ ts, pubkey, sig }`; `verify(env, addr)` is
+pure (no key files) and never throws.
+
+### TOFU pinning (src/ingest.ts + store `pinnedKeys`)
+
+`store.pinnedKeys: Record<addr, pubkey>` — additive field (no schema bump; the
+`{...emptyData(), ...raw}` load tolerates it) and preserved through `migrate`
+like notifications/pending (a pin is a trust root, not a derivable index).
+`pinKey` is first-wins; conflicts surface at verify time. Pin hook lives in
+`deriveOnIngest`: any non-SELF DIRECT delivery (core-PGP verified — feed or DM,
+both securejoin/Autocrypt channels) whose OUTER envelope carries a pubkey pins
+`sender.address → pubkey`. NEVER from an embedded boost `orig` (a booster could
+seed a fake pin) — we read the pubkey off the outer envelope only.
+
+### Boost embedding (server.ts reblog path)
+
+The booster holds the target message: its TEXT IS the boosted post's envelope →
+parse and embed VERBATIM as `orig`. Embed only if the target is a SIGNED v2
+envelope (has sig+pubkey); unsigned/legacy → ref-only boost (recipient gets the
+placeholder ladder). If the orig declares `media.sha256`, re-attach the SAME
+file to the boost message (transport `post({file})`); a media target with no
+signed sha256 → ref-only (never a fabricated hash).
+
+### Rendering ladder (entities.ts + mapping.ts)
+
+Per boost, in order: (a) own-copy — ref resolves locally → embed the recipient's
+own verified copy (unchanged); (b) verified-orig — `orig` present AND sig
+verifies AND pin-consistent AND (media declared → boost's attached file hashes
+to the signed sha256) → render orig as a real status via an addr-based account
+shell (`addrToAccount`, extended to carry an attested display name only if the
+envelope declares one — never invented); (c) placeholder — `'boost'`
+(absent/legacy) or `'boost-unverified'` (embed present but FAILED verification).
+0002: a failed verification is a placeholder, never partial content.
+
+The verified embed's nested `reblog` id is `orig-<uuid>` — synthetic-FREE
+(uuid = author-minted logical-post id), a string the frontend treats opaquely
+(`PleromaStatus.id: string`; precedent `notif-boost` fixture id). `created_at`
+uses `orig.ts`; media url points at the BOOST message's own blob route (bytes
+live there). Verification is async (hashes a file, reads pins) so it's computed
+in `mapping.ts` `toStatus` and handed to the sync `messageToStatus`; result is
+cached per boost msgId (mapping runs per render).
+
+### Tests
+
+- Unit (725, was 672): NEW `attest.test.ts` (canonical round-trip/stability/
+  injectivity + framing-ambiguity probes: NUL re-split non-collision and
+  non-cross-verify, NUL round-trip, framing-mimicry; sha256, key gen/persist/
+  0600, sign→verify, full tamper matrix)
+  + `boost-embed.test.ts` (the rendering ladder end-to-end via `createStatusMapper`:
+  verified embed w/ media, `'boost'` vs `'boost-unverified'`, tamper matrix —
+  altered text / wrong pubkey / pin conflict / media-hash mismatch / declared-
+  media-no-file / pin-consistent-still-renders). store: TOFU pin first-wins +
+  reload + migrate survival. ingest: pin from direct delivery, never from an
+  embedded orig, not from SELF/unsigned. server: reply/post envelopes are signed
+  (verify round-trip); reblog embeds a signed orig verbatim, stays ref-only for
+  unsigned targets.
+- Integration (local podman relay): NEW `boost-attestation.test.ts` — the exact
+  A/B/C topology WITH AN IMAGE. B follows A, C follows only B; A posts a signed
+  image; B boosts (embeds A's orig + re-attaches the image); C renders the boost
+  with A's text, A's addr, and the image, and the blob C serves hashes to the
+  original A signed. ~29s.

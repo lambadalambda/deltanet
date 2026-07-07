@@ -63,3 +63,48 @@ still render placeholders (0002).
 - Unit: canonical payload round-trip/stability, sign/verify, TOFU pin +
   conflict, boost embed build (orig envelope verbatim from the held
   message), media hashing.
+
+## Current Status
+
+**DONE (2026-07-07).** Implemented in full; see DEVLOG "post attestations".
+
+- Keys/signing: NEW `src/attest.ts` — per-account ed25519 (`generateKeyPairSync`,
+  no new deps), persisted `deltanet-signing-key.json` (path injected like the
+  store; 0600; never logged). `canonicalPayload` = fixed-order, per-field
+  LENGTH-PREFIXED, version-prefixed:
+  `lp(dn2) lp(type) lp(uuid) lp(addr) lp(ts) lp(text) lp(refToken) lp(mediaSha256)`
+  concatenated with no separator, where `lp(x) = <utf8ByteLength(x)>:<x>`
+  (reconstructed from FIELDS, not raw JSON; empty parts frame as `0:`).
+  Length-prefixing instead of the spec's suggested NUL-join: `text`/`refToken`
+  are attacker-controlled and may contain NUL, so a bare separator was
+  ambiguous across field boundaries — one signature could verify two
+  different envelopes (re-split attack); the length prefix makes each field
+  self-delimiting with no rejected-content class. `sign(env,addr)→
+  {ts,pubkey,sig}`, pure `verify(env,addr)`, streaming `sha256File`. Envelope
+  gains real `ts`/`pubkey`/`sig`, `media.sha256`, and boost `orig`
+  (`src/envelope.ts`).
+- Signing lives in the send paths (`server.ts`): post/reply/boost envelopes are
+  signed as the daemon's own addr (`mapper.ownAddr`); media posts carry a signed
+  `media.sha256`.
+- TOFU pinning: `store.pinnedKeys` (additive, no schema bump; survives
+  `migrate`). Hook in `deriveOnIngest` — pins from a non-SELF DIRECT delivery's
+  OUTER envelope only, first-wins; NEVER from an embedded `orig`. Pin conflict →
+  unverified → placeholder.
+- Boost embed: `server.ts` reblog parses the held target's envelope, embeds it
+  VERBATIM as `orig` (only if signed), re-attaches the same file when the orig
+  declares `media.sha256`; unsigned/legacy or unattestable media → ref-only.
+- Rendering ladder (`entities.ts`/`mapping.ts`): own-copy → verified-orig (sig +
+  pin-consistency + media hash of the boost's own attached file) → placeholder
+  (`'boost'` absent/legacy, `'boost-unverified'` failed). Verified embed =
+  addr-based account shell, nested `reblog.id` = `orig-<uuid>` (synthetic-free,
+  frontend tolerates non-numeric string ids). Per-msgId verification cache.
+- Tests: 725 unit (was 672) all green (NEW `attest.test.ts` — incl. framing-
+  ambiguity probes: NUL re-split must not cross-verify, NUL-bearing text
+  round-trips, framing-mimicry non-collision — and `boost-embed.test.ts` with
+  the full tamper matrix; store/ingest/server extended). Integration: NEW
+  `boost-attestation.test.ts` — exact A/B/C topology with an image; C renders
+  B's boost with A's text/addr/image, blob hash matches the original. Full
+  suite 8/8 green (~152s). `pnpm check` clean.
+
+Out of scope (next issues, per the spec): reactions/receipts, thread
+republication — the sign/verify helpers are kept generic for them.
