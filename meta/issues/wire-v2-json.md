@@ -21,6 +21,8 @@ envelope as the entire message body for all statuses and control messages.
   the same JSON envelope as the feed copy (same uuid).
 - Store/schema: refs and post keys unchanged conceptually (uuid-first);
   bump store schema so re-index parses mixed-era data consistently.
+- Reserve envelope field names `pubkey`/`sig` for post attestations
+  (docs/design-sketches.md #6) — not implemented in v2, never repurposed.
 - Update DEVLOG + the wire-convention documentation to describe v2 as
   the format, v0/v1 as read-only legacy.
 

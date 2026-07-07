@@ -102,3 +102,26 @@ must-ignore, keys never repurposed — so moving carriers is a transport
 swap, not a redesign. Existing verbs (`↳re`, `♻`, `⚑`, reactions) stay as
 compact human-visible markers; the envelope is for structure that doesn't
 fit a line.
+
+## 6. Post attestations (republication veracity)
+
+Direct deliveries are PGP-signed and verified by core; REPUBLISHED content
+(boost embeds, thread-channel republication per sketch 3) is only attested
+by the republisher — a thread host could fabricate or alter embedded
+posts. No RPC path exists to carry the original PGP signature along.
+
+Fix at the deltanet layer, enabled by wire v2 (decision 0001): per-account
+ed25519 signing key (daemon-held); every post envelope carries
+`{pubkey, sig}` over canonical fields (uuid, author addr, text, refs,
+timestamp). Republished posts become offline-verifiable by anyone holding
+the author's pubkey; hosts can only omit (reply control), never alter.
+Key distribution: followers receive the pubkey over the
+securejoin-verified channel (strong binding); strangers get
+TOFU-with-pinning + automated DM challenge ("did you write u:X?") — the
+same machinery as reaction-receipt verification (sketch 2); attestations
+generalize receipts from "I reacted" to "I said".
+
+Residual: proves keyholder authorship, not identity-behind-key — a host
+can invent fake strangers, not impersonate known/queryable contacts
+(sybil floor, not solvable here). Wire v2 envelope should reserve
+`pubkey`/`sig` field names even before signing lands.
