@@ -45,25 +45,57 @@ Honest limit: receipts prevent **author forgery**, not **sybil
 inflation** — instant free signup means a liar can mint real accounts
 with real signatures. Different layer, not solvable here.
 
-## 3. Subscribable threads: root author as thread host
+## 3. Threads: auto-backfill + explicit subscribe
 
-The root author's node already receives every reply (reply DM copies).
-Make it publish:
+> Revised 2026-07-07 after attestations (sketch 6) landed and QA hit the
+> concrete case: A and B talk a long thread; C follows only B, so C holds
+> B's half (his feed) full of reply refs that dangle at A's posts. Issued:
+> meta/issues/{wire-thread-root-ref,thread-auto-backfill,thread-subscribe}.md.
 
-- Lazy **thread channel** (broadcast owned by root author) created on
-  first subscriber.
-- Subscribe = scoped invite-request (`⇋ invite-request thread:u:<uuid>`),
-  auto-granted.
-- Host republishes every reply it receives, boost-style embed + original
-  `⚑` uuid (+ signed receipt for provenance once sketch 2 exists).
+**Correction to the original premise**: the root author does NOT receive
+every reply today — reply DM copies go to the PARENT author, not the
+root. Two-party threads happen to be complete on both sides; a third
+party replying deep in the thread never reaches the root. Prerequisite
+wire extension: reply envelopes carry a signed `root` ref, and the reply
+convention DM-copies the root author as well as the parent author. Root
+becomes complete BY CONSTRUCTION (so it can host), and any single message
+identifies its thread's root + owner.
 
-Properties: complete threads for subscribers even when participants are
-mutual strangers (also retroactively fixes third-party reply-visibility
-gaps); **reply control** for the root author (declining to republish =
-thread moderation the fediverse can't cleanly do). Wart: the 10-message
-join backfill — host should send a "thread so far" bundle to new
-subscribers; long-term, thread-as-webxdc gives full update-replay history
-and is probably webxdc's first natural use here.
+Attestations dissolve the trust half of "who owns the thread": every v2
+post/reply is an author-signed envelope, so a thread is a set of
+self-verifying documents — ANY holder can serve it (omission possible,
+alteration/fabrication not), and the 90-day account expiry makes
+any-holder serving a resilience property, not just a convenience. Three
+layers:
+
+- **Auto-backfill (transparent, daemon-driven).** Invariant: a dangling
+  reply/boost ref always identifies a peer who holds the target — you
+  cannot reference a message you never held, so the SENDER of the message
+  carrying the dangling ref can always serve it. On ingest, queue
+  dangling refs per peer, batch into one request control DM (60 msgs/min
+  budget → batching mandatory; dedupe + negative-cache with backoff for
+  dead peers), answer = bundle of signed envelopes, verified through the
+  boost-embed ladder (never TOFU-pin from relayed content). In the A/B/C
+  case this is transitively complete with NO thread request: every A
+  message is the parent of a B message C already holds. Needs the one
+  real architecture piece: a **held-envelope store class** (verified
+  foreign envelopes not backed by a local DC message; the orig-<uuid>
+  thread-view fix was the first step).
+- **Subscribe to thread (explicit, UI).** For "keep me updated even when
+  no followee is active in it anymore": a thread-view button → scoped
+  invite-request to the root author, who lazily creates a per-thread
+  broadcast channel and republishes replies it receives as signed
+  envelopes. New subscribers get a "thread so far" bundle (same format as
+  backfill responses). Keeps **reply control**: the root declining to
+  republish = thread moderation the fediverse can't cleanly do.
+- **Root-directed thread request.** Opening a thread you only partially
+  hold may still miss branches no peer of yours touched (stranger
+  replying to stranger); a one-shot thread request to the root (same
+  bundle format) fills those on view. Subscription covers them going
+  forward.
+
+Long-term: thread-as-webxdc gives full update-replay history and is
+probably webxdc's first natural use here.
 
 ## 4. Expanding the join backfill (10 → N)
 
