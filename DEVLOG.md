@@ -1,5 +1,45 @@
 # deltanet devlog
 
+## 2026-07-07 — verified boost embeds honor known contacts
+
+Fix (`meta/issues/verified-embed-known-contact.md`): a verified boost embed
+(bob boosts carol; lain follows bob not carol) was always attributed via the
+bare `addrToAccount` shell (id `0`, `?`-avatar, local-part name) — even when
+the recipient HAD met the author and holds a real DC contact for them. Contact
+profile (name/avatar) arrived over the core-PGP-verified transport from the
+author, so using it is not a 0002 violation; the shell was only ever for
+addresses we've truly never seen.
+
+### Changes
+
+- `entities.ts`: `verifiedEmbedToStatus` gains an optional pre-resolved
+  `account` param (and `messageToStatus` an `embedAccount` param that threads
+  it); `account ?? addrToAccount(addr, baseUrl)`. Stays pure / transport-
+  unaware. Only the `account` object enriches — nested identity (`orig-<uuid>`
+  id, `orig.ts` created_at, zero counts) is untouched. Verification ladder
+  (sig/pin/media-hash) untouched.
+- `mapping.ts`: `toStatus` resolves the embed author via
+  `contactIdByAddr` + `contact` (contact-first, addr-shell fallback — same as
+  the notification path) and passes `embedAccount`.
+
+### Cache choice
+
+The per-msgId `embedCache` still caches ONLY the verification VERDICT
+(`BoostEmbed`). The account is resolved FRESH on every render (outside the
+cache), so a `?`-shell rendered before the contact existed is never pinned
+forever — if the contact appears later, the next render picks it up. This is
+the simplest correct option (no cache invalidation logic needed) and keeps
+contact freshness identical to every other contact render.
+
+### Tests
+
+- Unit (726, was 725): NEW `boost-embed.test.ts` case — verified embed with a
+  resolvable contact renders that contact's display name / avatar / id, and
+  asserts nested identity (orig-<uuid> id, orig.ts created_at, zero counts)
+  is unchanged. All existing shell/tamper cases stay green.
+- `pnpm test` + `pnpm check` green in daemon/. Integration suite not run
+  (unnecessary for this change; C-truly-never-met-A shell path unaffected).
+
 ## 2026-07-06 — project start
 
 Goal: Pleroma-like single-user backend, Mastodon client API in front,

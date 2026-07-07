@@ -24,3 +24,4 @@
 - [x] [Profile deep links fail outside in-app navigation](issues/profile-deep-links.md)
 - [x] [Hygiene: pin core exactly; honest timeline labels](issues/hygiene-core-pin-timeline-labels.md)
 - [x] [Post attestations: signed envelopes, verifiable boosts](issues/post-attestations.md)
+- [x] [Verified boost embeds ignore known contacts](issues/verified-embed-known-contact.md)
