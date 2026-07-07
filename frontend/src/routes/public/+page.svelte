@@ -12,7 +12,6 @@
 	import type { SocialPost } from '$lib/social/types';
 	import { onMount } from 'svelte';
 
-	type PublicView = 'local' | 'federated';
 	type RebuildPost = PostLike & {
 		id: string | number;
 		actionStatusId?: string;
@@ -34,7 +33,6 @@
 	};
 	type PublicTimelineState = PaginatedTimelineState<PleromaStatusView, PleromaRequestErrorView>;
 
-	let view = $state<PublicView>('local');
 	let timelineState = $state<PublicTimelineState>({ status: 'idle' });
 	let requestId = 0;
 
@@ -82,17 +80,17 @@
 	});
 	const posts = $derived(timelineState.status === 'success' ? timelineState.data.map(postForRebuild) : []);
 
-	const loadTimeline = async (nextView = view) => {
+	const loadTimeline = async () => {
 		const nextRequestId = requestId + 1;
 		requestId = nextRequestId;
 		timelineState = { status: 'loading' };
 
 		try {
 			const client = createPleromaClient({ instanceUrl, fetch: window.fetch.bind(window) });
-			const timelinePage = nextView === 'local' ? await client.getLocalTimelinePage() : await client.getFederatedTimelinePage();
+			const timelinePage = await client.getFederatedTimelinePage();
 			if (nextRequestId !== requestId) return;
 
-			const adapted = adaptPleromaStatuses(timelinePage.items, { timelines: [nextView] });
+			const adapted = adaptPleromaStatuses(timelinePage.items, { timelines: ['federated'] });
 			timelineState = adapted.length > 0
 				? { status: 'success', data: adapted, nextCursor: timelinePage.cursors.next, loadMoreStatus: 'idle' }
 				: { status: 'empty' };
@@ -106,16 +104,15 @@
 
 		const nextRequestId = requestId + 1;
 		requestId = nextRequestId;
-		const requestView = view;
 		const nextCursor = timelineState.nextCursor;
 		timelineState = { ...timelineState, loadMoreStatus: 'loading', loadMoreError: undefined };
 
 		try {
 			const client = createPleromaClient({ instanceUrl, fetch: window.fetch.bind(window) });
-			const timelinePage = requestView === 'local' ? await client.getLocalTimelinePage(nextCursor) : await client.getFederatedTimelinePage(nextCursor);
+			const timelinePage = await client.getFederatedTimelinePage(nextCursor);
 			if (nextRequestId !== requestId || timelineState.status !== 'success') return;
 
-			const adapted = adaptPleromaStatuses(timelinePage.items, { timelines: [requestView] });
+			const adapted = adaptPleromaStatuses(timelinePage.items, { timelines: ['federated'] });
 			timelineState = {
 				...timelineState,
 				data: mergeTimelineItems(timelineState.data, adapted),
@@ -127,10 +124,6 @@
 			if (nextRequestId !== requestId || timelineState.status !== 'success') return;
 			timelineState = { ...timelineState, loadMoreStatus: 'error', loadMoreError: normalizePleromaRequestError(error) };
 		}
-	};
-	const selectView = (nextView: PublicView) => {
-		view = nextView;
-		void loadTimeline(nextView);
 	};
 
 	onMount(() => {
@@ -148,11 +141,7 @@
 	<section class="card public-panel">
 		<div class="app-page-kicker">DeltaNet public</div>
 		<h1>Public timeline</h1>
-		<p>Read local and federated public posts without signing in.</p>
-		<div class="tabs" role="tablist" aria-label="Public timeline sections">
-			<button type="button" role="tab" aria-selected={view === 'local'} class="tab" class:active={view === 'local'} onclick={() => selectView('local')}>Local</button>
-			<button type="button" role="tab" aria-selected={view === 'federated'} class="tab" class:active={view === 'federated'} onclick={() => selectView('federated')}>Federated</button>
-		</div>
+		<p>Read the public feed without signing in.</p>
 
 		{#if timelineState.status === 'loading'}
 			<div class="request-state" role="status" aria-label="Request status">Loading Pleroma data</div>

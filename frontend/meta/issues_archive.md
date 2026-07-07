@@ -62,3 +62,5 @@
 - [x] [62 Invite and follow-by-invite UI](issues/62-invite-and-follow-ui.md)
 - [x] [Reconcile streamed notification status into rendered posts](issues/63-reconcile-streamed-notification-status-into-rendered-posts.md)
 - [x] [64 Render reaction chips on thread ancestors and descendants](issues/64-thread-ancestor-descendant-reaction-chips.md)
+- [x] [65 Profile deep links resolve for all typed forms](issues/65-profile-deep-links.md)
+- [x] [66 Honest timeline labels: remove Local/Federated tabs](issues/66-honest-timeline-labels.md)

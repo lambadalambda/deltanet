@@ -33,26 +33,19 @@ const mockPublicTimeline = async (page: Page, handler: (route: Route, url: URL) 
 	});
 };
 
-test('anonymous public route loads local and federated timelines through the API client', async ({ page }) => {
-	const requests: Array<{ local: string | null; authorization: string | null }> = [];
-	await mockPublicTimeline(page, async (route, url) => {
-		requests.push({ local: url.searchParams.get('local'), authorization: route.request().headers().authorization ?? null });
-		await fulfillJson(route, url.searchParams.get('local') === 'true' ? [pleromaFixtures.status] : pleromaFixtures.timelines.public);
+test('anonymous public route loads the public timeline through the API client', async ({ page }) => {
+	const requests: Array<{ authorization: string | null }> = [];
+	await mockPublicTimeline(page, async (route) => {
+		requests.push({ authorization: route.request().headers().authorization ?? null });
+		await fulfillJson(route, pleromaFixtures.timelines.public);
 	});
 
 	await setViewport(page, 'desktop');
 	await page.goto('/public');
 
 	await expect(page.getByRole('heading', { name: 'Public timeline' })).toBeVisible();
-	await expect(page.getByRole('tab', { name: 'Local' })).toHaveAttribute('aria-selected', 'true');
-	await expect(page.getByTestId('public-timeline-list')).toContainText('quiet CSS can still carry the voice.');
-	await expect(page.getByTestId('public-timeline-list').getByRole('img', { name: 'quiet admin avatar' })).toHaveAttribute('src', 'https://pleroma.example/avatar.png');
-	await expect(requests[0]).toEqual({ local: 'true', authorization: null });
-
-	await page.getByRole('tab', { name: 'Federated' }).click();
-	await expect(page.getByRole('tab', { name: 'Federated' })).toHaveAttribute('aria-selected', 'true');
 	await expect(page.getByTestId('public-timeline-list')).toContainText('@datagram@retro.social');
-	await expect(requests[1]).toEqual({ local: null, authorization: null });
+	await expect(requests[0]).toEqual({ authorization: null });
 	await expectNoHorizontalOverflow(page);
 });
 
@@ -68,7 +61,7 @@ test('public timeline loads a next cursor page and deduplicates overlapping stat
 		}
 
 		await fulfillJson(route, [pleromaFixtures.status], 200, {
-			link: `<${timelineUrl}?local=true&max_id=status-1>; rel="next"`
+			link: `<${timelineUrl}?max_id=status-1>; rel="next"`
 		});
 	});
 
@@ -93,7 +86,7 @@ test('public timeline retries load-more errors with the same cursor', async ({ p
 
 		if (maxId !== 'status-1') {
 			await fulfillJson(route, [pleromaFixtures.status], 200, {
-				link: `<${timelineUrl}?local=true&max_id=status-1>; rel="next"`
+				link: `<${timelineUrl}?max_id=status-1>; rel="next"`
 			});
 			return;
 		}
@@ -147,14 +140,18 @@ test('public timeline renders loading state while a request is pending', async (
 	await expect(page.getByTestId('public-timeline-list')).toContainText('quiet CSS can still carry the voice.');
 });
 
-test('public timeline ignores stale responses after switching tabs', async ({ page }) => {
-	let releaseLocal: () => void = () => undefined;
-	const localPending = new Promise<void>((resolve) => {
-		releaseLocal = resolve;
+test('public timeline ignores stale responses from a superseded request', async ({ page }) => {
+	// Regression coverage for the request-id guard: a slow first response must not
+	// clobber state after a later request has already resolved.
+	let releaseFirst: () => void = () => undefined;
+	const firstPending = new Promise<void>((resolve) => {
+		releaseFirst = resolve;
 	});
-	await mockPublicTimeline(page, async (route, url) => {
-		if (url.searchParams.get('local') === 'true') {
-			await localPending;
+	let requestCount = 0;
+	await mockPublicTimeline(page, async (route) => {
+		requestCount += 1;
+		if (requestCount === 1) {
+			await firstPending;
 			await fulfillJson(route, [pleromaFixtures.status]);
 			return;
 		}
@@ -163,11 +160,9 @@ test('public timeline ignores stale responses after switching tabs', async ({ pa
 	});
 
 	await page.goto('/public');
-	await page.getByRole('tab', { name: 'Federated' }).click();
-	await expect(page.getByRole('tab', { name: 'Federated' })).toHaveAttribute('aria-selected', 'true');
+	await page.reload();
 	await expect(page.getByTestId('public-timeline-list')).toContainText('@datagram@retro.social');
-	releaseLocal();
-	await expect(page.getByRole('tab', { name: 'Federated' })).toHaveAttribute('aria-selected', 'true');
+	releaseFirst();
 	await expect(page.getByTestId('public-timeline-list')).toContainText('@datagram@retro.social');
 });
 

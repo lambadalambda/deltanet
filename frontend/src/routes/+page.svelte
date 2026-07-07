@@ -286,7 +286,7 @@
 	<section class="so-peek so-shell">
 		<div>
 			<p class="so-eyebrow">A look inside</p>
-			<h2>The federated timeline, right now.</h2>
+			<h2>The public feed, right now.</h2>
 		</div>
 		<a href="/public">View public timeline</a>
 	</section>

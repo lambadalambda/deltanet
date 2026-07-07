@@ -101,7 +101,7 @@ test('real app routes render shell, deep links, and browser history', async ({ p
 	await expect(page.getByRole('navigation', { name: 'Primary' })).toHaveCount(0);
 	await expect(header.getByTestId('brand-tag')).toContainText('A federatedsocial web');
 	const sidebar = page.getByTestId('left-sidebar');
-	for (const label of ['Home', 'Local', 'Federated', 'Explore']) {
+	for (const label of ['Home', 'Explore']) {
 		await expect(sidebar.getByRole('link', { name: label })).toBeVisible();
 	}
 	await expect(header.getByPlaceholder('Search...')).toBeVisible();
@@ -244,13 +244,6 @@ test('timeline, thread, profile, notification, and placeholder routes deep link 
 		await expectNoHorizontalOverflow(page);
 	}
 
-	for (const [path, activeTab, heading] of [['/app/local', 'Local', 'Local timeline'], ['/app/federated', 'Federated', 'Federated timeline']] as const) {
-		await page.goto(path);
-		await expect(page.getByTestId('app-header')).toBeVisible();
-		await expect(page.getByRole('tab', { name: activeTab })).toHaveAttribute('aria-selected', 'true');
-		await expect(page.getByTestId('app-content').getByRole('heading', { name: heading })).toHaveCount(0);
-		await expectNoHorizontalOverflow(page);
-	}
 });
 
 test('real app shell stays responsive across desktop, medium, tablet, and mobile', async ({ page }) => {
@@ -379,8 +372,8 @@ test('mobile real app shell opens drawer and details sheet', async ({ page }) =>
 
 	await page.getByRole('button', { name: 'Open navigation menu' }).click();
 	await expect(page.getByTestId('mobile-drawer')).toBeVisible();
-	await page.getByTestId('mobile-drawer').getByRole('link', { name: 'Local' }).click();
-	await expect(page).toHaveURL('/app/local');
+	await page.getByTestId('mobile-drawer').getByRole('link', { name: 'Explore' }).click();
+	await expect(page).toHaveURL('/app/explore');
 	await expect(page.getByTestId('mobile-drawer')).toBeHidden();
 
 	await page.getByTestId('mobile-bottom-nav').getByRole('button', { name: 'More' }).click();

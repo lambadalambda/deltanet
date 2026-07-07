@@ -1,4 +1,55 @@
 
+## 2026-07-07 — Honest timeline labels: remove Local/Federated tabs (issue 66)
+
+Daemon-verified root cause: `/api/v1/timelines/home` and `/api/v1/timelines/public`
+are the SAME Hono handler; the `local` query param the client sent was ignored.
+So Home, Local, and Federated all rendered byte-identical data. "Federated" is a
+fediverse concept deltanet (a chatmail feed) does not have; "Local" (own-instance
+public) is equally meaningless — there is only your feed.
+
+Chose removal over rename for honesty: a renamed duplicate tab would still be a
+second surface showing the same posts as Home. Deleted both nav items and the
+entire `appPublicTimeline*` machinery from `src/routes/app/[...path]/+page.svelte`
+(types, state, request-id/loaded-key/stream vars, load/loadMore/retry/stream
+helpers, route-derivation branches, heading map, template tab-lists, and the
+`{:else if route === 'local' || route === 'federated'}` block). The signed-out
+`/public` route was collapsed from a Local/Federated tab split to one honest
+public feed (single `getFederatedTimelinePage()` call — same endpoint). Landing
+copy "The federated timeline, right now." → "The public feed, right now."
+
+Client methods `getLocalTimelinePage`/`getFederatedTimelinePage` kept (the latter
+powers `/public`; both still covered by client.e2e.ts). Tests: trimmed
+app-routes nav-label/deep-link assertions, deleted app-public-timelines.e2e.ts
+(355 lines, wholly about the removed in-app feature), rewrote public-timeline.e2e
+for the single feed, repointed app-trends deep-links to /app/home. Full test
+(315) + check green. Issue 66 archived. Frontend half of the root
+`hygiene-core-pin-timeline-labels` issue; the core-pin half is handled in the
+daemon repo.
+
+## 2026-07-07 — Profile deep links resolve for all typed forms (issue 65)
+
+Bug: typing a profile URL directly — `/app/profiles/12` (numeric id) or
+`/app/profiles/@user@relay` (raw or percent-encoded) — showed "Record not found",
+while in-app profile links worked.
+
+Root cause: `resolveProfileAccount` routed every typed form through the same
+order (cache → `accounts/search?q=` → `accounts/lookup?acct=` → an unconditional
+`getAccount(handle)` fallthrough). But the daemon's two endpoints answer
+different shapes: `GET /accounts/:id` does `Number(id)` (numeric only; anything
+else → NaN → "Record not found"), and `GET /accounts/lookup?acct=<address>`
+resolves an address (tolerating a leading `@`). The code never branched on shape,
+so an address that missed search/lookup fell through to `getAccount("@user@relay")`
+→ NaN → not found, and numeric ids depended on search succeeding first.
+
+Fix: branch on handle shape up front — numeric (`/^\d+$/`) → `getAccount`
+(`accounts/:id`); address (contains `@`, raw/`@`-prefixed, route-decoded) →
+`lookupAccount` (`accounts/lookup?acct=`), falling back to account search on a
+miss; only the ambiguous bare-name case still starts from search. Cache-first
+short-circuit for in-app navigation preserved. TDD: 3 new Playwright cases in
+app-profile.e2e.ts (numeric, raw `@handle@domain`, percent-encoded) that assert
+resolution WITHOUT relying on `accounts/search`. Full test (315) + check green.
+Issue 65 archived.
+
 ## 2026-07-06 — Thread ancestor/descendant reaction chips (issue 64)
 
 Bug (daemon-verified): thread ancestor rows never rendered emoji-reaction chips

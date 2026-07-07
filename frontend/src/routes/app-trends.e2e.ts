@@ -71,7 +71,7 @@ test('right rail loads trends and instance metadata from Pleroma', async ({ page
 	});
 
 	await setViewport(page, 'desktop');
-	await page.goto('/app/local');
+	await page.goto('/app/home');
 
 	const rail = page.getByTestId('right-rail');
 	await expect(rail.getByTestId('trends-card')).toContainText('#smallweb');
@@ -93,7 +93,7 @@ test('right rail shows loading states while trend and instance requests are pend
 	await page.route('https://pleroma.example/api/v2/suggestions**', async () => new Promise(() => undefined));
 
 	await setViewport(page, 'desktop');
-	await page.goto('/app/local');
+	await page.goto('/app/home');
 
 	const rail = page.getByTestId('right-rail');
 	await expect(rail.getByTestId('trends-card')).toContainText('Loading trends');
@@ -117,7 +117,7 @@ test('right rail handles empty trend and metadata responses', async ({ page }) =
 	});
 
 	await setViewport(page, 'desktop');
-	await page.goto('/app/local');
+	await page.goto('/app/home');
 
 	const rail = page.getByTestId('right-rail');
 	await expect(rail.getByTestId('trends-card')).toContainText('No trends available');
@@ -138,7 +138,7 @@ test('right rail degrades when trends or instance metadata are unavailable', asy
 	});
 
 	await setViewport(page, 'desktop');
-	await page.goto('/app/local');
+	await page.goto('/app/home');
 
 	const rail = page.getByTestId('right-rail');
 	await expect(rail.getByTestId('trends-card')).toContainText('Trends unavailable');
@@ -159,7 +159,7 @@ test('right rail renders trend and instance request errors', async ({ page }) =>
 	});
 
 	await setViewport(page, 'desktop');
-	await page.goto('/app/local');
+	await page.goto('/app/home');
 
 	const rail = page.getByTestId('right-rail');
 	await expect(rail.getByTestId('trends-card')).toContainText('trend server exploded');
@@ -191,7 +191,7 @@ test('right rail shows who to follow only when the backend returns suggestions',
 	});
 
 	await setViewport(page, 'wide');
-	await page.goto('/app/local');
+	await page.goto('/app/home');
 
 	const rail = page.getByTestId('right-rail');
 	const card = rail.getByTestId('who-to-follow-card');

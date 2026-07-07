@@ -453,6 +453,92 @@ test('direct profile route falls back to account search when no cached account m
 	expect(searchRequestCount).toBe(1);
 });
 
+test('deep-linked numeric profile id resolves via accounts/:id without account search', async ({ page }) => {
+	const numericAccount: PleromaAccount = {
+		...datagramAccount,
+		id: '12',
+		username: 'contact12',
+		acct: 'contact12@retro.social',
+		display_name: 'Contact Twelve'
+	};
+	let searchRequestCount = 0;
+
+	await authenticate(page);
+	await page.route('https://pleroma.example/api/v1/accounts/search**', async (route: Route) => {
+		searchRequestCount += 1;
+		await fulfillJson(route, []);
+	});
+	await page.route('https://pleroma.example/api/v1/accounts/12', async (route: Route) => {
+		expect(new URL(route.request().url()).pathname).toBe('/api/v1/accounts/12');
+		await fulfillJson(route, numericAccount);
+	});
+	await page.route('https://pleroma.example/api/v1/accounts/12/statuses**', async (route: Route) => {
+		const url = new URL(route.request().url());
+		await fulfillJson(route, url.searchParams.get('pinned') === 'true' ? [] : postStatuses.map((status) => ({ ...status, account: numericAccount })));
+	});
+	await page.route('https://pleroma.example/api/v1/accounts/relationships**', async (route: Route) => fulfillJson(route, [relationshipFor('12', { following: true })]));
+	await setViewport(page, 'desktop');
+
+	await page.goto('/app/profiles/12');
+
+	await expect(page.getByTestId('profile-view').getByRole('heading', { name: 'Contact Twelve' })).toBeVisible();
+	expect(searchRequestCount).toBe(0);
+});
+
+test('deep-linked raw @handle@domain resolves via accounts/lookup without account search', async ({ page }) => {
+	let searchRequestCount = 0;
+	let lookupAcct: string | null = null;
+
+	await authenticate(page);
+	await page.route('https://pleroma.example/api/v1/accounts/search**', async (route: Route) => {
+		searchRequestCount += 1;
+		await fulfillJson(route, []);
+	});
+	await page.route('https://pleroma.example/api/v1/accounts/lookup**', async (route: Route) => {
+		lookupAcct = new URL(route.request().url()).searchParams.get('acct');
+		await fulfillJson(route, datagramAccount);
+	});
+	await page.route(`https://pleroma.example/api/v1/accounts/${datagramAccount.id}/statuses**`, async (route: Route) => {
+		const url = new URL(route.request().url());
+		await fulfillJson(route, url.searchParams.get('pinned') === 'true' ? [] : postStatuses.map((status) => ({ ...status, account: datagramAccount })));
+	});
+	await page.route('https://pleroma.example/api/v1/accounts/relationships**', async (route: Route) => fulfillJson(route, [relationshipFor(datagramAccount.id, { following: true })]));
+	await setViewport(page, 'desktop');
+
+	await page.goto('/app/profiles/@datagram@retro.social');
+
+	await expect(page.getByTestId('profile-view').getByRole('heading', { name: 'datagram' })).toBeVisible();
+	expect(lookupAcct).toBe('@datagram@retro.social');
+	expect(searchRequestCount).toBe(0);
+});
+
+test('deep-linked percent-encoded handle resolves via accounts/lookup without account search', async ({ page }) => {
+	let searchRequestCount = 0;
+	let lookupAcct: string | null = null;
+
+	await authenticate(page);
+	await page.route('https://pleroma.example/api/v1/accounts/search**', async (route: Route) => {
+		searchRequestCount += 1;
+		await fulfillJson(route, []);
+	});
+	await page.route('https://pleroma.example/api/v1/accounts/lookup**', async (route: Route) => {
+		lookupAcct = new URL(route.request().url()).searchParams.get('acct');
+		await fulfillJson(route, datagramAccount);
+	});
+	await page.route(`https://pleroma.example/api/v1/accounts/${datagramAccount.id}/statuses**`, async (route: Route) => {
+		const url = new URL(route.request().url());
+		await fulfillJson(route, url.searchParams.get('pinned') === 'true' ? [] : postStatuses.map((status) => ({ ...status, account: datagramAccount })));
+	});
+	await page.route('https://pleroma.example/api/v1/accounts/relationships**', async (route: Route) => fulfillJson(route, [relationshipFor(datagramAccount.id, { following: true })]));
+	await setViewport(page, 'desktop');
+
+	await page.goto('/app/profiles/datagram%40retro.social');
+
+	await expect(page.getByTestId('profile-view').getByRole('heading', { name: 'datagram' })).toBeVisible();
+	expect(lookupAcct).toBe('datagram@retro.social');
+	expect(searchRequestCount).toBe(0);
+});
+
 test('profile route fetches missing relationship state before rendering follow labels', async ({ page }) => {
 	const relationshipAccount: PleromaAccount = {
 		...profileAccount,

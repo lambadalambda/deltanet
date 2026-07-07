@@ -49,7 +49,7 @@
 	import { onMount, untrack } from 'svelte';
 	import { env } from '$env/dynamic/public';
 
-	type AppRoute = 'home' | 'local' | 'federated' | 'public' | 'thread' | 'profile' | 'notifications' | 'explore' | 'search' | 'settings' | 'bookmarks' | 'messages';
+	type AppRoute = 'home' | 'public' | 'thread' | 'profile' | 'notifications' | 'explore' | 'search' | 'settings' | 'bookmarks' | 'messages';
 	type NavItem = { route: AppRoute; label: string; icon: IconName; href: string; count?: number };
 	type ThemeName = 'cream' | 'dusk' | 'drive' | 'simoun';
 	type ExploreFeed = 'popular' | 'new' | 'active';
@@ -57,7 +57,7 @@
 	type ProfileSettings = PleromaProfileSettingsView;
 	type ReplySort = 'top' | 'newest';
 	type StatusActionKey = 'boost' | 'fav';
-	type StatusActionOrigin = 'home' | 'local' | 'federated' | 'thread' | 'profile';
+	type StatusActionOrigin = 'home' | 'thread' | 'profile';
 	type StatusActionScope = StatusActionOrigin | 'all';
 	type StatusActionOriginSnapshot = { route: StatusActionOrigin; requestId: number };
 	type StatusActionValue = { active: boolean; count: number };
@@ -117,11 +117,6 @@
 		newPostsStatus: 'idle' | 'checking';
 	};
 	type HomeTimelineState = PaginatedTimelineBaseState<PleromaRequestErrorView> | HomeTimelineSuccess;
-	type AppPublicTimelineRoute = 'local' | 'federated';
-	type AppPublicTimelineSuccess = PaginatedTimelineSuccess<PleromaStatusView, PleromaRequestErrorView> & {
-		newerPosts: PleromaStatusView[];
-	};
-	type AppPublicTimelineState = PaginatedTimelineBaseState<PleromaRequestErrorView> | AppPublicTimelineSuccess;
 	type ThreadState =
 		| { status: 'idle' }
 		| { status: 'loading' }
@@ -185,7 +180,6 @@
 	let currentSession = $state<PleromaSession | null>(null);
 	let accountCache = $state(createPleromaAccountCache());
 	let homeTimelineState = $state<HomeTimelineState>({ status: 'idle' });
-	let appPublicTimelineState = $state<AppPublicTimelineState>({ status: 'idle' });
 	let threadState = $state<ThreadState>({ status: 'idle' });
 	let profileRouteState = $state<ProfileState>({ status: 'idle' });
 	let profileFollowPending = $state(false);
@@ -280,8 +274,6 @@
 	let expandedThreadReplyIds = $state<Record<string, boolean>>({});
 	let homeTimelineRequestId = 0;
 	let homeTimelineNewPostsRequestId = 0;
-	let appPublicTimelineRequestId = 0;
-	let appPublicTimelineActionGenerationId = 0;
 	let threadRequestId = 0;
 	let profileRouteRequestId = 0;
 	let notificationRequestId = 0;
@@ -297,7 +289,6 @@
 	let composerMentionSearchRequestId = 0;
 	let composerCustomEmojiRequestId = 0;
 	let loadedHomeTimelineKey = '';
-	let loadedAppPublicTimelineKey = '';
 	let loadedThreadKey = '';
 	let loadedProfileRouteKey = '';
 	let loadedNotificationsKey = '';
@@ -313,9 +304,6 @@
 	let homeTimelineStreamReadyKey = '';
 	let closeHomeTimelineStream: (() => void) | null = null;
 	let homeTimelineStreamReconnectTimer: number | null = null;
-	let appPublicTimelineStreamKey = '';
-	let closeAppPublicTimelineStream: (() => void) | null = null;
-	let appPublicTimelineStreamReconnectTimer: number | null = null;
 	let notificationStreamKey = '';
 	let notificationStreamReadyKey = '';
 	let closeNotificationStream: (() => void) | null = null;
@@ -394,17 +382,6 @@
 		composerDragDepth = 0;
 		clearStatusActionErrors('home');
 	};
-	const invalidateAppPublicTimelineRequests = () => {
-		appPublicTimelineRequestId += 1;
-		appPublicTimelineActionGenerationId += 1;
-		loadedAppPublicTimelineKey = '';
-		appPublicTimelineState = { status: 'idle' };
-		closeAppPublicTimelineStreaming();
-		clearInlineReply('local');
-		clearInlineReply('federated');
-		clearStatusActionErrors('local');
-		clearStatusActionErrors('federated');
-	};
 	const invalidateThreadRequests = () => {
 		threadRequestId += 1;
 		loadedThreadKey = '';
@@ -424,10 +401,6 @@
 		invalidateHomeTimelineRequests();
 		loadedHomeTimelineKey = '';
 		closeHomeTimelineStreaming();
-	};
-	const clearAppPublicTimelineRouteIfLoaded = () => {
-		if (!loadedAppPublicTimelineKey && appPublicTimelineState.status === 'idle') return;
-		invalidateAppPublicTimelineRequests();
 	};
 	const clearThreadRouteIfLoaded = () => {
 		if (!loadedThreadKey && threadState.status === 'idle') return;
@@ -534,17 +507,6 @@
 		homeTimelineStreamKey = '';
 		homeTimelineStreamReadyKey = '';
 	};
-	const clearAppPublicTimelineStreamReconnect = () => {
-		if (appPublicTimelineStreamReconnectTimer === null) return;
-		window.clearTimeout(appPublicTimelineStreamReconnectTimer);
-		appPublicTimelineStreamReconnectTimer = null;
-	};
-	const closeAppPublicTimelineStreaming = () => {
-		clearAppPublicTimelineStreamReconnect();
-		closeAppPublicTimelineStream?.();
-		closeAppPublicTimelineStream = null;
-		appPublicTimelineStreamKey = '';
-	};
 	const clearNotificationStreamReconnect = () => {
 		if (notificationStreamReconnectTimer === null) return;
 		window.clearTimeout(notificationStreamReconnectTimer);
@@ -578,23 +540,19 @@
 	let headerAccountFollowers = $derived(accountStat(currentSession?.account?.followers_count));
 	let headerInstanceDomain = $derived(instanceHost(currentSession?.instanceUrl));
 	let homeStatusActionErrors = $derived(statusActionErrors.filter((error) => error.route === 'home'));
-	let localStatusActionErrors = $derived(statusActionErrors.filter((error) => error.route === 'local'));
-	let federatedStatusActionErrors = $derived(statusActionErrors.filter((error) => error.route === 'federated'));
 	let threadStatusActionErrors = $derived(statusActionErrors.filter((error) => error.route === 'thread'));
 	let profileStatusActionErrors = $derived(statusActionErrors.filter((error) => error.route === 'profile'));
 
 	const chatUnreadCount = $derived(chatsState.status === 'success' ? chatsState.data.reduce((sum, chat) => sum + chat.unread, 0) : 0);
 	let navItems = $derived<NavItem[]>([
 		{ route: 'home', label: 'Home', icon: 'home', href: '/app/home' },
-		{ route: 'local', label: 'Local', icon: 'users', href: '/app/local' },
-		{ route: 'federated', label: 'Federated', icon: 'globe', href: '/app/federated' },
 		{ route: 'explore', label: 'Explore', icon: 'search', href: '/app/explore' },
 		{ route: 'notifications', label: 'Notifications', icon: 'bell', href: '/app/notifications', count: unreadNotificationCount || undefined },
 		{ route: 'messages', label: 'Messages', icon: 'msg', href: '/app/messages', count: chatUnreadCount || undefined },
 		{ route: 'bookmarks', label: 'Bookmarks', icon: 'bookmark', href: '/app/bookmarks' },
 		{ route: 'settings', label: 'Settings', icon: 'gear', href: '/app/settings' },
 	]);
-	const timelineRoutes: AppRoute[] = ['home', 'local', 'federated', 'public', 'thread'];
+	const timelineRoutes: AppRoute[] = ['home', 'public', 'thread'];
 	const settingsSubnav = ['Profile', 'Appearance', 'Notifications', 'Filters', 'Federation', 'Account', 'Import / Export', 'Development'];
 
 	const avatarClass = (avatar: SocialPost['avatar']) =>
@@ -710,14 +668,11 @@
 	const statusActionPendingKey = (targetId: string, key: string) => `${targetId}:${key}`;
 	const statusActionOriginRequestId = (originRoute: StatusActionOrigin) =>
 		originRoute === 'home' ? homeTimelineRequestId :
-		originRoute === 'local' || originRoute === 'federated' ? appPublicTimelineActionGenerationId :
 		originRoute === 'thread' ? threadRequestId :
 		profileRouteRequestId;
 	const statusActionOriginActive = (origin: StatusActionOriginSnapshot) =>
 		origin.route === 'home'
 			? route === 'home' && homeTimelineRequestId === origin.requestId
-			: origin.route === 'local' || origin.route === 'federated'
-				? route === origin.route && appPublicTimelineActionGenerationId === origin.requestId
 			: origin.route === 'thread'
 				? route === 'thread' && threadRequestId === origin.requestId
 				: route === 'profile' && profileRouteRequestId === origin.requestId;
@@ -846,13 +801,6 @@
 				data: updateStatusViewsByActionTarget(bookmarksState.data, targetId, statusUpdate)
 			};
 		}
-		if ((scope === 'local' || scope === 'federated' || scope === 'all') && appPublicTimelineState.status === 'success') {
-			appPublicTimelineState = {
-				...appPublicTimelineState,
-				data: updateStatusViewsByActionTarget(appPublicTimelineState.data, targetId, statusUpdate),
-				newerPosts: updateStatusViewsByActionTarget(appPublicTimelineState.newerPosts, targetId, statusUpdate)
-			};
-		}
 		if ((scope === 'thread' || scope === 'all') && threadState.status === 'success') {
 			threadState = {
 				...threadState,
@@ -880,13 +828,6 @@
 				...homeTimelineState,
 				data: updateStatusViewsByReplyTarget(homeTimelineState.data, targetId, incrementStatusViewReplies),
 				newerPosts: updateStatusViewsByReplyTarget(homeTimelineState.newerPosts, targetId, incrementStatusViewReplies)
-			};
-		}
-		if (appPublicTimelineState.status === 'success') {
-			appPublicTimelineState = {
-				...appPublicTimelineState,
-				data: updateStatusViewsByReplyTarget(appPublicTimelineState.data, targetId, incrementStatusViewReplies),
-				newerPosts: updateStatusViewsByReplyTarget(appPublicTimelineState.newerPosts, targetId, incrementStatusViewReplies)
 			};
 		}
 		if (threadState.status === 'success') {
@@ -1220,9 +1161,6 @@
 		if (homeTimelineState.status === 'success') {
 			homeTimelineState = { ...homeTimelineState, data: homeTimelineState.data.filter(keepView), newerPosts: homeTimelineState.newerPosts.filter(keepView) };
 		}
-		if (appPublicTimelineState.status === 'success') {
-			appPublicTimelineState = { ...appPublicTimelineState, data: appPublicTimelineState.data.filter(keepView), newerPosts: appPublicTimelineState.newerPosts.filter(keepView) };
-		}
 		if (threadState.status === 'success') {
 			threadState = { ...threadState, ancestors: keepThreadPosts(threadState.ancestors, keepRebuild), replies: keepThreadPosts(threadState.replies, keepRebuild) };
 		}
@@ -1329,8 +1267,6 @@
 		page.url.pathname.startsWith('/app/search') ? 'search' :
 		page.url.pathname.startsWith('/app/explore') ? 'explore' :
 		page.url.pathname.startsWith('/app/settings') ? 'settings' :
-		page.url.pathname.startsWith('/app/local') ? 'local' :
-		page.url.pathname.startsWith('/app/federated') ? 'federated' :
 		page.url.pathname.startsWith('/app/public') ? 'public' :
 		page.url.pathname.startsWith('/app/thread') ? 'thread' :
 		page.url.pathname.startsWith('/app/profiles') ? 'profile' :
@@ -1340,13 +1276,9 @@
 		'home'
 	);
 	const searchShell = $derived(route === 'search');
-	const appPublicTimelineRoute = $derived<AppPublicTimelineRoute | null>(route === 'local' || route === 'federated' ? route : null);
 	const messagesChatId = $derived(route === 'messages' ? page.url.pathname.split('/')[3] || null : null);
 	const activeChat = $derived(messagesChatId && chatsState.status === 'success' ? chatsState.data.find((chat) => chat.id === messagesChatId) ?? null : null);
-	const appPublicTimelineEmptyHeading = $derived(route === 'local' ? 'No local posts yet' : 'No federated posts yet');
-	const appPublicTimelinePosts = $derived(appPublicTimelineState.status === 'success' ? appPublicTimelineState.data.map(postForRebuild) : []);
 	const bookmarksPosts = $derived(bookmarksState.status === 'success' ? bookmarksState.data.map(postForRebuild) : []);
-	const appPublicStatusActionErrors = $derived(route === 'local' ? localStatusActionErrors : route === 'federated' ? federatedStatusActionErrors : []);
 	const threadStatusId = $derived(route === 'thread' ? decodeURIComponent(page.url.pathname.split('/').filter(Boolean).slice(2).join('/') || '') : '');
 	const profileRouteHandle = $derived(route === 'profile' ? decodeURIComponent(page.url.pathname.split('/').filter(Boolean).slice(2).join('/') || '') : '');
 	const searchQuery = $derived(route === 'search' ? (page.url.searchParams.get('q') ?? '').trim() : '');
@@ -1412,8 +1344,6 @@
 	const headerSearchActiveDescendant = $derived(headerSearchSelectedIndex >= 0 && headerSearchSelectableItems[headerSearchSelectedIndex] ? `header-search-option-${headerSearchSelectedIndex}` : undefined);
 	const placeholderHeading = $derived(
 		route === 'public' ? 'Public timeline' :
-		route === 'local' ? 'Local timeline' :
-		route === 'federated' ? 'Federated timeline' :
 		route === 'thread' ? 'Thread' :
 		route === 'profile' ? 'quiet admin' :
 		route === 'notifications' ? 'Notifications' :
@@ -1906,23 +1836,6 @@
 		const targetId = statusActionTargetId(clickedPost);
 		if (targetId) mutateStatusAction(targetId, key, rebuildPostActionValue(clickedPost, key), 'home');
 	};
-	const handleAppPublicPostAction = (clickedPost: RebuildPost, key: string) => {
-		const targetRoute = appPublicTimelineRoute;
-		if (!targetRoute) return;
-		if (key.startsWith('reaction:')) {
-			handleReactionAction(clickedPost, key, targetRoute);
-			return;
-		}
-		if (handleManageAction(clickedPost, key, targetRoute)) return;
-		if (key !== 'reply' && key !== 'boost' && key !== 'fav') return;
-		if (key === 'reply') {
-			openInlineReply(clickedPost, targetRoute);
-			return;
-		}
-
-		const targetId = statusActionTargetId(clickedPost);
-		if (targetId) mutateStatusAction(targetId, key, rebuildPostActionValue(clickedPost, key), targetRoute);
-	};
 	const handleThreadPostAction = (postId: string | number | undefined, key: string) => {
 		if (postId == null) return;
 		if (key.startsWith('reaction:')) {
@@ -2005,7 +1918,6 @@
 	};
 	const redirectToLanding = () => {
 		invalidateHomeTimelineRequests();
-		invalidateAppPublicTimelineRequests();
 		invalidateThreadRequests();
 		invalidateProfileRouteRequests();
 		invalidateStatusActionRequests();
@@ -2037,7 +1949,6 @@
 
 		if (sessionKey(currentSession) !== sessionKey(session)) {
 			invalidateHomeTimelineRequests();
-			invalidateAppPublicTimelineRequests();
 			invalidateThreadRequests();
 			invalidateProfileRouteRequests();
 			invalidateStatusActionRequests();
@@ -3330,71 +3241,6 @@
 		if (homeTimelineStreamKey === requestSessionKey) closeHomeTimelineStream = stream.close;
 		else stream.close();
 	};
-	const appPublicTimelineStreamName = (timelineRoute: AppPublicTimelineRoute) => timelineRoute === 'local' ? 'public:local' : 'public';
-	const appPublicTimelineStreamKeyFor = (session: PleromaSession, timelineRoute: AppPublicTimelineRoute) => `${sessionKey(session)}\n${timelineRoute}`;
-	const queueStreamedAppPublicStatus = (requestSessionKey: string, streamKey: string, timelineRoute: AppPublicTimelineRoute, status: PleromaStatus) => {
-		if (route !== timelineRoute || appPublicTimelineStreamKey !== streamKey || !isCurrentSessionRequest(requestSessionKey)) return;
-
-		upsertAccountCache(accountsFromPleromaStatus(status));
-		const posts = adaptPleromaStatuses([status], { timelines: [timelineRoute] });
-		if (posts.length === 0) return;
-
-		if (appPublicTimelineState.status === 'success') {
-			appPublicTimelineState = {
-				...appPublicTimelineState,
-				newerPosts: queueNewerTimelineItems(appPublicTimelineState.newerPosts, appPublicTimelineState.data, posts)
-			};
-			return;
-		}
-
-		if (appPublicTimelineState.status === 'empty') {
-			appPublicTimelineState = {
-				status: 'success',
-				data: [],
-				nextCursor: null,
-				loadMoreStatus: 'idle',
-				newerPosts: posts
-			};
-		}
-	};
-	const scheduleAppPublicTimelineStreamReconnect = (session: PleromaSession, timelineRoute: AppPublicTimelineRoute, requestSessionKey: string) => {
-		clearAppPublicTimelineStreamReconnect();
-		appPublicTimelineStreamReconnectTimer = window.setTimeout(() => {
-			appPublicTimelineStreamReconnectTimer = null;
-			if (route !== timelineRoute || !isCurrentSessionRequest(requestSessionKey)) return;
-			connectAppPublicTimelineStreaming(session, timelineRoute);
-		}, APP_PUBLIC_TIMELINE_STREAM_RECONNECT_MS);
-	};
-	const handleAppPublicTimelineStreamFailure = (session: PleromaSession, timelineRoute: AppPublicTimelineRoute, requestSessionKey: string, streamKey: string) => {
-		if (!isCurrentSessionRequest(requestSessionKey) || appPublicTimelineStreamKey !== streamKey) return;
-
-		closeAppPublicTimelineStream?.();
-		closeAppPublicTimelineStream = null;
-		appPublicTimelineStreamKey = '';
-		if (route !== timelineRoute) return;
-
-		scheduleAppPublicTimelineStreamReconnect(session, timelineRoute, requestSessionKey);
-	};
-	const connectAppPublicTimelineStreaming = (session: PleromaSession, timelineRoute: AppPublicTimelineRoute) => {
-		if (route !== timelineRoute) return;
-
-		const requestSessionKey = sessionKey(session);
-		const streamKey = appPublicTimelineStreamKeyFor(session, timelineRoute);
-		if (appPublicTimelineStreamKey === streamKey && closeAppPublicTimelineStream) return;
-
-		closeAppPublicTimelineStreaming();
-		appPublicTimelineStreamKey = streamKey;
-		const stream = openPleromaTimelineStream({
-			instanceUrl: session.instanceUrl,
-			accessToken: session.accessToken,
-			stream: appPublicTimelineStreamName(timelineRoute),
-			onUpdate: (status) => queueStreamedAppPublicStatus(requestSessionKey, streamKey, timelineRoute, status),
-			onError: () => handleAppPublicTimelineStreamFailure(session, timelineRoute, requestSessionKey, streamKey),
-			onClose: () => handleAppPublicTimelineStreamFailure(session, timelineRoute, requestSessionKey, streamKey)
-		});
-		if (appPublicTimelineStreamKey === streamKey) closeAppPublicTimelineStream = stream.close;
-		else stream.close();
-	};
 	const loadHomeTimeline = async (session: PleromaSession) => {
 		const requestSessionKey = sessionKey(session);
 		const requestId = homeTimelineRequestId + 1;
@@ -3428,40 +3274,6 @@
 			}
 
 			homeTimelineState = { status: 'error', error: normalized };
-		}
-	};
-	const loadAppPublicTimeline = async (session: PleromaSession, timelineRoute: AppPublicTimelineRoute) => {
-		const requestSessionKey = sessionKey(session);
-		const requestId = appPublicTimelineRequestId + 1;
-		appPublicTimelineRequestId = requestId;
-		appPublicTimelineState = { status: 'loading' };
-
-		try {
-			const client = createPleromaClient({
-				instanceUrl: session.instanceUrl,
-				accessToken: session.accessToken,
-				fetch: window.fetch.bind(window)
-			});
-			const timelinePage = timelineRoute === 'local' ? await client.getLocalTimelinePage() : await client.getFederatedTimelinePage();
-			if (route !== timelineRoute || requestId !== appPublicTimelineRequestId || !isCurrentSessionRequest(requestSessionKey)) return;
-
-			upsertAccountCache(accountsFromPleromaStatuses(timelinePage.items));
-			const posts = adaptPleromaStatuses(timelinePage.items, { timelines: [timelineRoute] });
-			appPublicTimelineState = posts.length > 0
-				? { status: 'success', data: posts, nextCursor: timelinePage.cursors.next, loadMoreStatus: 'idle', newerPosts: [] }
-				: { status: 'empty' };
-			connectAppPublicTimelineStreaming(session, timelineRoute);
-		} catch (error) {
-			if (requestId !== appPublicTimelineRequestId || !isCurrentSessionRequest(requestSessionKey)) return;
-
-			const normalized = normalizePleromaRequestError(error);
-			if (normalized.reauthRequired) {
-				signOutPleroma(localStorage);
-				redirectToLanding();
-				return;
-			}
-
-			appPublicTimelineState = { status: 'error', error: normalized };
 		}
 	};
 	const loadThread = async (session: PleromaSession, statusId: string) => {
@@ -3526,10 +3338,26 @@
 			|| normalized === acct
 			|| (!acct.includes('@') && normalized === username);
 	};
+	const isNumericProfileHandle = (handle: string) => /^\d+$/.test(handle.trim());
+	const isAddressProfileHandle = (handle: string) => normalizedProfileHandle(handle).includes('@');
 	const resolveProfileAccount = async (client: ReturnType<typeof createPleromaClient>, session: PleromaSession | null, handle: string) => {
 		if (session?.account && (!handle || accountMatchesProfileHandle(session.account, handle))) return session.account;
 		const cached = getCachedPleromaAccount(accountCache, handle);
 		if (cached && accountMatchesProfileHandle(cached, handle)) return cached;
+		// The typed form dictates which daemon endpoint can answer: a numeric
+		// contact id resolves through `GET /accounts/:id`; an address (raw or
+		// `@`-prefixed, percent-decoded by the route) resolves through
+		// `GET /accounts/lookup?acct=` (leading `@` tolerated). Address lookup
+		// falls back to account search on a miss; only the ambiguous bare-name
+		// case starts from search.
+		if (isNumericProfileHandle(handle)) return client.getAccount(handle.trim());
+		if (isAddressProfileHandle(handle)) {
+			try {
+				return await client.lookupAccount(handle);
+			} catch {
+				// Lookup misses fall through to account search below.
+			}
+		}
 		const matches = await client.searchAccounts({ q: handle, limit: 5, resolve: true });
 		const exactMatch = matches.find((account) => accountMatchesProfileHandle(account, handle));
 		if (exactMatch) return exactMatch;
@@ -3757,49 +3585,6 @@
 			homeTimelineState = { ...homeTimelineState, loadMoreStatus: 'error', loadMoreError: normalized };
 		}
 	};
-	const loadMoreAppPublicTimeline = async () => {
-		const session = currentSession;
-		const timelineRoute = appPublicTimelineRoute;
-		if (!session || !timelineRoute || appPublicTimelineState.status !== 'success' || !appPublicTimelineState.nextCursor || appPublicTimelineState.loadMoreStatus === 'loading') return;
-
-		const requestSessionKey = sessionKey(session);
-		const requestId = appPublicTimelineRequestId + 1;
-		appPublicTimelineRequestId = requestId;
-		const nextCursor = appPublicTimelineState.nextCursor;
-		appPublicTimelineState = { ...appPublicTimelineState, loadMoreStatus: 'loading', loadMoreError: undefined };
-
-		try {
-			const client = createPleromaClient({
-				instanceUrl: session.instanceUrl,
-				accessToken: session.accessToken,
-				fetch: window.fetch.bind(window)
-			});
-			const timelinePage = timelineRoute === 'local' ? await client.getLocalTimelinePage(nextCursor) : await client.getFederatedTimelinePage(nextCursor);
-			if (route !== timelineRoute || requestId !== appPublicTimelineRequestId || !isCurrentSessionRequest(requestSessionKey) || appPublicTimelineState.status !== 'success') return;
-
-			upsertAccountCache(accountsFromPleromaStatuses(timelinePage.items));
-			const posts = adaptPleromaStatuses(timelinePage.items, { timelines: [timelineRoute] });
-			appPublicTimelineState = {
-				...appPublicTimelineState,
-				data: mergeTimelineItems(appPublicTimelineState.data, posts),
-				nextCursor: timelinePage.cursors.next,
-				loadMoreStatus: 'idle',
-				loadMoreError: undefined
-			};
-		} catch (error) {
-			if (requestId !== appPublicTimelineRequestId || !isCurrentSessionRequest(requestSessionKey)) return;
-
-			const normalized = normalizePleromaRequestError(error);
-			if (normalized.reauthRequired) {
-				signOutPleroma(localStorage);
-				redirectToLanding();
-				return;
-			}
-
-			if (appPublicTimelineState.status !== 'success') return;
-			appPublicTimelineState = { ...appPublicTimelineState, loadMoreStatus: 'error', loadMoreError: normalized };
-		}
-	};
 	const checkHomeTimelineForNewPosts = async () => {
 		const session = currentSession;
 		if (!session || homeTimelineState.status !== 'success' || homeTimelineState.newPostsStatus === 'checking') return;
@@ -3863,21 +3648,8 @@
 		};
 		window.scrollTo(window.scrollX, 0);
 	};
-	const showNewAppPublicPosts = () => {
-		if (appPublicTimelineState.status !== 'success' || appPublicTimelineState.newerPosts.length === 0) return;
-
-		appPublicTimelineState = {
-			...appPublicTimelineState,
-			data: prependTimelineItems(appPublicTimelineState.data, appPublicTimelineState.newerPosts),
-			newerPosts: []
-		};
-		window.scrollTo(window.scrollX, 0);
-	};
 	const retryHomeTimeline = () => {
 		if (currentSession) void loadHomeTimeline(currentSession);
-	};
-	const retryAppPublicTimeline = () => {
-		if (currentSession && appPublicTimelineRoute) void loadAppPublicTimeline(currentSession, appPublicTimelineRoute);
 	};
 	const retryThread = () => {
 		if (currentSession) void loadThread(currentSession, threadStatusId);
@@ -3934,7 +3706,6 @@
 
 		return () => {
 			invalidateHomeTimelineRequests();
-			invalidateAppPublicTimelineRequests();
 			invalidateProfileRouteRequests();
 			invalidateStatusActionRequests();
 			invalidateNotificationRequests();
@@ -3992,21 +3763,6 @@
 			}
 		} else {
 			clearHomeRouteIfLoaded();
-		}
-		if (session && appPublicTimelineRoute) {
-			const loadKey = `${sessionKey(session)}\n${appPublicTimelineRoute}`;
-			if (loadedAppPublicTimelineKey !== loadKey) {
-				appPublicTimelineActionGenerationId += 1;
-				closeAppPublicTimelineStreaming();
-				clearInlineReply('local');
-				clearInlineReply('federated');
-				clearStatusActionErrors('local');
-				clearStatusActionErrors('federated');
-				loadedAppPublicTimelineKey = loadKey;
-				void loadAppPublicTimeline(session, appPublicTimelineRoute);
-			}
-		} else {
-			clearAppPublicTimelineRouteIfLoaded();
 		}
 		if (session && pathname.startsWith('/app/thread')) {
 			const loadKey = `${sessionKey(session)}\n${threadStatusId}`;
@@ -4369,8 +4125,6 @@
 						<div class="tabs timeline-tabs">
 							<div class="timeline-tab-list" role="tablist" aria-label="Timeline sections">
 								<a href="/app/home" role="tab" aria-selected="true" class="tab active">Home</a>
-								<a href="/app/local" role="tab" aria-selected="false" class="tab">Local</a>
-								<a href="/app/federated" role="tab" aria-selected="false" class="tab">Federated</a>
 							</div>
 							<span class="tab-spacer"></span>
 							<div class="timeline-tab-actions" data-testid="timeline-header-actions">
@@ -4508,65 +4262,6 @@
 								loadMoreStatus={homeTimelineState.loadMoreStatus}
 								loadMoreError={homeTimelineState.loadMoreError}
 								onLoadMore={loadMoreHomeTimeline}
-							/>
-						{/if}
-					</section>
-				{:else if route === 'local' || route === 'federated'}
-					<section class="card app-feed-card">
-						<div class="tabs timeline-tabs">
-							<div class="timeline-tab-list" role="tablist" aria-label="Timeline sections">
-								<a href="/app/home" role="tab" aria-selected="false" class="tab">Home</a>
-								<a href="/app/local" role="tab" aria-selected={route === 'local'} class="tab" class:active={route === 'local'}>Local</a>
-								<a href="/app/federated" role="tab" aria-selected={route === 'federated'} class="tab" class:active={route === 'federated'}>Federated</a>
-							</div>
-							<span class="tab-spacer"></span>
-							<div class="timeline-tab-actions" data-testid="timeline-header-actions">
-								{#if appPublicTimelineState.status === 'success'}
-									<TimelineNewPostsIndicator count={appPublicTimelineState.newerPosts.length} onActivate={showNewAppPublicPosts} />
-								{/if}
-								<button type="button" class="tab-action" title="Filters"><Icon name="sliders" width={16} height={16} /></button>
-							</div>
-						</div>
-
-						{#each appPublicStatusActionErrors as actionError (`${actionError.targetId}:${actionError.key}`)}
-							<div class="status-action-error" role="alert">
-								<strong>{actionError.error.title}</strong>
-								<span>{actionError.error.message}</span>
-							</div>
-						{/each}
-
-						{#if appPublicTimelineState.status === 'loading' || appPublicTimelineState.status === 'idle'}
-							<div class="request-state" role="status" aria-label="Request status">Loading Pleroma data</div>
-						{:else if appPublicTimelineState.status === 'empty'}
-							<div class="request-state request-empty">
-								<h2>{appPublicTimelineEmptyHeading}</h2>
-								<p>This Pleroma timeline returned no statuses for this slice.</p>
-							</div>
-						{:else if appPublicTimelineState.status === 'error'}
-							<div class="request-state request-error">
-								<h2>{appPublicTimelineState.error.title}</h2>
-								<p>{appPublicTimelineState.error.message}</p>
-								{#if appPublicTimelineState.error.retryable && currentSession}
-									<Button variant="secondary" onclick={retryAppPublicTimeline}>Retry request</Button>
-								{/if}
-							</div>
-						{:else if appPublicTimelineState.status === 'success' && appPublicTimelineRoute}
-							<div data-testid="app-public-timeline-list">
-								{#each appPublicTimelinePosts as post (post.id)}
-									<Post {post} replyExpanded={inlineReplyOpenFor(appPublicTimelineRoute, post)} replyControlsId={inlineReplyOpenFor(appPublicTimelineRoute, post) ? inlineReplyComposerId(appPublicTimelineRoute, post) : undefined} onOpen={() => openThread(post)} onAction={(key) => handleAppPublicPostAction(post, key)} onReact={(anchor) => appPublicTimelineRoute && openReactionPicker(post, appPublicTimelineRoute, anchor)} onVote={(pollId, choice) => appPublicTimelineRoute && votePollForPost(post, pollId, choice, appPublicTimelineRoute)} canManage={Boolean(currentSession)} />
-									{#if inlineReplyOpenFor(appPublicTimelineRoute, post) && inlineReplyComposerProps}
-										<InlineReplyComposer
-											id={inlineReplyComposerId(appPublicTimelineRoute, post)}
-											{...inlineReplyComposerProps}
-										/>
-									{/if}
-								{/each}
-							</div>
-							<TimelineLoadMore
-								nextCursor={appPublicTimelineState.nextCursor}
-								loadMoreStatus={appPublicTimelineState.loadMoreStatus}
-								loadMoreError={appPublicTimelineState.loadMoreError}
-								onLoadMore={loadMoreAppPublicTimeline}
 							/>
 						{/if}
 					</section>
