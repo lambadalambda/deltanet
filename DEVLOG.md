@@ -1,5 +1,37 @@
 # deltanet devlog
 
+## 2026-07-07 — petnames
+
+Anti-impersonation, part 1 (meta/issues/petnames.md): display names are
+self-chosen, so "Carol Sparkle" proves nothing. Petnames — MY local names
+for contacts — now render as chip chrome after their chosen name
+("Carol Sparkle ⟦carol⟧"); a name-clone has no chip.
+
+The big find: **DC core already implements the data layer.**
+`Contact.authName` (their claim) vs `Contact.name` (my override, set via
+`changeContactName`), with `displayName` preferring mine — and the override
+lives on the KEY-contact row, so the petname binds to the cryptographic
+identity, not the string. It also lives in dc.db, so petnames ride along in
+backups for free (asserted in the restore integration test). What deltanet
+added on top:
+
+- Daemon: `pleroma.deltanet.{auth_name, petname}` on accounts (never a
+  petname for SELF — its `name` is the configured displayname), mirrored on
+  mention entries; `POST /api/deltanet/contacts/:id/petname` ('' clears,
+  falling back to authName).
+- Frontend: `PetnameChip` (chip chrome — background + tag glyph, NOT plain
+  text, so a display name containing pill-lookalike characters can't pass);
+  rendered in post headers (shared `PostHead`), focused posts, the reply
+  footer + inline composer pill, and the profile heading, which also gets
+  the set/edit-petname editor. Chip-rendering spots lead with `auth_name`;
+  everywhere else keeps displayName (= the petname when set), which is safe
+  — an attacker can't fake MY override.
+- Subtlety: the petname endpoint's account payload carries no relationship,
+  so profile state merges only the name fields back — re-adapting wholesale
+  would reset followState to 'stranger'.
+
+Part 2 (key-derived identity badge) stays filed separately.
+
 ## 2026-07-07 — reply pill shows the chosen name
 
 The "Replying to" pill showed the address local part — a chosen nickname on
