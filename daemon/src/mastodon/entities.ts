@@ -1,5 +1,6 @@
 import type { T } from '@deltachat/jsonrpc-client';
 import { parseWire } from '../wire.js';
+import type { Envelope } from '../envelope.js';
 
 const DC_CONTACT_ID_SELF = 1;
 
@@ -77,11 +78,19 @@ export type MastodonStatus = {
     quote_visible: boolean;
     /**
      * deltanet-specific marker for a status the frontend must render specially.
-     * Present only on an unresolvable boost (any era): `placeholder: 'boost'`
-     * with the target `ref` so the UI can show an honest "boosted a post that
-     * cannot be displayed" affordance instead of attributed content (0002).
+     * Present only on a boost rendered as a placeholder (never attributed
+     * content, per 0002), with the target `ref`:
+     *  - `'boost'`: the boosted post is unavailable/legacy (no embedded signed
+     *    envelope to verify) — "boosted a post that cannot be displayed".
+     *  - `'boost-unverified'`: an embedded original WAS present but FAILED
+     *    verification (bad sig, pin conflict, or media-hash mismatch) — the
+     *    republisher may have tampered, so we show a distinguishable
+     *    "cannot be verified" affordance instead of the content.
      */
-    deltanet?: { placeholder: 'boost'; ref: { key: string; addr: string } };
+    deltanet?: {
+      placeholder: 'boost' | 'boost-unverified';
+      ref: { key: string; addr: string };
+    };
   };
 };
 
@@ -170,13 +179,15 @@ export const contactToAccount = (
  * interaction itself was verified by core, we simply lack the contact row to
  * enrich the display. Id `0` marks it as non-resolvable to a local contact.
  */
-export const addrToAccount = (addr: string, baseUrl: string) => {
+export const addrToAccount = (addr: string, baseUrl: string, displayName?: string) => {
   const username = addr.split('@')[0] ?? addr;
   return {
     id: '0',
     username,
     acct: addr,
-    display_name: username,
+    // An attested display name (carried by a verified embed) wins; otherwise the
+    // addr-derived username. We NEVER invent a display name for an address.
+    display_name: displayName ?? username,
     note: '',
     url: `${baseUrl}/deltanet/contact/0`,
     avatar: `${baseUrl}/deltanet/avatar/0`,
@@ -223,6 +234,105 @@ const mediaAttachments = (msg: T.Message, baseUrl: string, description: string |
       description,
     },
   ];
+};
+
+/**
+ * Media attachments for a VERIFIED boost embed: the bytes physically live on the
+ * BOOST message (the booster re-attached the original's file), so the id/url
+ * point at the boost message's own blob route, but the alt text comes from the
+ * embedded (author-signed) envelope. Empty when the orig declared no media.
+ */
+const embedMediaAttachments = (
+  boostMsg: T.Message,
+  baseUrl: string,
+  orig: Envelope,
+): ReturnType<typeof mediaAttachments> => {
+  if (!orig.media?.sha256 || !boostMsg.file || !boostMsg.fileMime) return [];
+  return mediaAttachments(boostMsg, baseUrl, orig.media.description ?? null);
+};
+
+/**
+ * The outcome of the boost-embed rendering ladder for one boost (post
+ * attestations, sketch #6 / decision 0002). Computed by the async mapping layer
+ * (which alone can hash the attached media file and read the store's pins), then
+ * handed to `messageToStatus` so the render stays synchronous and pure.
+ *
+ *  - `kind: 'verified'`: `orig` is present AND its signature verified AND it is
+ *    pin-consistent AND (if it declared media) the boost's attached file hashes
+ *    to the signed `media.sha256`. Render `orig` as a real attributed status via
+ *    an addr-based account shell — honest attributed content, NOT synthesis.
+ *  - `kind: 'unverified'`: `orig` was present but FAILED verification → the
+ *    `'boost-unverified'` placeholder (0002: never partial/attributed content).
+ *  - absent (`undefined`): no embed to consider; fall through to the local-copy
+ *    resolve, then the plain `'boost'` placeholder.
+ */
+export type BoostEmbed =
+  | { kind: 'verified'; orig: Envelope; addr: string }
+  | { kind: 'unverified' };
+
+/**
+ * Render a VERIFIED embedded original as a real Mastodon status attributed to
+ * its author's address (addr-based account shell — the `addrToAccount`
+ * precedent, extended to carry the envelope's display name if it declared one).
+ *
+ * Identity: no local msgId exists for content the recipient never received
+ * directly, and 0002 forbids a synthetic-but-attributable id that could be
+ * mistaken for a resolvable local status. We give the nested reblog a stable,
+ * synthetic-FREE id `orig-<uuid>` (uuid is the author-minted logical-post id) —
+ * the frontend treats status ids as opaque strings (verified against a
+ * Playwright fixture, e.g. `notif-boost`), and the Mastodon reblog wrapper
+ * already nests a full status whose own id is what actions would target; here
+ * that id intentionally does not resolve to a local action target.
+ *
+ * created_at uses the author-declared `orig.ts`; media (if declared + hash-
+ * verified upstream) is the boost message's own re-attached file.
+ */
+export const verifiedEmbedToStatus = (
+  orig: Envelope,
+  addr: string,
+  baseUrl: string,
+  boostMsg: T.Message,
+): MastodonStatus => {
+  const id = `orig-${orig.uuid ?? 'unknown'}`;
+  const createdAt = new Date(orig.ts ?? 0).toISOString();
+  return {
+    id,
+    uri: `${baseUrl}/deltanet/orig/${orig.uuid ?? ''}`,
+    url: `${baseUrl}/deltanet/orig/${orig.uuid ?? ''}`,
+    content: textToHtml(orig.text ?? ''),
+    created_at: createdAt,
+    account: addrToAccount(addr, baseUrl),
+    in_reply_to_id: null,
+    in_reply_to_account_id: null,
+    favourites_count: 0,
+    reblogs_count: 0,
+    replies_count: 0,
+    favourited: false,
+    reblogged: false,
+    bookmarked: false,
+    muted: false,
+    pinned: false,
+    media_attachments: embedMediaAttachments(boostMsg, baseUrl, orig),
+    sensitive: false,
+    spoiler_text: '',
+    visibility: 'public' as const,
+    language: null,
+    reblog: null,
+    application: { name: 'deltanet' },
+    emojis: [],
+    mentions: [],
+    tags: [],
+    card: null,
+    poll: null,
+    pleroma: {
+      local: false,
+      conversation_id: null,
+      emoji_reactions: [],
+      quote: null,
+      quote_id: null,
+      quote_visible: false,
+    },
+  };
 };
 
 /**
@@ -280,6 +390,14 @@ export const messageToStatus = (
   description: string | null = null,
   resolver: StatusResolver = noopResolver,
   resolveMessage: (msgId: number) => T.Message | null = () => null,
+  /**
+   * The precomputed boost-embed decision (post attestations, sketch #6). Only
+   * the async mapping layer can compute it (it hashes the boost's attached media
+   * and reads the store's pins), so it's injected here to keep the render sync.
+   * `undefined` means "no embed considered" — the local-copy resolve then the
+   * plain `'boost'` placeholder apply, exactly as before attestations.
+   */
+  boostEmbed?: BoostEmbed,
 ): MastodonStatus => {
   const parsed = parseWire(msg.text);
   // `parsed.body` is the human text with all protocol structure removed (v2:
@@ -308,20 +426,36 @@ export const messageToStatus = (
   const inReplyToAccountId = parentMsg ? String(parentMsg.sender.id) : null;
   const mentions = parentMsg ? [contactToMention(parentMsg.sender, baseUrl)] : [];
 
-  // A boost embeds the recipient's OWN verified copy when the target resolves
-  // locally; otherwise (any era) it renders as the BOOSTER's own status with a
-  // fixed placeholder body and `reblog: null` — never synthesized/attributed
-  // content (decision 0002). `boostPlaceholderRef` marks the latter so the
-  // frontend can render an honest "unavailable boost" affordance.
+  // Boost rendering ladder (post attestations, sketch #6 / decision 0002):
+  //  (a) own-copy: the target resolves LOCALLY → embed the recipient's own
+  //      verified copy (as today), the strongest possible attribution.
+  //  (b) verified-orig: the embedded `orig` verified (sig + pin + media hash,
+  //      precomputed in `boostEmbed`) → render it as a real status attributed
+  //      via an addr-based account shell. Honest attributed content, NOT
+  //      synthesis: the signature IS the attribution.
+  //  (c) placeholder: `'boost'` (no embed / legacy) or `'boost-unverified'`
+  //      (an embed was present but FAILED verification) — never partial or
+  //      attributed content (0002).
   let reblog: MastodonStatus | null = null;
-  let boostPlaceholderRef: { key: string; addr: string } | null = null;
+  let boostPlaceholder: { placeholder: 'boost' | 'boost-unverified'; key: string; addr: string } | null =
+    null;
   if (parsed.boost) {
     const boostedMsgId = resolver.resolveMid(parsed.boost.keyString);
     const boostedMsg = boostedMsgId !== null ? resolveMessage(boostedMsgId) : null;
     if (boostedMsg) {
+      // (a) own local copy.
       reblog = messageToStatus(boostedMsg, baseUrl, null, resolver, resolveMessage);
+    } else if (boostEmbed?.kind === 'verified') {
+      // (b) verified embedded original.
+      reblog = verifiedEmbedToStatus(boostEmbed.orig, boostEmbed.addr, baseUrl, msg);
     } else {
-      boostPlaceholderRef = { key: parsed.boost.keyString, addr: parsed.boost.addr };
+      // (c) placeholder — distinguish a failed-verification embed from an
+      // absent/legacy one so the UI can flag tampering.
+      boostPlaceholder = {
+        placeholder: boostEmbed?.kind === 'unverified' ? 'boost-unverified' : 'boost',
+        key: parsed.boost.keyString,
+        addr: parsed.boost.addr,
+      };
     }
   }
 
@@ -343,7 +477,7 @@ export const messageToStatus = (
     id: String(msg.id),
     uri: `${baseUrl}/deltanet/message/${msg.id}`,
     url: `${baseUrl}/deltanet/message/${msg.id}`,
-    content: textToHtml(boostPlaceholderRef ? BOOST_PLACEHOLDER_TEXT : bodyText),
+    content: textToHtml(boostPlaceholder ? BOOST_PLACEHOLDER_TEXT : bodyText),
     created_at: new Date(msg.timestamp * 1000).toISOString(),
     account: contactToAccount(msg.sender, baseUrl),
     in_reply_to_id: inReplyToId,
@@ -375,8 +509,13 @@ export const messageToStatus = (
       quote: null,
       quote_id: null,
       quote_visible: false,
-      ...(boostPlaceholderRef
-        ? { deltanet: { placeholder: 'boost' as const, ref: boostPlaceholderRef } }
+      ...(boostPlaceholder
+        ? {
+            deltanet: {
+              placeholder: boostPlaceholder.placeholder,
+              ref: { key: boostPlaceholder.key, addr: boostPlaceholder.addr },
+            },
+          }
         : {}),
     },
   };

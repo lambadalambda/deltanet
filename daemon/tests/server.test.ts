@@ -632,6 +632,14 @@ describe('POST /api/v1/statuses with in_reply_to_id', () => {
     expect(env.ref.addr).toBe(BOB.address);
     expect(posts[0]?.quotedText ?? null).toBeNull();
 
+    // Post attestations: the reply envelope is SIGNED — carries ts/pubkey/sig
+    // and verifies against its own embedded pubkey (as the daemon's own addr).
+    const { verify } = await import('../src/attest.js');
+    expect(typeof env.ts).toBe('number');
+    expect(typeof env.pubkey).toBe('string');
+    expect(typeof env.sig).toBe('string');
+    expect(verify(env, (await transport.self()).address)).toBe(true);
+
     // A DM copy goes to the author (bob, contact id 11), BYTE-IDENTICAL to the
     // feed copy — same uuid — so a node holding either copy unifies the one
     // logical reply.
@@ -754,6 +762,46 @@ describe('POST /api/v1/statuses/:id/reblog and unreblog', () => {
     expect(env.ref.addr).toBe(BOB.address);
     expect(env.text).toBeUndefined();
     expect(posts[0]?.quotedText ?? null).toBeNull();
+  });
+
+  it('embeds the SIGNED original envelope verbatim as `orig` when boosting a signed post', async () => {
+    const { mkdtempSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { openAttestor } = await import('../src/attest.js');
+    const { buildPostObject, serializeEnvelope, parseEnvelope } = await import('../src/envelope.js');
+
+    const dir = mkdtempSync(join(tmpdir(), 'reblog-signed-'));
+    // A signed post authored by BOB (external attestor).
+    const bobA = openAttestor(join(dir, 'bob.json'));
+    const postEnv = buildPostObject('bob signed post', 'bbbb2222-3333-4444-8555-666666666666');
+    const signed = { ...postEnv, ...bobA.sign(postEnv, BOB.address) };
+
+    const { transport, messages, posts } = makeFakeTransport();
+    messages.push(
+      makeMessage({ id: 13, text: serializeEnvelope(signed), fromId: 11, sender: BOB, timestamp: 1751800300 }),
+    );
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+
+    const res = await app.request('/api/v1/statuses/13/reblog', { method: 'POST' });
+    expect(res.status).toBe(200);
+
+    const env = JSON.parse(posts.at(-1)!.text);
+    expect(env).toMatchObject({ dn: 2, type: 'boost' });
+    // The boosted post's complete signed envelope, embedded VERBATIM.
+    expect(env.orig).toEqual(signed);
+    expect(parseEnvelope(posts.at(-1)!.text)?.orig?.sig).toBe(signed.sig);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('stays ref-only (no orig) when boosting an UNSIGNED/legacy post', async () => {
+    const { transport, posts } = makeFakeTransport();
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    // message #12 is plain text ("newest, from bob") — unsigned, nothing to attest.
+    await app.request('/api/v1/statuses/12/reblog', { method: 'POST' });
+    const env = JSON.parse(posts.at(-1)!.text);
+    expect(env.type).toBe('boost');
+    expect(env.orig).toBeUndefined();
   });
 
   it('404s boosting an unknown status', async () => {

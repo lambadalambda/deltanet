@@ -19,16 +19,20 @@ import type { Transport } from './transport/types.js';
 import { createMediaStore, isSupportedImageMime } from './media.js';
 import { parseCanonicalMid, type RefToken } from './protocol.js';
 import {
-  buildBoostEnvelope,
+  buildBoostObject,
   buildInviteRequestEnvelope,
-  buildPostEnvelope,
+  buildPostObject,
   buildReactEnvelope,
-  buildReplyEnvelope,
+  buildReplyObject,
   buildUnreactEnvelope,
   mintUuid,
+  parseEnvelope,
   refTokenToEnvelopeRef,
+  serializeEnvelope,
+  type Envelope,
 } from './envelope.js';
 import { parseWire, parseWireUuid } from './wire.js';
+import { openAttestor, sha256File } from './attest.js';
 import { createStore, ephemeralStorePath, type Store } from './store.js';
 import { deriveOnIngest } from './ingest.js';
 import { createStatusMapper, mapNotification } from './mapping.js';
@@ -133,6 +137,22 @@ export const createApp = (
   // Falls back to a per-process scratch dir so tests need no real data dir.
   const profileDir = dataDir ?? profileScratchDir();
   const headerPath = join(profileDir, 'header.png');
+
+  // Per-account ed25519 signing key (post attestations, sketch #6). Persisted
+  // in the account data dir exactly like the store — never logged. Falls back
+  // to a scratch dir when no real data dir is provided (tests).
+  const attestor = openAttestor(join(profileDir, 'deltanet-signing-key.json'));
+
+  /**
+   * Attest a content envelope: stamp `{ ts, pubkey, sig }` over its canonical
+   * payload, signed as `addr` (the daemon's own address). Returns the serialized
+   * signed wire string. The single place send paths turn an envelope object into
+   * a signed message body.
+   */
+  const signEnvelope = (env: Envelope, addr: string): string => {
+    const { ts, pubkey, sig } = attestor.sign(env, addr);
+    return serializeEnvelope({ ...env, ts, pubkey, sig });
+  };
 
   /**
    * Persist an uploaded profile image under the data dir and return its path.
@@ -576,12 +596,20 @@ export const createApp = (
       const envRef = refTokenToEnvelopeRef(ref, target.sender.address);
       await ingest(transport, target);
 
-      // Mint ONE logical-post UUID for THIS reply and emit the SAME v2 envelope
-      // (byte-identical) as BOTH copies — the feed broadcast copy and the DM
-      // copy to the parent author — so a node holding either copy (or only a
-      // ref) unifies the one logical post. No quotedText bubble (0001).
+      // Mint ONE logical-post UUID for THIS reply and emit the SAME SIGNED v2
+      // envelope (byte-identical) as BOTH copies — the feed broadcast copy and
+      // the DM copy to the parent author — so a node holding either copy (or
+      // only a ref) unifies the one logical post. No quotedText bubble (0001).
+      // The signed envelope covers the media content hash so a boosted copy of
+      // this reply's image stays verifiable.
       const uuid = mintUuid();
-      const replyText = buildReplyEnvelope(text, uuid, envRef, media ? { description: media.description } : undefined);
+      const mediaFields = media
+        ? { description: media.description, sha256: await sha256File(media.path) }
+        : undefined;
+      const replyText = signEnvelope(
+        buildReplyObject(text, uuid, envRef, mediaFields),
+        await mapper.ownAddr(transport),
+      );
 
       const msg = await transport.post(replyText, media ? { file: media.path } : undefined);
       if (media) mediaStore.tagMessage(msg.id, media.description);
@@ -600,8 +628,15 @@ export const createApp = (
     // A plain post carries its own minted logical-post UUID (v2 envelope) so
     // replies/boosts/reactions can target it by uuid (resolvable on any node).
     // Alt text rides in the envelope's `media.description` (persistent +
-    // federated), replacing the in-memory mediaStore alt-text hack.
-    const postText = buildPostEnvelope(text, mintUuid(), media ? { description: media.description } : undefined);
+    // federated); the SIGNED envelope also covers the media content hash
+    // (`media.sha256`) so a boosted copy of this post's image is verifiable.
+    const postMedia = media
+      ? { description: media.description, sha256: await sha256File(media.path) }
+      : undefined;
+    const postText = signEnvelope(
+      buildPostObject(text, mintUuid(), postMedia),
+      await mapper.ownAddr(transport),
+    );
     const msg = await transport.post(postText, media ? { file: media.path } : undefined);
     if (media) mediaStore.tagMessage(msg.id, media.description);
     await ingest(transport, msg);
@@ -642,12 +677,38 @@ export const createApp = (
     if (!ref) return c.json({ error: 'cannot resolve message id to boost' }, 422);
     await ingest(transport, target);
 
-    // Boost envelope: type:"boost" + ref, minted uuid. Per 0002 we do NOT embed
-    // the original content (no quotedText, no unverifiable copy) — embedding
-    // returns WITH attestations later.
-    const boostText = buildBoostEnvelope(mintUuid(), refTokenToEnvelopeRef(ref, target.sender.address));
+    // Boost embedding (post attestations, sketch #6 / decision 0002): the target
+    // message the booster holds — its TEXT IS the boosted post's envelope. We
+    // embed that object VERBATIM as `orig` so recipients who lack the original
+    // can verify it offline. Requirements to embed:
+    //  - the target parses as a SIGNED v2 envelope (has sig + pubkey); an
+    //    unsigned/legacy target has nothing to attest → ref-only boost, and the
+    //    recipient gets the placeholder ladder. We never fabricate an attestation.
+    //  - if the target declares media (orig.media.sha256), we re-attach the SAME
+    //    file to the boost message so the recipient can hash-verify it; if the
+    //    target has a file but the envelope carries NO signed sha256, we cannot
+    //    attest the bytes → ref-only (no orig), never a fabricated hash.
+    const orig = parseEnvelope(target.text);
+    const canEmbed = orig !== null && !!orig.sig && !!orig.pubkey;
+    // Only re-attach (and only embed) when the signed envelope covers the file's
+    // hash; a media target whose envelope lacks a signed sha256 falls back to
+    // ref-only so the recipient never sees an unverifiable image.
+    const embedMedia = canEmbed && !!orig!.media?.sha256 && !!target.file;
+    const embedOrig = canEmbed && (!target.file || embedMedia);
 
-    const msg = await transport.post(boostText);
+    const boostText = signEnvelope(
+      buildBoostObject(
+        mintUuid(),
+        refTokenToEnvelopeRef(ref, target.sender.address),
+        embedOrig ? orig! : undefined,
+      ),
+      await mapper.ownAddr(transport),
+    );
+
+    const msg = await transport.post(
+      boostText,
+      embedMedia && target.file ? { file: target.file } : undefined,
+    );
     await ingest(transport, msg);
 
     // The response wraps our new boost message; it always reflects "you just
