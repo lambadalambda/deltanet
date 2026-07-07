@@ -50,7 +50,7 @@
 		{ variant: 'focused', size: 56, shape: 'rect', cls: 'focused-av', role: 'Focused thread post · 4px radius' },
 	];
 
-	type ThemeId = 'cream' | 'dusk' | 'drive' | 'simoun';
+	type ThemeId = 'cream' | 'dusk' | 'drive' | 'simoun' | 'lablight' | 'labdark';
 	type Theme = {
 		id: ThemeId;
 		label: string;
@@ -131,7 +131,9 @@
 		{ id: 'cream', label: 'Cream', bg: '#f5f1e8', panel: '#fbfaf3', ink: '#1f2347', accent: '#a48bd9' },
 		{ id: 'dusk', label: 'Dusk', bg: '#1a1538', panel: '#2a1f4a', ink: '#e8e2f5', accent: '#e7a8c9' },
 		{ id: 'drive', label: 'Drive', bg: '#070719', panel: '#0c0c2a', ink: '#e0e6f0', accent: '#7dc4be' },
-		{ id: 'simoun', label: 'Simoun', bg: '#141b36', panel: '#1c2547', ink: '#f4ebd8', accent: '#e8763a' }
+		{ id: 'simoun', label: 'Simoun', bg: '#141b36', panel: '#1c2547', ink: '#f4ebd8', accent: '#e8763a' },
+		{ id: 'lablight', label: 'Lab Light', bg: '#ffffff', panel: '#ffffff', ink: '#0071a9', accent: '#0071a9' },
+		{ id: 'labdark', label: 'Lab Dark', bg: '#0a0e12', panel: '#0a0e12', ink: '#4db8e8', accent: '#4db8e8' }
 	];
 
 	const SECTIONS: Section[] = [

@@ -51,7 +51,7 @@
 
 	type AppRoute = 'home' | 'public' | 'thread' | 'profile' | 'notifications' | 'explore' | 'search' | 'settings' | 'bookmarks' | 'messages';
 	type NavItem = { route: AppRoute; label: string; icon: IconName; href: string; count?: number };
-	type ThemeName = 'cream' | 'dusk' | 'drive' | 'simoun';
+	type ThemeName = 'cream' | 'dusk' | 'drive' | 'simoun' | 'lablight' | 'labdark';
 	type ExploreFeed = 'popular' | 'new' | 'active';
 	type SearchTab = 'all' | 'people' | 'posts';
 	type ProfileSettings = PleromaProfileSettingsView;
@@ -161,7 +161,9 @@
 		{ id: 'cream', label: 'Cream', grad: 'linear-gradient(135deg, #f5f1e8 50%, #a48bd9 50%)' },
 		{ id: 'dusk', label: 'Dusk', grad: 'linear-gradient(135deg, #2a1f4a 50%, #e7a8c9 50%)' },
 		{ id: 'drive', label: 'Drive', grad: 'linear-gradient(135deg, #0c0a28 50%, #7dc4be 50%)' },
-		{ id: 'simoun', label: 'Simoun', grad: 'linear-gradient(135deg, #18203f 50%, #e8763a 50%)' }
+		{ id: 'simoun', label: 'Simoun', grad: 'linear-gradient(135deg, #18203f 50%, #e8763a 50%)' },
+		{ id: 'lablight', label: 'Lab Light', grad: 'linear-gradient(135deg, #ffffff 50%, #0071a9 50%)' },
+		{ id: 'labdark', label: 'Lab Dark', grad: 'linear-gradient(135deg, #0a0e12 50%, #4db8e8 50%)' }
 	];
 	const defaultProfile: ProfileSettings = {
 		displayName: '',
@@ -3692,7 +3694,7 @@
 
 	onMount(() => {
 		const storedTheme = localStorage.getItem('pn-theme');
-		if (storedTheme === 'cream' || storedTheme === 'dusk' || storedTheme === 'drive' || storedTheme === 'simoun') applyTheme(storedTheme);
+		if (storedTheme === 'cream' || storedTheme === 'dusk' || storedTheme === 'drive' || storedTheme === 'simoun' || storedTheme === 'lablight' || storedTheme === 'labdark') applyTheme(storedTheme);
 		searchRecents = readSearchRecents();
 		mounted = true;
 

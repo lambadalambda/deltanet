@@ -43,6 +43,22 @@
 				<feFuncB type="table" tableValues="0.247 0.227" />
 			</feComponentTransfer>
 		</filter>
+		<filter id="duotoneLabLight" color-interpolation-filters="sRGB">
+			<feColorMatrix type="matrix" values="0.299 0.587 0.114 0 0  0.299 0.587 0.114 0 0  0.299 0.587 0.114 0 0  0 0 0 1 0" />
+			<feComponentTransfer>
+				<feFuncR type="table" tableValues="0 1" />
+				<feFuncG type="table" tableValues="0.443 1" />
+				<feFuncB type="table" tableValues="0.663 1" />
+			</feComponentTransfer>
+		</filter>
+		<filter id="duotoneLabDark" color-interpolation-filters="sRGB">
+			<feColorMatrix type="matrix" values="0.299 0.587 0.114 0 0  0.299 0.587 0.114 0 0  0.299 0.587 0.114 0 0  0 0 0 1 0" />
+			<feComponentTransfer>
+				<feFuncR type="table" tableValues="0.039 0.302" />
+				<feFuncG type="table" tableValues="0.055 0.722" />
+				<feFuncB type="table" tableValues="0.071 0.910" />
+			</feComponentTransfer>
+		</filter>
 	</defs>
 </svg>
 
