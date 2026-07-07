@@ -799,6 +799,10 @@ const buildTransport = (
 
     contact: async (contactId) => rpc.getContact(accountId, contactId).catch(() => null),
 
+    setContactName: async (contactId, name) => {
+      await rpc.changeContactName(accountId, contactId, name);
+    },
+
     contactIdByAddr: async (addr) => {
       // SELF first: the daemon's own address (or its bare username) never
       // needs an RPC lookup, and core's lookup may not know SELF by addr.

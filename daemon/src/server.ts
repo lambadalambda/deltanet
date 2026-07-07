@@ -1643,6 +1643,27 @@ export const createApp = (
 
   // --- deltanet-specific: feed invite + follow ----------------------------
 
+  // Petnames (see ../meta/issues/petnames.md): set/clear MY local, key-bound
+  // name override for a contact. Core's `displayName` prefers it everywhere,
+  // so timelines/mentions/notifications pick it up with no further plumbing.
+  app.post('/api/deltanet/contacts/:id/petname', requireTransport, async (c) => {
+    const transport = c.get('transport');
+    const contactId = Number(c.req.param('id'));
+    if (!Number.isInteger(contactId) || contactId <= 0) {
+      return c.json({ error: 'Record not found' }, 404);
+    }
+    if (contactId === 1) {
+      return c.json({ error: "Validation failed: can't set a petname for yourself" }, 422);
+    }
+    const existing = await transport.contact(contactId);
+    if (!existing) return c.json({ error: 'Record not found' }, 404);
+    const body = await c.req.json<{ petname?: string }>().catch(() => ({}) as { petname?: string });
+    const petname = String(body.petname ?? '').trim();
+    await transport.setContactName(contactId, petname);
+    const updated = await transport.contact(contactId);
+    return c.json(contactToAccount(updated ?? existing, baseUrl));
+  });
+
   app.get('/api/deltanet/invite', requireTransport, async (c) =>
     c.json({ invite: await c.get('transport').feedInvite() }),
   );

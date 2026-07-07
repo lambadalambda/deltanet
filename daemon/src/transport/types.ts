@@ -98,6 +98,13 @@ export interface Transport {
   introduceViaInvite(invite: string, expectedAddr: string): Promise<number | null>;
   contact(contactId: number): Promise<T.Contact | null>;
   /**
+   * Set (or clear, with '') the LOCAL name override for a contact — the
+   * petname (see ../meta/issues/petnames.md). Key-bound: it lives on the
+   * contact row, so it follows the cryptographic identity, not the string
+   * name. `Contact.displayName` prefers it everywhere automatically.
+   */
+  setContactName(contactId: number, name: string): Promise<void>;
+  /**
    * Resolve a contact id from an email address. Also matches SELF: if the
    * handle equals our own address (or its bare local part / username),
    * returns contact id 1. Null if no contact is known for the address.

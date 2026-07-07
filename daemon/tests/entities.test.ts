@@ -126,6 +126,40 @@ describe('contactToAccount', () => {
     expect((account.pleroma as any).relationship).toBeUndefined();
   });
 
+  it('ships auth_name + petname in pleroma.deltanet when a local name override exists', () => {
+    // Petnames (meta/issues/petnames.md): `name` is MY local override,
+    // `authName` is THEIR self-chosen name; displayName prefers mine.
+    const carol = makeContact({
+      id: 12,
+      address: 'zbie604yz@nine.testrun.org',
+      authName: 'Carol Sparkle',
+      name: 'carol',
+      displayName: 'carol',
+    });
+    const account = contactToAccount(carol, BASE);
+    expect(account.display_name).toBe('carol');
+    expect(account.pleroma.deltanet).toEqual({ auth_name: 'Carol Sparkle', petname: 'carol' });
+  });
+
+  it('ships auth_name without a petname when no local override exists', () => {
+    const carol = makeContact({
+      id: 12,
+      address: 'zbie604yz@nine.testrun.org',
+      authName: 'Carol Sparkle',
+      name: '',
+      displayName: 'Carol Sparkle',
+    });
+    const account = contactToAccount(carol, BASE);
+    expect(account.pleroma.deltanet).toEqual({ auth_name: 'Carol Sparkle' });
+  });
+
+  it('never ships a petname for SELF', () => {
+    // SELF's `name` is the account's own configured displayname, not a petname.
+    const self = makeContact({ id: 1, name: 'alice', authName: '' });
+    const account = contactToAccount(self, BASE);
+    expect(account.pleroma.deltanet).toEqual({ auth_name: '' });
+  });
+
   it('carries an optional relationship into pleroma.relationship', () => {
     const relationship = {
       id: '1',
@@ -249,7 +283,14 @@ describe('messageToStatus: reply markers', () => {
 
   it('fills in_reply_to_account_id and mentions when the parent mid resolves and the parent message loads', () => {
     const msg = makeMessage({ text: buildReplyText('hi there', parentRef, UUID) });
-    const parentAuthor = makeContact({ id: 21, address: 'parentauthor@example.org', displayName: 'parent author' });
+    const parentAuthor = makeContact({
+      id: 21,
+      address: 'parentauthor@example.org',
+      displayName: 'parent author',
+      authName: 'parent author',
+      // No local override — makeContact's default `name` would read as a petname.
+      name: '',
+    });
     const parent = makeMessage({ id: 40, sender: parentAuthor, text: 'the original post' });
     const resolver: StatusResolver = {
       ...noopResolver,
@@ -264,10 +305,11 @@ describe('messageToStatus: reply markers', () => {
         username: 'parentauthor',
         acct: 'parentauthor@example.org',
         url: `${BASE}/deltanet/contact/21`,
-        // Non-standard additive field: chatmail local parts are random
-        // registration strings, so the "Replying to" pill needs the chosen
-        // name (see meta/issues/reply-pill-display-name.md).
+        // Non-standard additive fields: chatmail local parts are random
+        // registration strings, so the "Replying to" pill needs names
+        // (see meta/issues/reply-pill-display-name.md + petnames.md).
         display_name: 'parent author',
+        auth_name: 'parent author',
       },
     ]);
   });
@@ -310,8 +352,31 @@ describe('messageToStatus: reply markers', () => {
         acct: 'p6yalimhl@nine.testrun.org',
         url: `${BASE}/deltanet/contact/1`,
         display_name: 'alice',
+        auth_name: 'alice',
       },
     ]);
+  });
+
+  it('carries the parent author petname on the mention when set', () => {
+    const msg = makeMessage({ text: buildReplyText('hi there', parentRef, UUID) });
+    const carol = makeContact({
+      id: 21,
+      address: 'zbie604yz@nine.testrun.org',
+      authName: 'Carol Sparkle',
+      name: 'carol',
+      displayName: 'carol',
+    });
+    const parent = makeMessage({ id: 40, sender: carol, text: 'the original post' });
+    const resolver: StatusResolver = {
+      ...noopResolver,
+      resolveMid: (key) => (key === parentRef.keyString ? 40 : null),
+    };
+    const status = messageToStatus(msg, BASE, null, resolver, (id) => (id === 40 ? parent : null));
+    expect(status.mentions[0]).toMatchObject({
+      display_name: 'carol',
+      auth_name: 'Carol Sparkle',
+      petname: 'carol',
+    });
   });
 });
 

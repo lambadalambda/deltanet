@@ -22,12 +22,17 @@ export type MastodonMention = {
   acct: string;
   url: string;
   /**
-   * NON-STANDARD additive field: the contact's chosen display name. Chatmail
-   * local parts are random registration strings, so anything rendering a
-   * mention (the "Replying to" pill) needs the name, not the handle
-   * (decision 0001: the API is ours; vanilla clients ignore extra fields).
+   * NON-STANDARD additive field: the contact's display name (local petname
+   * override wins, like everywhere else). Chatmail local parts are random
+   * registration strings, so anything rendering a mention (the "Replying to"
+   * pill) needs the name, not the handle (decision 0001: the API is ours;
+   * vanilla clients ignore extra fields).
    */
   display_name: string;
+  /** NON-STANDARD: the name THEY chose (see petnames — mirrors account pleroma.deltanet.auth_name). */
+  auth_name: string;
+  /** NON-STANDARD: MY local key-bound petname for them, when set (never for SELF). */
+  petname?: string;
 };
 
 /** Full Mastodon relationship shape (only `following` is ever true today; the rest are honest `false`s). */
@@ -179,6 +184,16 @@ export const contactToAccount = (
       is_moderator: false,
       tags: [],
       ...(relationship ? { relationship } : {}),
+      // Petnames (see ../meta/issues/petnames.md): `authName` is the name THEY
+      // chose (carried on their messages); `name` is MY local override — a
+      // key-bound petname, set via changeContactName. `displayName` (mapped to
+      // `display_name` above) already prefers the petname; shipping both lets
+      // the UI render "TheirName ⟦petname⟧". SELF's `name` is the account's
+      // own configured displayname, never a petname.
+      deltanet: {
+        auth_name: contact.authName,
+        ...(contact.id !== 1 && contact.name.trim() ? { petname: contact.name } : {}),
+      },
     },
   };
 };
@@ -216,7 +231,15 @@ export const addrToAccount = (addr: string, baseUrl: string, displayName?: strin
     fields: [],
     emojis: [],
     source: { note: '', fields: [] },
-    pleroma: { is_admin: false, is_moderator: false, tags: [] },
+    pleroma: {
+      is_admin: false,
+      is_moderator: false,
+      tags: [],
+      // Addr shells have no contact row, so no petname is possible; the
+      // attested display name (when present) is the closest thing to an
+      // auth_name we can honestly claim.
+      deltanet: { auth_name: displayName ?? '' },
+    },
   };
 };
 
@@ -229,6 +252,8 @@ const contactToMention = (contact: T.Contact, baseUrl: string): MastodonMention 
     acct: contact.address,
     url: `${baseUrl}/deltanet/contact/${contact.id}`,
     display_name: contact.displayName,
+    auth_name: contact.authName,
+    ...(contact.id !== 1 && contact.name.trim() ? { petname: contact.name } : {}),
   };
 };
 

@@ -25,7 +25,8 @@ const BASE = 'http://localhost:4030';
 /** What the fake transport's exportBackup writes as "core's tar" (bytes only matter for round-trips). */
 const FAKE_CORE_TAR = Buffer.from('FAKE-DELTA-CHAT-BACKUP-TAR-BYTES');
 
-const BOB = makeContact({ id: 11, address: 'zbie604yz@nine.testrun.org', displayName: 'bob' });
+// authName set + name empty: BOB has no local petname override by default.
+const BOB = makeContact({ id: 11, address: 'zbie604yz@nine.testrun.org', displayName: 'bob', authName: 'bob', name: '' });
 
 const makeFakeTransport = () => {
   let self = makeContact();
@@ -74,6 +75,14 @@ const makeFakeTransport = () => {
   ];
   const followerHandlers = new Set<(contactId: number) => void>();
   let lastBackupStamp: number | null = null;
+  // Petname fake: contact(11) reflects the local override like core does.
+  const setNames: Array<{ contactId: number; name: string }> = [];
+  let bobPetname = '';
+  const bobWithPetname = (): typeof BOB => ({
+    ...BOB,
+    name: bobPetname,
+    displayName: bobPetname || BOB.authName,
+  });
   const transport: Transport = {
     self: async () => self,
     updateProfile: async (updates) => {
@@ -114,8 +123,12 @@ const makeFakeTransport = () => {
       return path;
     },
     lastBackupAt: async () => lastBackupStamp,
+    setContactName: async (contactId, name) => {
+      setNames.push({ contactId, name });
+      if (contactId === 11) bobPetname = name;
+    },
     follow: async () => 99,
-    contact: async (id) => (id === 1 ? self : id === 11 ? BOB : null),
+    contact: async (id) => (id === 1 ? self : id === 11 ? bobWithPetname() : null),
     contactIdByAddr: async (addr) => {
       const handle = addr.toLowerCase();
       const selfAddr = self.address.toLowerCase();
@@ -207,7 +220,7 @@ const makeFakeTransport = () => {
   const emitFollower = (contactId: number) => {
     for (const handler of followerHandlers) handler(contactId);
   };
-  return { transport, messages, posts, dms, deleted, unfollowed, following, mids, emitFollower, profileUpdates, createdContacts, broadcasts, chatPosts, leftChats, keyReachable, introductions };
+  return { transport, messages, posts, dms, deleted, unfollowed, following, mids, emitFollower, profileUpdates, createdContacts, broadcasts, chatPosts, leftChats, keyReachable, introductions, setNames };
 };
 
 /** A context that's already configured with a fixed fake transport. */
@@ -384,7 +397,7 @@ describe('timelines', () => {
     expect(reply.in_reply_to_id).toBe('12');
     expect(reply.in_reply_to_account_id).toBe('11'); // bob's contact id
     expect(reply.mentions).toEqual([
-      { id: '11', username: 'zbie604yz', acct: BOB.address, url: `${BASE}/deltanet/contact/11`, display_name: 'bob' },
+      { id: '11', username: 'zbie604yz', acct: BOB.address, url: `${BASE}/deltanet/contact/11`, display_name: 'bob', auth_name: 'bob' },
     ]);
   });
 });
@@ -2571,5 +2584,61 @@ describe('backup endpoints', () => {
     expect(postRes.status).toBe(200);
     const envelope = parseEnvelope(posts[posts.length - 1]!.text);
     expect(envelope?.pubkey).toBe(donorPub);
+  });
+});
+
+// --- petnames (see meta/issues/petnames.md) ---------------------------------
+
+describe('POST /api/deltanet/contacts/:id/petname', () => {
+  const post = (app: ReturnType<typeof createApp>, id: string, petname: string) =>
+    app.request(`/api/deltanet/contacts/${id}/petname`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ petname }),
+    });
+
+  it('401s when unconfigured', async () => {
+    const app = createApp(makeUnconfiguredCtx(), { baseUrl: BASE });
+    expect((await post(app, '11', 'carol')).status).toBe(401);
+  });
+
+  it('404s an unknown contact', async () => {
+    const { transport } = makeFakeTransport();
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    expect((await post(app, '77', 'carol')).status).toBe(404);
+    expect((await post(app, 'not-a-number', 'carol')).status).toBe(404);
+  });
+
+  it('422s a petname for SELF', async () => {
+    const { transport, setNames } = makeFakeTransport();
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    expect((await post(app, '1', 'me')).status).toBe(422);
+    expect(setNames).toEqual([]);
+  });
+
+  it('sets a petname and returns the updated account', async () => {
+    const { transport, setNames } = makeFakeTransport();
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const res = await post(app, '11', '  bobby  ');
+    expect(res.status).toBe(200);
+    const account = (await res.json()) as any;
+    expect(setNames).toEqual([{ contactId: 11, name: 'bobby' }]);
+    expect(account.display_name).toBe('bobby');
+    expect(account.pleroma.deltanet).toEqual({ auth_name: 'bob', petname: 'bobby' });
+  });
+
+  it('clears the petname with an empty string, reverting to the auth name', async () => {
+    const { transport, setNames } = makeFakeTransport();
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    await post(app, '11', 'bobby');
+    const res = await post(app, '11', '');
+    expect(res.status).toBe(200);
+    const account = (await res.json()) as any;
+    expect(setNames).toEqual([
+      { contactId: 11, name: 'bobby' },
+      { contactId: 11, name: '' },
+    ]);
+    expect(account.display_name).toBe('bob');
+    expect(account.pleroma.deltanet).toEqual({ auth_name: 'bob' });
   });
 });
