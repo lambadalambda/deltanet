@@ -8,6 +8,29 @@ locked posts; boosting one's own locked post is refused). Everything that
 makes deltanet posts *shareable* still needs locked-awareness so
 "Followers" isn't leakable through machinery:
 
+## Decisions (2026-07-09, picked up)
+
+- **Marker: UNSIGNED `visibility: 'private'` field on content envelopes.**
+  Same trust argument as the `invite` field: it rides outside the dn3
+  canonical payload (no dn4 bump, no downgrade analysis), and stripping it
+  requires a peer who could equally leak the content itself — the marker
+  guards honest machinery, not malicious holders. Tolerant parse: any
+  value other than 'private' drops to absent (= public).
+- **Reply inheritance: server-ENFORCED.** A reply to a private-marked (or
+  own-locked) parent goes to the replier's locked channel regardless of
+  the requested visibility — stricter than Mastodon's default-but-
+  overridable. Documented caveat: the replier's locked audience is THEIR
+  followers, not the original author's.
+- **Mention delivery of locked posts stays ON**: DM-copying a mentioned
+  key-contact is the author deliberately addressing them.
+- **Thread channels: locked roots are not subscribable** (scoped requests
+  refused, subscribe endpoint refuses, republication skips private
+  replies) — v1 simplicity over locked-membership-gated channels.
+- **Revocation: API-level now** (`POST
+  /api/v1/accounts/:id/remove_from_followers`, removes from BOTH
+  channels), profile UI deferred until relationships compute
+  `followed_by`.
+
 ## Deferred surfaces (from part 1, documented not silent)
 
 - **Envelope visibility marker + remote honoring**: receivers can't tell
