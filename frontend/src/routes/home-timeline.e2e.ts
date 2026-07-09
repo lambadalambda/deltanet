@@ -3515,3 +3515,20 @@ test('an unconfirmed-author status renders the unconfirmed chip', async ({ page 
 	const ordinary = page.locator('.post').filter({ hasText: 'ordinary post' }).first();
 	await expect(ordinary.getByTestId('unconfirmed-chip')).toHaveCount(0);
 });
+
+test('the boost button is disabled on followers-only posts', async ({ page }) => {
+	await authenticate(page);
+	await mockHomeTimeline(page, async (route) => {
+		await fulfillHome(route, [
+			{ ...statusWithText('status-priv', 'followers only content'), visibility: 'private' },
+			statusWithText('status-pub', 'public content')
+		]);
+	});
+	await setViewport(page, 'desktop');
+	await page.goto('/app/home');
+
+	const priv = page.locator('.post').filter({ hasText: 'followers only content' }).first();
+	await expect(priv.locator('.post-action.boost')).toBeDisabled();
+	const pub = page.locator('.post').filter({ hasText: 'public content' }).first();
+	await expect(pub.locator('.post-action.boost')).toBeEnabled();
+});

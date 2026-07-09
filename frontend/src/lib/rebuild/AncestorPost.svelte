@@ -30,6 +30,7 @@
 		mentionNames?: Record<string, string>;
 		authName?: string;
 		petname?: string;
+		visibility?: string;
 		quotedPost?: Record<string, unknown>;
 		reactions?: PleromaReactionView[];
 		bookmarked?: boolean;
@@ -80,7 +81,7 @@
 				<PostMedia post={post} onOpen={handleLightbox} onVote={onVote ? (pollId, choice) => onVote(post.id, pollId, choice) : undefined} />
 			</PostCW>
 			<PostReactions reactions={post.reactions} onToggle={onAction ? (reaction) => onAction(post.id, `reaction:${reaction.name}`) : undefined} onAdd={onReact ? (anchor) => onReact(post.id, anchor) : undefined} />
-			<PostActions post={post} replyExpanded={replyExpanded} replyControlsId={replyControlsId} onAction={(key) => onAction?.(post.id, key)} onReact={onReact ? (anchor) => onReact(post.id, anchor) : undefined} canManage={canManage} />
+			<PostActions post={post} disabledActions={{ boost: post.visibility === 'private' }} replyExpanded={replyExpanded} replyControlsId={replyControlsId} onAction={(key) => onAction?.(post.id, key)} onReact={onReact ? (anchor) => onReact(post.id, anchor) : undefined} canManage={canManage} />
 		</div>
 	</div>
 </PostBoost>
