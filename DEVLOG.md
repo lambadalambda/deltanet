@@ -1,5 +1,33 @@
 # deltanet devlog
 
+## 2026-07-08 — active key confirmation (closing the TOFU stranger window)
+
+Relayed content from a never-met author used to render fully attributed on
+its self-certifying signature alone. Now (meta/issues/key-confirmation.md):
+
+- Held/embedded content whose author has NO pinned key renders with a
+  dashed "unconfirmed" chip (`pleroma.deltanet.author_unconfirmed`) —
+  attribution is honest about being signature-only.
+- Every held render (= a thread/orig view; held content never enters
+  timelines) schedules ONE background confirmation per author per 15-min
+  window: introduce via the invite the envelope carries (checkQr gate +
+  post-join address check), then send an ordinary `envelope-request` for
+  the post's uuid DIRECTLY to the author. No new wire verb.
+- **Self-served-bundle pin rule**: a bundle item that verifies against the
+  SENDER's own address pins them — the author attesting their own envelope
+  over the PGP-verified channel, trust-equivalent to a direct content
+  delivery. First-wins; relayed items (author != sender) still never pin.
+- The boost-embed verdict cache re-verifies when the pin state changes, so
+  a confirmation that CONFLICTS with an embed flips it to the unverified
+  placeholder instead of serving stale trust — forgeries are positively
+  detected, not just eventually noticed.
+- Deliberately NOT eager-on-ingest: a securejoin is visible to the author,
+  so eager fetching would turn every backfilling lurker into a join event.
+  Thread-view gating bounds the metadata leak to actual reader interest.
+- Direct-delivery TOFU pinning itself is unchanged — it was already
+  fetch-equivalent (same PGP channel); only the silent stranger fallback
+  is gone.
+
 ## 2026-07-08 — visibility channels, part 1 (public + locked)
 
 The composer's visibility selector is no longer decorative: `private`

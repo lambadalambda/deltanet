@@ -40,3 +40,4 @@
 - [x] [Addressing + display-name autocomplete in the composer](issues/mention-addressing-autocomplete.md)
 - [x] [Search: users and posts we know about](issues/search.md)
 - [x] [Visibility tiers via multiple channels (public + locked) — part 1](issues/visibility-channels.md)
+- [x] [Active key confirmation for unpinned authors](issues/key-confirmation.md)
