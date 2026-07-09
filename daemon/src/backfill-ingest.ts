@@ -95,6 +95,9 @@ export const buildServeBundles = async (
     } else {
       env = store.heldEnvelope(uuid)?.env ?? null;
     }
+    // Leak prevention: a followers-only envelope (wire marker) is never
+    // served onward, regardless of how we hold it.
+    if (env?.visibility === 'private') continue;
     const servable = servableEnvelope(env);
     if (servable) envs.push(servable);
   }

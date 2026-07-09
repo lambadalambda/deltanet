@@ -83,6 +83,16 @@ export const handleThreadInviteRequest = async (
   const haveRoot = store.resolveKey(rootUuid) !== null || store.heldEnvelope(rootUuid) !== null;
   if (!haveRoot) return true;
 
+  // Leak prevention: a LOCKED root (our own followers-only post, or a held
+  // root carrying the private wire marker) has no public thread channel —
+  // refuse silently (consume the request, grant nothing).
+  if (
+    store.isLockedPost(rootUuid) ||
+    store.heldEnvelope(rootUuid)?.env.visibility === 'private'
+  ) {
+    return true;
+  }
+
   // Lazily create the per-thread channel on first granted subscriber.
   let chatId = store.hostedThreadChatId(rootUuid);
   if (chatId === null) {
@@ -141,6 +151,9 @@ export const republishReplyToThread = async (
   if (!isFeedMessage) return false;
   const env = parseEnvelope(msg.text);
   if (!env || env.type !== 'reply' || !env.uuid) return false;
+  // Leak prevention: a followers-only reply must never be republished into a
+  // thread channel (arbitrary subscribers).
+  if (env.visibility === 'private') return false;
   // The SIGNED root ref (not display attribution) names the thread + owner.
   const root = env.root;
   if (!root || !('u' in root) || !root.u) return false;

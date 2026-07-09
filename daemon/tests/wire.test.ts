@@ -212,3 +212,13 @@ describe('isSearchableContent (search post filter)', () => {
     expect(isSearchableContent('')).toBe(false);
   });
 });
+
+describe('parseWire visibility surface', () => {
+  it('surfaces a private marker from v2 envelopes; legacy text never has one', () => {
+    const UUIDW = '77777777-2222-4333-8444-555555555555';
+    const priv = JSON.stringify({ dn: 2, type: 'post', uuid: UUIDW, text: 'locked', visibility: 'private' });
+    expect(parseWire(priv).visibility).toBe('private');
+    expect(parseWire('plain legacy text').visibility).toBeUndefined();
+    expect(parseWire(JSON.stringify({ dn: 2, type: 'post', uuid: UUIDW, text: 'pub' })).visibility).toBeUndefined();
+  });
+});

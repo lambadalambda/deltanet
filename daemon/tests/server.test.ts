@@ -75,6 +75,7 @@ const makeFakeTransport = () => {
   ];
   const followerHandlers = new Set<(contactId: number) => void>();
   let lastBackupStamp: number | null = null;
+  const removedFollowers: number[] = [];
   // Petname fake: contact(11) reflects the local override like core does.
   const setNames: Array<{ contactId: number; name: string }> = [];
   let bobPetname = '';
@@ -167,6 +168,9 @@ const makeFakeTransport = () => {
       if (idx !== -1) messages.splice(idx, 1);
     },
     following: async () => following,
+    removeFollower: async (contactId) => {
+      removedFollowers.push(contactId);
+    },
     unfollow: async (contactId) => {
       const idx = following.findIndex((f) => f.contactId === contactId);
       if (idx === -1) return false;
@@ -223,7 +227,7 @@ const makeFakeTransport = () => {
   const emitFollower = (contactId: number) => {
     for (const handler of followerHandlers) handler(contactId);
   };
-  return { transport, messages, posts, dms, deleted, unfollowed, following, mids, emitFollower, profileUpdates, createdContacts, broadcasts, chatPosts, leftChats, keyReachable, introductions, setNames };
+  return { transport, messages, posts, dms, deleted, unfollowed, following, mids, emitFollower, profileUpdates, createdContacts, broadcasts, chatPosts, leftChats, keyReachable, introductions, setNames, removedFollowers };
 };
 
 /** A context that's already configured with a fixed fake transport. */
@@ -3032,5 +3036,111 @@ describe('visibility channels 1B: requesting locked access', () => {
     const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     expect((await app.request('/api/deltanet/contacts/77/request-locked', { method: 'POST' })).status).toBe(404);
     expect((await app.request('/api/deltanet/contacts/1/request-locked', { method: 'POST' })).status).toBe(422);
+  });
+});
+
+// --- visibility leak prevention (meta/issues/visibility-leak-prevention.md) --
+
+describe('leak prevention: the wire marker', () => {
+  it('locked posts and replies carry visibility:private on the wire', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'deltanet-lp-'));
+    const store = createStore(join(dir, 'store.json'));
+    const { transport, posts } = makeFakeTransport();
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
+    await app.request('/api/v1/statuses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'marked', visibility: 'private' }),
+    });
+    expect(parseEnvelope(posts[0]!.text)?.visibility).toBe('private');
+    await app.request('/api/v1/statuses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'marked reply', visibility: 'private', in_reply_to_id: '12' }),
+    });
+    expect(parseEnvelope(posts[1]!.text)?.visibility).toBe('private');
+    // Public posts stay unmarked.
+    await app.request('/api/v1/statuses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'plain' }),
+    });
+    expect(parseEnvelope(posts[2]!.text)?.visibility).toBeUndefined();
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('leak prevention: receiver honoring', () => {
+  const markedMessage = (id: number, text: string) =>
+    makeMessage({
+      id,
+      fromId: 11,
+      sender: BOB,
+      text: JSON.stringify({ dn: 2, type: 'post', uuid: mintPostUuid(), text, visibility: 'private' }),
+      timestamp: 1751900300,
+    });
+
+  it('a RECEIVED private-marked post renders visibility private', async () => {
+    const { transport, messages, mids } = makeFakeTransport();
+    messages.push(markedMessage(80, 'their locked post'));
+    mids.set(80, 'mid-80@example.org');
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const status = (await (await app.request('/api/v1/statuses/80')).json()) as any;
+    expect(status.visibility).toBe('private');
+  });
+
+  it('boosting a RECEIVED private-marked post is refused', async () => {
+    const { transport, messages, mids, posts } = makeFakeTransport();
+    messages.push(markedMessage(81, 'do not boost me'));
+    mids.set(81, 'mid-81@example.org');
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const res = await app.request('/api/v1/statuses/81/reblog', { method: 'POST' });
+    expect(res.status).toBe(422);
+    expect(posts.filter((p) => parseEnvelope(p.text)?.type === 'boost')).toHaveLength(0);
+  });
+
+  it('a reply to a private-marked parent is FORCED to the locked channel and marked', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'deltanet-lp-inherit-'));
+    const store = createStore(join(dir, 'store.json'));
+    const { transport, messages, mids, posts } = makeFakeTransport();
+    messages.push(markedMessage(82, 'locked parent'));
+    mids.set(82, 'mid-82@example.org');
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
+    const res = await app.request('/api/v1/statuses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      // Requested PUBLIC — the server must override to locked.
+      body: JSON.stringify({ status: 'inherited reply', in_reply_to_id: '82', visibility: 'public' }),
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as any).visibility).toBe('private');
+    const reply = posts.find((p) => parseEnvelope(p.text)?.type === 'reply')!;
+    expect(reply.channel).toBe('locked');
+    expect(parseEnvelope(reply.text)?.visibility).toBe('private');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('thread subscription to a locked/private root is refused', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'deltanet-lp-sub-'));
+    const store = createStore(join(dir, 'store.json'));
+    const { transport, messages, mids } = makeFakeTransport();
+    messages.push(markedMessage(83, 'private root'));
+    mids.set(83, 'mid-83@example.org');
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
+    const res = await app.request('/api/v1/pleroma/statuses/83/subscribe', { method: 'POST' });
+    expect(res.status).toBe(422);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('leak prevention: revocation', () => {
+  it('remove_from_followers removes the contact from both channels', async () => {
+    const { transport, removedFollowers } = makeFakeTransport();
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const res = await app.request('/api/v1/accounts/11/remove_from_followers', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(removedFollowers).toEqual([11]);
+    expect(((await res.json()) as any).followed_by).toBe(false);
+    expect((await app.request('/api/v1/accounts/77/remove_from_followers', { method: 'POST' })).status).toBe(404);
   });
 });

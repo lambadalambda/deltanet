@@ -938,6 +938,17 @@ const buildTransport = (
       return results;
     },
 
+    removeFollower: async (contactId) => {
+      const chatIds = [await ensureFeedChat()];
+      const locked = await lockedChatIdIfAny();
+      if (locked !== null) chatIds.push(locked);
+      for (const chatId of chatIds) {
+        await rpc.removeContactFromChat(accountId, chatId, contactId).catch((err) => {
+          console.error('removeFollower: removeContactFromChat failed (non-fatal):', err);
+        });
+      }
+    },
+
     unfollow: async (contactId) => {
       const chatId = await inBroadcastChatFor(contactId);
       if (chatId === null) return false;

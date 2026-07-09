@@ -152,5 +152,27 @@ describe('visibility channels over the relay', () => {
     const stats = await a.stats();
     expect(stats.followers).toBe(2); // B + C, deduped across channels
     expect(stats.statuses).toBeGreaterThanOrEqual(2);
+
+    // --- Leak prevention (part 2), on the LOCKED FOLLOWER's node (B) ---
+    const lockedOnB = await waitFor(b, (m) => bodyOf(m) === lockedText);
+    // The wire marker traveled: B renders the received post as private.
+    const bView = (await (await bApp.request(`/api/v1/statuses/${lockedOnB.id}`)).json()) as any;
+    expect(bView.visibility, 'B renders the received locked post private').toBe('private');
+    // B's daemon refuses to boost it.
+    const boostRes = await bApp.request(`/api/v1/statuses/${lockedOnB.id}/reblog`, { method: 'POST' });
+    expect(boostRes.status, 'boosting a received followers-only post is refused').toBe(422);
+    // B's reply inherits privacy even when requested public: it lands in B's
+    // OWN locked channel and carries the marker — so C (who follows B
+    // publicly) never receives it.
+    const replyRes = await bApp.request('/api/v1/statuses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: `b locked reply ${stamp}`, in_reply_to_id: String(lockedOnB.id), visibility: 'public' }),
+    });
+    expect(replyRes.status).toBe(200);
+    expect(((await replyRes.json()) as any).visibility, "B's reply inherited private").toBe('private');
+    await new Promise((r) => setTimeout(r, 10_000));
+    const cTexts2 = (await c.timeline({ limit: 60 })).map(bodyOf);
+    expect(cTexts2, "B's inherited-locked reply never reaches C").not.toContain(`b locked reply ${stamp}`);
   }, 1_800_000);
 });

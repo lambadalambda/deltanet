@@ -178,6 +178,12 @@ export interface Transport {
    */
   unfollow(contactId: number): Promise<boolean>;
   /**
+   * Revoke a FOLLOWER: remove the contact from BOTH owned broadcast channels
+   * (public feed + locked, when it exists). Stops FUTURE delivery only —
+   * already-delivered posts stay on their device (documented honest limit).
+   */
+  removeFollower(contactId: number): Promise<void>;
+  /**
    * Leave a specific chat by id (block it, stopping delivery) — used to
    * unsubscribe from a thread channel. Same `blockChat` mechanism as `unfollow`
    * (broadcasts have no plain "leave"); best-effort.

@@ -993,6 +993,21 @@ export const createApp = (
       store.hasPendingFollowRequest(contact.address),
     );
 
+  // Leak prevention: revoke a follower from BOTH channels (Mastodon's
+  // remove_from_followers). Future delivery only — already-delivered posts
+  // stay on their device.
+  app.post('/api/v1/accounts/:id/remove_from_followers', requireTransport, async (c) => {
+    const transport = c.get('transport');
+    const contactId = Number(c.req.param('id'));
+    if (!Number.isInteger(contactId) || contactId <= 0 || contactId === 1) {
+      return c.json({ error: 'Record not found' }, 404);
+    }
+    const contact = await transport.contact(contactId);
+    if (!contact) return c.json({ error: 'Record not found' }, 404);
+    await transport.removeFollower(contactId);
+    return c.json({ ...relationshipFor(false, contactId), followed_by: false });
+  });
+
   app.get('/api/v1/accounts/relationships', requireTransport, async (c) => {
     const transport = c.get('transport');
     const raw = c.req.queries('id[]') ?? c.req.queries('id') ?? [];
@@ -1238,8 +1253,13 @@ export const createApp = (
     const inReplyToId = body['in_reply_to_id'] != null ? String(body['in_reply_to_id']) : undefined;
     // Visibility channels: 'private' ("Followers") goes to the LOCKED channel;
     // public/unlisted/default to the public feed. The posted uuid is recorded
-    // so leak guards + rendering know the post is locked.
-    const channel: OwnChannel = String(body['visibility'] ?? '') === 'private' ? 'locked' : 'public';
+    // so leak guards + rendering know the post is locked. Mutable: reply
+    // privacy INHERITANCE below forces 'locked' for replies to private
+    // parents (leak prevention — stricter than Mastodon's overridable
+    // default; the replier's locked audience is their own followers).
+    let channel: OwnChannel = String(body['visibility'] ?? '') === 'private' ? 'locked' : 'public';
+    /** The unsigned wire marker for locked content (leak prevention). */
+    const privacyMark = () => (channel === 'locked' ? { visibility: 'private' as const } : {});
     if (inReplyToId) {
       const parsedParent = parseStatusId(inReplyToId);
       if (parsedParent?.kind === 'orig') {
@@ -1250,6 +1270,9 @@ export const createApp = (
         // (the held parent's own root, or the parent itself when it is one).
         const orig = await resolveOrigAction(transport, parsedParent.uuid);
         if (!orig) return c.json({ error: 'Record not found' }, 404);
+        // Reply privacy inheritance: a private-marked held parent forces the
+        // reply onto the locked channel.
+        if (orig.env.visibility === 'private') channel = 'locked';
         const envRef: EnvelopeRef = { u: parsedParent.uuid, addr: orig.authorAddr };
         const root =
           orig.env.root ??
@@ -1259,7 +1282,7 @@ export const createApp = (
           ? { description: media.description, sha256: await sha256File(media.path) }
           : undefined;
         const replyText = signEnvelope(
-          buildReplyObject(text, uuid, envRef, mediaFields, root),
+          { ...buildReplyObject(text, uuid, envRef, mediaFields, root), ...privacyMark() },
           await mapper.ownAddr(transport),
           await ownContactInvite(transport),
         );
@@ -1302,6 +1325,15 @@ export const createApp = (
       // copy of the target — including a third party who only has the feed copy.
       const ref = await targetRef(transport, target);
       if (!ref) return c.json({ error: 'cannot resolve message id for reply target' }, 422);
+      // Reply privacy inheritance: a private-marked parent (received) or an
+      // own locked parent forces the reply onto the locked channel.
+      const parentUuid = parseWireUuid(target.text);
+      if (
+        parseWire(target.text).visibility === 'private' ||
+        (parentUuid !== null && store.isLockedPost(parentUuid))
+      ) {
+        channel = 'locked';
+      }
       const envRef = refTokenToEnvelopeRef(ref, target.sender.address);
       await ingest(transport, target);
 
@@ -1320,7 +1352,7 @@ export const createApp = (
       // mid-thread holder can name the thread + owner.
       const root = await deriveRootRef(transport, target);
       const replyText = signEnvelope(
-        buildReplyObject(text, uuid, envRef, mediaFields, root),
+        { ...buildReplyObject(text, uuid, envRef, mediaFields, root), ...privacyMark() },
         await mapper.ownAddr(transport),
         await ownContactInvite(transport),
       );
@@ -1392,7 +1424,7 @@ export const createApp = (
       : undefined;
     const postUuid = mintUuid();
     const postText = signEnvelope(
-      buildPostObject(text, postUuid, postMedia),
+      { ...buildPostObject(text, postUuid, postMedia), ...privacyMark() },
       await mapper.ownAddr(transport),
       await ownContactInvite(transport),
     );
@@ -1441,6 +1473,10 @@ export const createApp = (
       // ref-only, the same rule as an unattestable local target.
       const orig = await resolveOrigAction(transport, parsed.uuid);
       if (!orig) return c.json({ error: 'Record not found' }, 404);
+      // Leak guard: a held/embedded followers-only post is not reboggable.
+      if (orig.env.visibility === 'private') {
+        return c.json({ error: 'private (followers-only) posts cannot be boosted' }, 422);
+      }
       const envRef: EnvelopeRef = { u: parsed.uuid, addr: orig.authorAddr };
       const embed = orig.env.media?.sha256 ? undefined : orig.env;
       const boostText = signEnvelope(
@@ -1461,11 +1497,15 @@ export const createApp = (
     }
     const target = parsed?.kind === 'msg' ? await transport.message(parsed.msgId) : null;
     if (!target) return c.json({ error: 'Record not found' }, 404);
-    // Visibility channels leak guard: boosting one's own LOCKED post would
-    // republish followers-only content into the public feed. Refuse (Mastodon
-    // semantics: private posts are not reboggable).
+    // Leak guards: boosting a followers-only post would republish it into the
+    // public feed. Refuse for OWN locked posts (store-known) AND for RECEIVED
+    // posts carrying the wire marker (Mastodon semantics: private posts are
+    // not reboggable).
     const targetUuid = parseWireUuid(target.text);
-    if (targetUuid && store.isLockedPost(targetUuid)) {
+    if (
+      (targetUuid && store.isLockedPost(targetUuid)) ||
+      parseWire(target.text).visibility === 'private'
+    ) {
       return c.json({ error: 'private (followers-only) posts cannot be boosted' }, 422);
     }
     // Target the boosted post's uuid ref (or canonical/mid) so the boost
@@ -1760,6 +1800,26 @@ export const createApp = (
     if (parsed === null) return c.json({ error: 'Record not found' }, 404);
     const root = await resolveThreadRoot(transport, parsed);
     if (!root) return c.json({ error: 'Record not found' }, 404);
+
+    // Leak prevention: a followers-only root has no public thread channel —
+    // subscribing would republish locked content to arbitrary subscribers.
+    // Checked on the resolved root's local/held copies AND on the subscribe
+    // TARGET itself (the target is either the root, or a reply whose privacy
+    // inheritance implies a private thread).
+    const rootLocal = store.resolveKey(root.rootUuid);
+    const rootMsg = rootLocal !== null ? await transport.message(rootLocal) : null;
+    const targetMsg = parsed.kind === 'msg' ? await transport.message(parsed.msgId) : null;
+    const rootPrivate =
+      store.isLockedPost(root.rootUuid) ||
+      (rootMsg ? parseWire(rootMsg.text).visibility === 'private' : false) ||
+      (targetMsg ? parseWire(targetMsg.text).visibility === 'private' : false) ||
+      store.heldEnvelope(root.rootUuid)?.env.visibility === 'private';
+    if (rootPrivate) {
+      return c.json(
+        { error: 'followers-only threads cannot be subscribed to', code: 'private_thread' },
+        422,
+      );
+    }
 
     // Already subscribed: idempotent success.
     if (store.isSubscribedToThread(root.rootUuid)) {

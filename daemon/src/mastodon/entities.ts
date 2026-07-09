@@ -692,11 +692,14 @@ export const messageToStatus = (
     media_attachments: mediaAttachments(msg, baseUrl, altText),
     sensitive: false,
     spoiler_text: '',
-    // Visibility channels: an OWN post that went to the LOCKED channel renders
-    // 'private' (composer icon; Mastodon clients disable boosting it).
-    visibility: (parsed.uuid && resolver.isLockedPost?.(parsed.uuid) ? 'private' : 'public') as
-      | 'public'
-      | 'private',
+    // Visibility channels: an OWN post that went to the LOCKED channel — or a
+    // RECEIVED post carrying the followers-only wire marker (leak prevention)
+    // — renders 'private' (composer icon; boost disabled by Mastodon
+    // semantics + our reblog guard).
+    visibility: (parsed.visibility === 'private' ||
+    (parsed.uuid && resolver.isLockedPost?.(parsed.uuid))
+      ? 'private'
+      : 'public') as 'public' | 'private',
     language: null,
     reblog,
     application: { name: 'deltanet' },

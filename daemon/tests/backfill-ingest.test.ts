@@ -269,3 +269,19 @@ describe('self-served-bundle pin rule (key confirmation)', () => {
     expect(store.pinnedKey(ALICE)).toBe('EXISTING_PIN');
   });
 });
+
+describe('leak prevention: serve refusal on the wire marker', () => {
+  it('never serves a private-marked envelope (local or held)', async () => {
+    const marked = signAlice({ ...buildPostObject('their locked post', AU), visibility: 'private' as const });
+    store.ingestMessage(makeMessage({ id: 9, text: serializeEnvelope(marked) }), 'mid-9@x', true);
+    const transport = makeTransport(new Map([[9, serializeEnvelope(marked)]]));
+    expect(await buildServeBundles(store, transport, [{ u: AU, addr: ALICE }])).toEqual([]);
+
+    const heldUuid = 'cccc0000-1111-4222-8333-444444444444';
+    store.addHeldEnvelope(
+      signAlice({ ...buildPostObject('held locked', heldUuid), visibility: 'private' as const }),
+      BOB, 22, ALICE, 1,
+    );
+    expect(await buildServeBundles(store, transport, [{ u: heldUuid, addr: ALICE }])).toEqual([]);
+  });
+});

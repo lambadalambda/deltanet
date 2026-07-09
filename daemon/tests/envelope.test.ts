@@ -281,3 +281,17 @@ describe('mintUuid', () => {
     expect(mintUuid()).not.toBe(mintUuid());
   });
 });
+
+describe('visibility marker (leak prevention)', () => {
+  it('round-trips visibility: private on content envelopes', () => {
+    const text = JSON.stringify({ dn: DN_VERSION, type: 'post', uuid: UUID, text: 'followers only', visibility: 'private' });
+    expect(parseEnvelope(text)?.visibility).toBe('private');
+  });
+
+  it('tolerant-drops any non-private visibility value', () => {
+    const junk = JSON.stringify({ dn: DN_VERSION, type: 'post', uuid: UUID, text: 'x', visibility: 'sneaky' });
+    expect(parseEnvelope(junk)?.visibility).toBeUndefined();
+    const num = JSON.stringify({ dn: DN_VERSION, type: 'post', uuid: UUID, text: 'x', visibility: 7 });
+    expect(parseEnvelope(num)?.visibility).toBeUndefined();
+  });
+});

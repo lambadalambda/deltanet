@@ -369,3 +369,48 @@ describe('SUBSCRIBER: handleThreadChannelBundle', () => {
     expect(store.resolveKey(REPLY2)).not.toBeNull();
   });
 });
+
+describe('leak prevention: locked/private thread gating', () => {
+  it('a private-marked reply is never republished into a thread channel', async () => {
+    const store = createStore(join(dir, 'rep-priv.json'));
+    store.addHostedThread(ROOT, 777);
+    const { transport, channelPosts } = fakeTransport();
+    const privReply = makeMessage({
+      id: 62,
+      fromId: 22,
+      sender: makeContact({ id: 22, address: BOB }),
+      text: serializeEnvelope(
+        sign({ ...buildReplyObject('locked reply', REPLY2, { u: REPLY1, addr: BOB }, undefined, rootRef()), visibility: 'private' as const }, BOB),
+      ),
+    });
+    expect(await republishReplyToThread(store, transport, privReply, true)).toBe(false);
+    expect(channelPosts).toHaveLength(0);
+  });
+
+  it('a thread-invite request for a LOCKED root is refused (no grant, no channel)', async () => {
+    const store = createStore(join(dir, 'host-priv.json'));
+    store.ingestMessage(
+      makeMessage({ id: 1, text: serializeEnvelope(sign({ ...buildPostObject('locked root', ROOT), visibility: 'private' as const }, ALICE)) }),
+      'm1@x',
+      true,
+    );
+    store.markLockedPost(ROOT);
+    const { transport, sentDms, created } = fakeTransport();
+    const handled = await handleThreadInviteRequest(
+      store,
+      transport,
+      makeMessage({
+        id: 50,
+        fromId: 22,
+        sender: makeContact({ id: 22, address: BOB }),
+        text: buildThreadInviteRequestEnvelope(ROOT),
+      }),
+      false,
+    );
+    // Consumed (it WAS a thread request) but nothing granted or created.
+    expect(handled).toBe(true);
+    expect(sentDms).toHaveLength(0);
+    expect(created).toHaveLength(0);
+    expect(store.hostedThreadChatId(ROOT)).toBeNull();
+  });
+});
