@@ -77,6 +77,7 @@ export const createStatusMapper = (store: Store, baseUrl: string): StatusMapper 
     ownAddr: () => ownAddrCache,
     // Visibility channels: own locked posts render 'private'.
     isLockedPost: (uuid) => store.isLockedPost(uuid),
+    isDirectPost: (uuid) => store.isDirectPost(uuid),
     // Thread auto-backfill: a reply whose parent we hold only as a HELD envelope
     // (backfilled) links via the parent's `orig-<uuid>` id. Only for uuid keys.
     heldOrigId: (keyString) =>
@@ -105,6 +106,9 @@ export const createStatusMapper = (store: Store, baseUrl: string): StatusMapper 
     orig: Envelope,
     addr: string,
   ): Promise<BoostEmbed> => {
+    // Restricted originals may never be republished through a boost, even if a
+    // peer manually smuggles an otherwise valid signed envelope into `orig`.
+    if (orig.visibility === 'private' || orig.visibility === 'direct') return { kind: 'unverified' };
     // 1. Signature over the canonical payload, against the embed's OWN pubkey.
     if (!verify(orig, addr)) return { kind: 'unverified' };
     // 2. Pin consistency (TOFU): a pinned key that DISAGREES with the embed's
@@ -273,6 +277,10 @@ export const createStatusMapper = (store: Store, baseUrl: string): StatusMapper 
   ): Promise<MastodonStatus | null> => {
     const held = store.heldEnvelope(uuid);
     if (!held) return null;
+    if (held.env.visibility === 'direct') {
+      store.dropHeldEnvelope(uuid);
+      return null;
+    }
     // Verify at RENDER (pins can change): the EXACT `verify()` + pin-consistency
     // ladder. A hard failure drops the entry — tampered/stale content is not kept.
     if (!verifyHeld(held.env, held.authorAddr, (addr) => store.pinnedKey(addr))) {

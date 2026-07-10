@@ -72,7 +72,7 @@ export type MastodonStatus = {
   media_attachments: ReturnType<typeof mediaAttachments>;
   sensitive: boolean;
   spoiler_text: string;
-  visibility: 'public' | 'private';
+  visibility: 'public' | 'private' | 'direct';
   language: null;
   reblog: MastodonStatus | null;
   application: { name: string };
@@ -503,6 +503,8 @@ export type StatusResolver = {
    * carry no channel knowledge yet (part 2). Default: never.
    */
   isLockedPost?(uuid: string): boolean;
+  /** Did this own uuid use direct 1:1 delivery? */
+  isDirectPost?(uuid: string): boolean;
   /**
    * Thread auto-backfill: if a reply's parent post key resolves to a HELD
    * envelope (not a local message), the `orig-<uuid>` status id it renders under —
@@ -696,10 +698,12 @@ export const messageToStatus = (
     // RECEIVED post carrying the followers-only wire marker (leak prevention)
     // — renders 'private' (composer icon; boost disabled by Mastodon
     // semantics + our reblog guard).
-    visibility: (parsed.visibility === 'private' ||
-    (parsed.uuid && resolver.isLockedPost?.(parsed.uuid))
-      ? 'private'
-      : 'public') as 'public' | 'private',
+    visibility: (parsed.visibility === 'direct' ||
+    (parsed.uuid && resolver.isDirectPost?.(parsed.uuid))
+      ? 'direct'
+      : parsed.visibility === 'private' || (parsed.uuid && resolver.isLockedPost?.(parsed.uuid))
+        ? 'private'
+        : 'public') as 'public' | 'private' | 'direct',
     language: null,
     reblog,
     application: { name: 'deltanet' },

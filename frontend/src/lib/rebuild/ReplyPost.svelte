@@ -107,7 +107,7 @@
 				<PostMedia post={post} onOpen={(idx) => handleLightbox(post, idx)} onVote={onVote ? (pollId, choice) => onVote(post.id, pollId, choice) : undefined} />
 			</PostCW>
 			<PostReactions reactions={post.reactions} onToggle={onAction ? (reaction) => onAction(post.id, `reaction:${reaction.name}`) : undefined} onAdd={onReact ? (anchor) => onReact(post.id, anchor) : undefined} />
-			<PostActions post={post} disabledActions={{ boost: post.visibility === 'private' }} replyExpanded={inlineReplyOpenFor(post)} replyControlsId={inlineReplyOpenFor(post) ? inlineReplyComposerId(post) : undefined} onAction={(key) => onAction?.(post.id, key)} onReact={onReact ? (anchor) => onReact(post.id, anchor) : undefined} canManage={canManage} />
+			<PostActions post={post} disabledActions={{ boost: post.visibility === 'private' || post.visibility === 'direct' }} replyExpanded={inlineReplyOpenFor(post)} replyControlsId={inlineReplyOpenFor(post) ? inlineReplyComposerId(post) : undefined} onAction={(key) => onAction?.(post.id, key)} onReact={onReact ? (anchor) => onReact(post.id, anchor) : undefined} canManage={canManage} />
 			{#if nestedReplies.length > 0 && !nestedRepliesOpenFor(post)}
 				<button type="button" class="show-replies" onclick={() => onShowNested?.(post.id)}>
 					<span class="show-replies-line"></span>

@@ -283,12 +283,12 @@ describe('mintUuid', () => {
 });
 
 describe('visibility marker (leak prevention)', () => {
-  it('round-trips visibility: private on content envelopes', () => {
-    const text = JSON.stringify({ dn: DN_VERSION, type: 'post', uuid: UUID, text: 'followers only', visibility: 'private' });
-    expect(parseEnvelope(text)?.visibility).toBe('private');
+  it.each(['private', 'direct'] as const)('round-trips visibility: %s on content envelopes', (visibility) => {
+    const text = JSON.stringify({ dn: DN_VERSION, type: 'post', uuid: UUID, text: 'restricted', visibility });
+    expect(parseEnvelope(text)?.visibility).toBe(visibility);
   });
 
-  it('tolerant-drops any non-private visibility value', () => {
+  it('tolerant-drops any unsupported visibility value', () => {
     const junk = JSON.stringify({ dn: DN_VERSION, type: 'post', uuid: UUID, text: 'x', visibility: 'sneaky' });
     expect(parseEnvelope(junk)?.visibility).toBeUndefined();
     const num = JSON.stringify({ dn: DN_VERSION, type: 'post', uuid: UUID, text: 'x', visibility: 7 });

@@ -1,5 +1,34 @@
 # deltanet devlog
 
+## 2026-07-10 — direct visibility: mentioned recipients only
+
+`visibility: direct` now has a transport-level meaning rather than falling
+through to the public feed (meta/issues/direct-visibility-mentions.md):
+
+- A direct root must mention at least one non-self E2EE-capable key contact.
+  Every body mention is resolved before the first send; one unreachable mention
+  rejects the whole request with 422, so there is no known-recipient partial
+  send caused by address validation.
+- The daemon signs one envelope carrying the unsigned `visibility: 'direct'`
+  honest-machinery marker and sends that exact text through media-capable 1:1
+  content DMs. No owned-broadcast `post()` call occurs. Every sender-side local
+  copy is indexed as non-feed under one logical UUID; one is returned as the
+  status, while recipients derive the existing mention notification.
+- Direct replies inherit direct server-side. Their audience is the parent author
+  plus explicit body-mentioned key contacts; the ordinary root-author copy and
+  thread-channel republication paths are bypassed.
+- Direct is the strict leak tier: it is excluded from home/public/profile feeds,
+  cannot be boosted (including a direct original smuggled into a boost embed),
+  held/served by backfill, subscribed, or republished to a thread channel.
+  Persisted `directPostUuids` state mirrors locked UUID state and survives store
+  migration/reload.
+- The frontend leaves Direct enabled, disables obvious no-address-mention root
+  submissions, opens the returned direct thread instead of inserting it into
+  Home, and disables boost controls for direct posts in every shared renderer.
+- Relay acceptance: B and C both follow A's public feed; A directly mentions B.
+  B alone receives the content and notification, neither feed contains it, C
+  sees no leak, and B's public-requested reply inherits direct back to A.
+
 ## 2026-07-09 — visibility part 2: leak prevention
 
 "Followers"-only is now enforced by machinery, not just by our own node

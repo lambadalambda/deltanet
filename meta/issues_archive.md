@@ -43,3 +43,4 @@
 - [x] [Active key confirmation for unpinned authors](issues/key-confirmation.md)
 - [x] Flaky e2e: composer paste/drop upload-count raced the second upload POST on slow runners (fixed inline: poll the counter, home-timeline.e2e.ts)
 - [x] [Visibility part 2: leak prevention across the sharing machinery](issues/visibility-leak-prevention.md)
+- [x] ["Direct" visibility: mentioned-people-only delivery](issues/direct-visibility-mentions.md)

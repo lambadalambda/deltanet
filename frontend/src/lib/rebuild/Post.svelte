@@ -80,7 +80,7 @@
 			<PostMedia post={post} onOpen={handleLightbox} onVote={onVote} />
 		</PostCW>
 		<PostReactions reactions={post.reactions} onToggle={onAction ? (reaction) => onAction(`reaction:${reaction.name}`) : undefined} onAdd={onReact} />
-		<PostActions post={post} disabledActions={{ boost: post.visibility === 'private' }} replyExpanded={replyExpanded} replyControlsId={replyControlsId} canManage={canManage} onAction={onAction} onReact={onReact} />
+		<PostActions post={post} disabledActions={{ boost: post.visibility === 'private' || post.visibility === 'direct' }} replyExpanded={replyExpanded} replyControlsId={replyControlsId} canManage={canManage} onAction={onAction} onReact={onReact} />
 	</div>
 {/snippet}
 

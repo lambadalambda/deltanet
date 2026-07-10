@@ -309,6 +309,11 @@ type StoreData = {
    */
   lockedPostUuids: Record<string, boolean>;
   /**
+   * Uuids of OWN direct posts sent only as 1:1 content DMs. Non-derivable send
+   * history used by render/leak guards; survives migrate like lockedPostUuids.
+   */
+  directPostUuids: Record<string, boolean>;
+  /**
    * Pending LOCKED-channel access requests awaiting owner approval
    * (visibility channels 1B): addr -> requester. Non-derivable network state
    * (queueing happens on LIVE request DMs only) — survives migrate.
@@ -352,6 +357,7 @@ const emptyData = (): StoreData => ({
   pendingThreadRequests: {},
   republishedUuids: {},
   lockedPostUuids: {},
+  directPostUuids: {},
   lockedFollowRequests: {},
 });
 
@@ -397,6 +403,7 @@ const migrate = (old: StoreData): StoreData => ({
   pendingThreadRequests: old.pendingThreadRequests ?? {},
   republishedUuids: old.republishedUuids ?? {},
   lockedPostUuids: old.lockedPostUuids ?? {},
+  directPostUuids: old.directPostUuids ?? {},
   lockedFollowRequests: old.lockedFollowRequests ?? {},
 });
 
@@ -547,6 +554,8 @@ export type Store = {
   removeHostedThread(rootUuid: string): void;
   /** Was own post `uuid` sent to the LOCKED channel? (visibility channels) */
   isLockedPost(uuid: string): boolean;
+  /** Was own post `uuid` sent only as direct 1:1 content DMs? */
+  isDirectPost(uuid: string): boolean;
   /** Queue a LOCKED-channel access request (idempotent per addr). */
   addLockedFollowRequest(addr: string, contactId: number, requestedAt: number): void;
   /** All pending LOCKED-channel access requests, oldest first. */
@@ -555,6 +564,8 @@ export type Store = {
   clearLockedFollowRequest(addr: string): void;
   /** Record that own post `uuid` went to the LOCKED channel. Idempotent. */
   markLockedPost(uuid: string): void;
+  /** Record that own post `uuid` was sent direct. Idempotent. */
+  markDirectPost(uuid: string): void;
 
   /** Have we already republished reply `uuid` into a thread channel? */
   wasRepublished(uuid: string): boolean;
@@ -1049,7 +1060,7 @@ export const createStore = (
 
     addHeldEnvelope: (env, from, fromContactId, authorAddr, receivedAt) => {
       const uuid = env.uuid;
-      if (!uuid) return false;
+      if (!uuid || env.visibility === 'direct') return false;
       const d = load();
       // Never overwrite a stronger source: a locally-held copy of this uuid (we
       // received the real message) always wins, and an existing held entry is
@@ -1131,6 +1142,7 @@ export const createStore = (
       save();
     },
     isLockedPost: (uuid) => load().lockedPostUuids[uuid] === true,
+    isDirectPost: (uuid) => load().directPostUuids[uuid] === true,
     addLockedFollowRequest: (addr, contactId, requestedAt) => {
       const d = load();
       const key = addr.toLowerCase();
@@ -1153,6 +1165,12 @@ export const createStore = (
       const d = load();
       if (d.lockedPostUuids[uuid] === true) return;
       d.lockedPostUuids[uuid] = true;
+      save();
+    },
+    markDirectPost: (uuid) => {
+      const d = load();
+      if (d.directPostUuids[uuid] === true) return;
+      d.directPostUuids[uuid] = true;
       save();
     },
 

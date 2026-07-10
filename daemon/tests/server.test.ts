@@ -67,6 +67,7 @@ const makeFakeTransport = () => {
   const introductions: Array<{ invite: string; expectedAddr: string }> = [];
   const posts: Array<{ text: string; file?: string; quotedText?: string; channel?: string }> = [];
   const dms: Array<{ contactId: number; text: string; quotedText?: string }> = [];
+  const contentDms: Array<{ contactId: number; text: string; file?: string; message: T.Message }> = [];
   const deleted: number[] = [];
   const unfollowed: number[] = [];
   const profileUpdates: Array<{ displayName?: string; bio?: string; avatarPath?: string | null }> = [];
@@ -162,6 +163,22 @@ const makeFakeTransport = () => {
     sendControlDm: async (contactId, text, quotedText) => {
       dms.push({ contactId, text, quotedText });
     },
+    sendContentDm: async (contactId, text, opts) => {
+      const id = nextId++;
+      const message = makeMessage({
+        id,
+        chatId: 1_000 + contactId,
+        text,
+        timestamp: 1751900000,
+        file: opts?.file ?? null,
+        fileMime: opts?.file ? 'image/png' : null,
+        viewType: opts?.file ? 'Image' : 'Text',
+      });
+      messages.push(message);
+      mids.set(id, `mid-${nextMid++}@example.org`);
+      contentDms.push({ contactId, text, file: opts?.file, message });
+      return message;
+    },
     deleteMessage: async (msgId) => {
       deleted.push(msgId);
       const idx = messages.findIndex((m) => m.id === msgId);
@@ -227,7 +244,7 @@ const makeFakeTransport = () => {
   const emitFollower = (contactId: number) => {
     for (const handler of followerHandlers) handler(contactId);
   };
-  return { transport, messages, posts, dms, deleted, unfollowed, following, mids, emitFollower, profileUpdates, createdContacts, broadcasts, chatPosts, leftChats, keyReachable, introductions, setNames, removedFollowers };
+  return { transport, messages, posts, dms, contentDms, deleted, unfollowed, following, mids, emitFollower, profileUpdates, createdContacts, broadcasts, chatPosts, leftChats, keyReachable, introductions, setNames, removedFollowers };
 };
 
 /** A context that's already configured with a fixed fake transport. */
@@ -2952,6 +2969,208 @@ describe('visibility channels: own-boost leak guard', () => {
     expect(boostRes.status).toBe(422);
     expect(((await boostRes.json()) as any).error).toMatch(/private|locked/i);
     expect(posts.filter((p) => parseEnvelope(p.text)?.type === 'boost')).toHaveLength(0);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('direct visibility: mentioned-people-only delivery', () => {
+  it('rejects a direct root without a non-self key-contact mention and never broadcasts', async () => {
+    const { transport, posts, dms, contentDms } = makeFakeTransport();
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+
+    for (const status of ['nothing addressable', 'self only @p6yalimhl@nine.testrun.org']) {
+      const res = await app.request('/api/v1/statuses', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status, visibility: 'direct' }),
+      });
+      expect(res.status).toBe(422);
+    }
+    expect(posts).toHaveLength(0);
+    expect(dms).toHaveLength(0);
+    expect(contentDms).toHaveLength(0);
+  });
+
+  it('resolves every body mention before sending, failing the whole request on one unreachable address', async () => {
+    const { transport, posts, dms, contentDms } = makeFakeTransport();
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const res = await app.request('/api/v1/statuses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        status: `hi @${BOB.address} and @nobody@relay.example`,
+        visibility: 'direct',
+      }),
+    });
+
+    expect(res.status).toBe(422);
+    expect(posts).toHaveLength(0);
+    expect(dms).toHaveLength(0);
+    expect(contentDms).toHaveLength(0);
+  });
+
+  it('DMs one byte-identical direct envelope per recipient, ingests local copies as non-feed, and returns one reachable status', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'deltanet-direct-'));
+    const store = createStore(join(dir, 'store.json'));
+    const { transport, posts, dms, contentDms, keyReachable } = makeFakeTransport();
+    keyReachable.set('carol@relay.example', 22);
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
+    const text = `secret @${BOB.address} and @carol@relay.example`;
+    const res = await app.request('/api/v1/statuses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: text, visibility: 'direct' }),
+    });
+
+    expect(res.status).toBe(200);
+    const status = (await res.json()) as any;
+    expect(status.visibility).toBe('direct');
+    expect(posts).toHaveLength(0);
+    expect(dms).toHaveLength(0);
+    expect(contentDms.map((dm) => dm.contactId)).toEqual([11, 22]);
+    expect(new Set(contentDms.map((dm) => dm.text)).size).toBe(1);
+    const env = parseEnvelope(contentDms[0]!.text)!;
+    expect(env.visibility).toBe('direct');
+    expect(store.isDirectPost(env.uuid!)).toBe(true);
+    expect(store.resolveKey(env.uuid!)).toBe(Number(status.id));
+
+    const read = (await (await app.request(`/api/v1/statuses/${status.id}`)).json()) as any;
+    expect(read.visibility).toBe('direct');
+    expect(read.content).toContain('secret');
+    const context = (await (await app.request(`/api/v1/statuses/${status.id}/context`)).json()) as any;
+    expect(context).toEqual({ ancestors: [], descendants: [] });
+
+    const home = (await (await app.request('/api/v1/timelines/home')).json()) as any[];
+    const profile = (await (await app.request('/api/v1/accounts/1/statuses')).json()) as any[];
+    const search = (await (await app.request('/api/v2/search?q=secret&type=statuses')).json()) as any;
+    expect(home.map((s) => s.id)).not.toContain(status.id);
+    expect(profile.map((s) => s.id)).not.toContain(status.id);
+    expect(search.statuses).toEqual([]);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('persists successful copies and reports partial delivery when a later recipient send fails', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'deltanet-direct-partial-'));
+    const store = createStore(join(dir, 'store.json'));
+    const { transport, posts, contentDms, keyReachable } = makeFakeTransport();
+    keyReachable.set('carol@relay.example', 22);
+    const sendContentDm = transport.sendContentDm;
+    let attempts = 0;
+    transport.sendContentDm = async (...args) => {
+      attempts += 1;
+      if (attempts === 2) throw new Error('relay unavailable');
+      return sendContentDm(...args);
+    };
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
+    const res = await app.request('/api/v1/statuses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        status: `secret @${BOB.address} and @carol@relay.example`,
+        visibility: 'direct',
+      }),
+    });
+
+    expect(res.status).toBe(502);
+    const error = (await res.json()) as any;
+    expect(error).toMatchObject({ code: 'partial_delivery', delivered: 1, total: 2 });
+    expect(error.status_id).toBe(String(contentDms[0]!.message.id));
+    expect(posts).toHaveLength(0);
+    expect(contentDms).toHaveLength(1);
+    const uuid = parseEnvelope(contentDms[0]!.text)!.uuid!;
+    expect(store.isDirectPost(uuid)).toBe(true);
+    expect(store.resolveKey(uuid)).toBe(contentDms[0]!.message.id);
+    expect(((await (await app.request(`/api/v1/statuses/${error.status_id}`)).json()) as any).visibility).toBe('direct');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('sends direct media through the same 1:1 content transport and returns the attachment', async () => {
+    const { transport, posts, contentDms } = makeFakeTransport();
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const upload = new FormData();
+    upload.append('file', new File(['fakepngbytes'], 'secret.png', { type: 'image/png' }));
+    upload.append('description', 'secret alt');
+    const media = (await (await app.request('/api/v1/media', { method: 'POST', body: upload })).json()) as any;
+    const form = new FormData();
+    form.append('status', `photo for @${BOB.address}`);
+    form.append('visibility', 'direct');
+    form.append('media_ids[]', media.id);
+    const res = await app.request('/api/v1/statuses', { method: 'POST', body: form });
+    const status = (await res.json()) as any;
+
+    expect(res.status).toBe(200);
+    expect(posts).toHaveLength(0);
+    expect(contentDms).toHaveLength(1);
+    expect(contentDms[0]!.file).toBeTypeOf('string');
+    expect(status.visibility).toBe('direct');
+    expect(status.media_attachments[0]?.description).toBe('secret alt');
+  });
+
+  it('forces replies to a direct parent to direct and addresses only the parent author plus explicit mentions', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'deltanet-direct-reply-'));
+    const store = createStore(join(dir, 'store.json'));
+    const { transport, messages, mids, posts, contentDms, keyReachable } = makeFakeTransport();
+    keyReachable.set('carol@relay.example', 22);
+    const parentUuid = mintPostUuid();
+    messages.push(makeMessage({
+      id: 84,
+      fromId: 11,
+      sender: BOB,
+      text: JSON.stringify({
+        dn: 2,
+        type: 'reply',
+        uuid: parentUuid,
+        text: 'private parent',
+        ref: { u: mintPostUuid(), addr: 'unrelated-root@relay.example' },
+        root: { u: mintPostUuid(), addr: 'unrelated-root@relay.example' },
+        visibility: 'direct',
+      }),
+    }));
+    mids.set(84, 'mid-84@example.org');
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
+    const res = await app.request('/api/v1/statuses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        status: 'replying privately with @carol@relay.example',
+        in_reply_to_id: '84',
+        visibility: 'public',
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as any).visibility).toBe('direct');
+    expect(posts).toHaveLength(0);
+    expect(contentDms.map((dm) => dm.contactId)).toEqual([11, 22]);
+    expect(contentDms.some((dm) => dm.contactId !== 11 && dm.contactId !== 22)).toBe(false);
+    expect(parseEnvelope(contentDms[0]!.text)?.visibility).toBe('direct');
+    expect(store.wasRepublished(parseEnvelope(contentDms[0]!.text)!.uuid!)).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('refuses boost and subscription for direct statuses and suppresses direct-marked feed/profile results', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'deltanet-direct-guards-'));
+    const store = createStore(join(dir, 'store.json'));
+    const { transport, messages, mids, posts, dms } = makeFakeTransport();
+    const uuid = mintPostUuid();
+    messages.push(makeMessage({
+      id: 85,
+      fromId: 11,
+      sender: BOB,
+      text: JSON.stringify({ dn: 2, type: 'post', uuid, text: `for @p6yalimhl@nine.testrun.org`, visibility: 'direct' }),
+    }));
+    mids.set(85, 'mid-85@example.org');
+    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
+
+    expect(((await (await app.request('/api/v1/statuses/85')).json()) as any).visibility).toBe('direct');
+    expect((await app.request('/api/v1/statuses/85/reblog', { method: 'POST' })).status).toBe(422);
+    expect((await app.request('/api/v1/pleroma/statuses/85/subscribe', { method: 'POST' })).status).toBe(422);
+    expect(posts).toHaveLength(0);
+    expect(dms).toHaveLength(0);
+    const home = (await (await app.request('/api/v1/timelines/home')).json()) as any[];
+    const profile = (await (await app.request('/api/v1/accounts/11/statuses')).json()) as any[];
+    expect(home.map((s) => s.id)).not.toContain('85');
+    expect(profile.map((s) => s.id)).not.toContain('85');
     rmSync(dir, { recursive: true, force: true });
   });
 });

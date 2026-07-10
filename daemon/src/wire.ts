@@ -52,8 +52,8 @@ export type ParsedWire = {
   boost?: MsgRef;
   /** Federated attachment alt text (v2 only), if present. */
   mediaDescription?: string | null;
-  /** Followers-only marker (leak prevention); v2 envelopes only. */
-  visibility?: 'private';
+  /** Restricted visibility marker; v2 envelopes only. */
+  visibility?: 'private' | 'direct';
   /**
    * The embedded original envelope of a boost (post-attestations, sketch #6):
    * the booster's verbatim copy of the boosted post's signed envelope, for the
@@ -80,7 +80,7 @@ const wireFromEnvelope = (env: Envelope): ParsedWire => {
       ...(env.ref ? { reply: msgRefFromEnvelope(env.ref) } : {}),
       ...(env.root ? { root: msgRefFromEnvelope(env.root) } : {}),
       ...(env.media?.description != null ? { mediaDescription: env.media.description } : {}),
-      ...(env.visibility === 'private' ? { visibility: 'private' as const } : {}),
+      ...(env.visibility ? { visibility: env.visibility } : {}),
     };
   }
   if (env.type === 'boost') {
@@ -89,6 +89,7 @@ const wireFromEnvelope = (env: Envelope): ParsedWire => {
       ...(env.uuid !== undefined ? { uuid: env.uuid } : {}),
       ...(env.ref ? { boost: msgRefFromEnvelope(env.ref) } : {}),
       ...(env.orig ? { boostOrig: env.orig } : {}),
+      ...(env.visibility ? { visibility: env.visibility } : {}),
     };
   }
   // 'post' (and any control-message type reaching here) renders as plain body.
@@ -96,7 +97,7 @@ const wireFromEnvelope = (env: Envelope): ParsedWire => {
     body: env.type === 'post' ? env.text ?? '' : '',
     ...(env.uuid !== undefined ? { uuid: env.uuid } : {}),
     ...(env.media?.description != null ? { mediaDescription: env.media.description } : {}),
-    ...(env.visibility === 'private' ? { visibility: 'private' as const } : {}),
+    ...(env.visibility ? { visibility: env.visibility } : {}),
   };
 };
 

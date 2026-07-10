@@ -2802,6 +2802,51 @@ test('home timeline composer visibility selector scopes the created status', asy
 	expect(new URLSearchParams(createBodies[1]).get('visibility')).toBe('private');
 });
 
+test('direct composer requires an address mention, stays out of home, and opens the returned thread', async ({ page }) => {
+	await authenticate(page);
+	await mockHomeTimeline(page, async (route) => {
+		await fulfillHome(route, []);
+	});
+	const directText = 'quietly for @bob@relay.example';
+	const directStatus = {
+		...statusWithText('created-direct', directText),
+		visibility: 'direct' as const
+	};
+	const createBodies: string[] = [];
+	await page.route('https://pleroma.example/api/v1/statuses', async (route) => {
+		createBodies.push(route.request().postData() ?? '');
+		await fulfillHome(route, directStatus);
+	});
+	await page.route('https://pleroma.example/api/v1/statuses/created-direct', async (route) => {
+		await fulfillHome(route, directStatus);
+	});
+	await page.route('https://pleroma.example/api/v1/statuses/created-direct/context', async (route) => {
+		await fulfillHome(route, { ancestors: [], descendants: [] });
+	});
+
+	await setViewport(page, 'desktop');
+	await page.goto('/app/home');
+	await page.getByRole('button', { name: 'Privacy: Public' }).click();
+	await page.getByRole('menu', { name: 'Post visibility' }).getByRole('menuitemradio', { name: /Direct/ }).click();
+	await expect(page.getByRole('button', { name: 'Privacy: Direct' })).toBeVisible();
+
+	const composer = page.getByRole('textbox', { name: 'Post text' });
+	const postButton = page.getByRole('button', { name: 'Post', exact: true });
+	await composer.fill('a secret without a recipient');
+	await expect(postButton).toBeDisabled();
+	expect(createBodies).toHaveLength(0);
+
+	await composer.fill(directText);
+	await expect(postButton).toBeEnabled();
+	await postButton.click();
+	await expect(page).toHaveURL(/\/app\/thread\/created-direct$/);
+	await expect(page.getByTestId('focused-post')).toContainText(directText);
+	expect(new URLSearchParams(createBodies[0]).get('visibility')).toBe('direct');
+
+	await page.goto('/app/home');
+	await expect(page.getByText(directText, { exact: true })).toHaveCount(0);
+});
+
 test('home timeline emoji picker scrolls long packs and offers canonical unicode groups', async ({ page }) => {
 	await authenticate(page);
 	await mockInstance(page);

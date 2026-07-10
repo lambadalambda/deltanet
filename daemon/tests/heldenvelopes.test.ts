@@ -82,6 +82,9 @@ describe('storableBundleItem: only signed content envelopes', () => {
     expect(storableBundleItem({ dn: 2, type: 'react', emoji: '❤', sig: 'S', pubkey: 'P', ts: 1 } as Envelope)).toBeNull();
     expect(storableBundleItem({ dn: 2, type: 'post', text: 'x', ts: 1, pubkey: 'P', sig: 'S' } as Envelope)).toBeNull();
   });
+  it('rejects direct envelopes so they can never enter held state', () => {
+    expect(storableBundleItem(sign({ ...buildPostObject('secret', AU), visibility: 'direct' }))).toBeNull();
+  });
 });
 
 describe('verifyHeld: render-time ladder (sig + pin consistency)', () => {

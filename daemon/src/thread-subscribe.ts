@@ -80,15 +80,22 @@ export const handleThreadInviteRequest = async (
   // We can only host a thread whose ROOT we hold (locally or as a held envelope);
   // otherwise there is nothing to accumulate/serve. Silently ignore (the DM was
   // still a thread request, so we consume it — return true).
-  const haveRoot = store.resolveKey(rootUuid) !== null || store.heldEnvelope(rootUuid) !== null;
+  const localRootId = store.resolveKey(rootUuid);
+  const haveRoot = localRootId !== null || store.heldEnvelope(rootUuid) !== null;
   if (!haveRoot) return true;
+  const localRoot = localRootId !== null ? await transport.message(localRootId) : null;
+  const localVisibility = localRoot ? parseEnvelope(localRoot.text)?.visibility : undefined;
+  const heldVisibility = store.heldEnvelope(rootUuid)?.env.visibility;
 
-  // Leak prevention: a LOCKED root (our own followers-only post, or a held
-  // root carrying the private wire marker) has no public thread channel —
-  // refuse silently (consume the request, grant nothing).
+  // Restricted roots have no public thread channel. Refuse silently (consume
+  // the request, grant nothing), whether restriction is local state or wire.
   if (
     store.isLockedPost(rootUuid) ||
-    store.heldEnvelope(rootUuid)?.env.visibility === 'private'
+    store.isDirectPost(rootUuid) ||
+    localVisibility === 'private' ||
+    localVisibility === 'direct' ||
+    heldVisibility === 'private' ||
+    heldVisibility === 'direct'
   ) {
     return true;
   }
@@ -153,7 +160,7 @@ export const republishReplyToThread = async (
   if (!env || env.type !== 'reply' || !env.uuid) return false;
   // Leak prevention: a followers-only reply must never be republished into a
   // thread channel (arbitrary subscribers).
-  if (env.visibility === 'private') return false;
+  if (env.visibility === 'private' || env.visibility === 'direct') return false;
   // The SIGNED root ref (not display attribution) names the thread + owner.
   const root = env.root;
   if (!root || !('u' in root) || !root.u) return false;

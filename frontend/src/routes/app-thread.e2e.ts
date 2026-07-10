@@ -262,6 +262,23 @@ test('real thread route loads focused status, ancestors, and replies from Plerom
 	await expect(page.getByText('around the time the algorithm replaced the timeline.')).toBeVisible();
 });
 
+test('direct statuses remain visible in their thread and cannot be boosted', async ({ page }) => {
+	await authenticate(page);
+	const directRoot = { ...threadStatus, visibility: 'direct' as const };
+	const directAncestor = { ...threadAncestor, visibility: 'direct' as const };
+	const directReply = { ...threadReply, visibility: 'direct' as const };
+	await mockThread(page, directRoot, [directReply], [directAncestor]);
+	await setViewport(page, 'desktop');
+	await page.goto('/app/thread/status-1');
+
+	await expect(page.getByTestId('focused-post')).toContainText('quiet CSS can still carry the voice.');
+	await expect(page.getByTestId('thread-ancestor')).toContainText('the earlier context from gridwave');
+	await expect(page.getByTestId('thread-reply')).toContainText('we used to log off. when did that stop being a thing.');
+	await expect(page.getByTestId('focused-post').getByRole('button', { name: /Boost/ })).toBeDisabled();
+	await expect(page.getByTestId('thread-ancestor').getByRole('button', { name: /Boost/ })).toBeDisabled();
+	await expect(page.getByTestId('thread-reply').getByRole('button', { name: /Boost/ })).toBeDisabled();
+});
+
 test('real thread route bridges multiple ancestor rails with warnings and media', async ({ page }) => {
 	await authenticate(page);
 	const warningAncestor = statusWithText('ancestor-warning', 'cw hidden ancestor body', {

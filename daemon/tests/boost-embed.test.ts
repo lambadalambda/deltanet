@@ -128,6 +128,14 @@ describe('boost embed rendering ladder', () => {
     expect(status.reblog!.created_at).toBe(new Date(orig.ts!).toISOString());
   });
 
+  it('never renders a direct original smuggled inside a boost', async () => {
+    const orig = { ...alicePost('direct secret'), visibility: 'direct' as const };
+    const status = await createStatusMapper(store, BASE).toStatus(fakeTransport(), boostMsg(orig, { id: 61 }));
+
+    expect(status.reblog).toBeNull();
+    expect((status.pleroma as any).deltanet?.placeholder).toBe('boost-unverified');
+  });
+
   it('verified embed with a KNOWN contact: attributes via the real contact (name/avatar/id), nested identity unchanged', async () => {
     const orig = alicePost('hello from alice');
     const msg = boostMsg(orig, { id: 60 });

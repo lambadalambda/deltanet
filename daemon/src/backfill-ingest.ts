@@ -81,10 +81,9 @@ export const buildServeBundles = async (
     if (!('u' in ref) || !ref.u || seen.has(ref.u)) continue;
     seen.add(ref.u);
     const uuid = ref.u;
-    // Visibility channels leak guard: an OWN post that went to the LOCKED
-    // channel is never served — backfill would otherwise hand followers-only
-    // content to any met contact who asks.
-    if (store.isLockedPost(uuid)) continue;
+    // Restricted own posts are never served: backfill would otherwise hand
+    // followers-only/direct content to any met contact who asks.
+    if (store.isLockedPost(uuid) || store.isDirectPost(uuid)) continue;
     // Prefer the real local message (strongest source), else a held envelope we
     // can relay onward (both are signed bodies).
     const localMsgId = store.resolveKey(uuid);
@@ -95,9 +94,8 @@ export const buildServeBundles = async (
     } else {
       env = store.heldEnvelope(uuid)?.env ?? null;
     }
-    // Leak prevention: a followers-only envelope (wire marker) is never
-    // served onward, regardless of how we hold it.
-    if (env?.visibility === 'private') continue;
+    // Restricted wire-marked envelopes are never served onward.
+    if (env?.visibility === 'private' || env?.visibility === 'direct') continue;
     const servable = servableEnvelope(env);
     if (servable) envs.push(servable);
   }

@@ -51,7 +51,7 @@
 	} from '$lib/pleroma/timeline-state';
 	import { DEFAULT_STATUS_CHARACTER_LIMIT, adaptCustomEmojis, adaptPleromaAccount, adaptPleromaChatMessage, adaptPleromaChatMessages, adaptPleromaChats, adaptPleromaPoll, adaptPleromaNotifications, adaptPleromaProfile, adaptPleromaStatus, adaptPleromaStatuses, adaptStatusReactions, htmlToPlainText, mediaPlaceholderText, normalizePleromaRequestError, profileSettingsFromAccount, profileUpdateFromSettings, statusCharacterLimit, type PleromaAccountView, type PleromaChatMessageView, type PleromaChatView, type PleromaNotificationView, type PleromaProfileFollowState, type PleromaProfileSettingsView, type PleromaReactionView, type PleromaRequestErrorView, type PleromaRequestState, type PleromaStatusView } from '$lib/pleroma/ui';
 	import type { BannerVariant, PostLike } from '$lib/rebuild/attachments';
-	import { COMPOSER_MAX_UPLOAD_BYTES, COMPOSER_MAX_UPLOADS, composerPollPayload, customEmojiPack, composerUploadBadge, composerUploadError, composerUploadKind, createComposerPollDraft, getComposerUploadedMediaIds, hasComposerUploadsPending, isComposerUploadType, type ComposerEmoji, type ComposerMentionAccount, type ComposerPollDraft, type ComposerUpload } from '$lib/rebuild/composer';
+	import { COMPOSER_MAX_UPLOAD_BYTES, COMPOSER_MAX_UPLOADS, composerPollPayload, customEmojiPack, composerUploadBadge, composerUploadError, composerUploadKind, createComposerPollDraft, getComposerUploadedMediaIds, hasComposerAddressMention, hasComposerUploadsPending, isComposerUploadType, type ComposerEmoji, type ComposerMentionAccount, type ComposerPollDraft, type ComposerUpload } from '$lib/rebuild/composer';
 	import type { IconName } from '$lib/rebuild/icons';
 	import type { ProfileData, ProfileMediaItem, ProfilePost } from '$lib/rebuild/profile';
 	import type { PleromaAccount, PleromaInstance, PleromaNotification, PleromaRelationship, PleromaSession, PleromaStatus, PleromaTag } from '$lib/pleroma/types';
@@ -1388,7 +1388,8 @@
 	const inlineReplyUploadedMediaIds = $derived(getComposerUploadedMediaIds(inlineReplyUploads));
 	const inlineReplyUploadsPending = $derived(hasComposerUploadsPending(inlineReplyUploads));
 	const composerHasPostContent = $derived(Boolean(composerText.trim()) || composerUploadedMediaIds.length > 0);
-	const canSubmitHomePost = $derived(composerHasPostContent && composerRemaining >= 0 && (!composerPoll || Boolean(preparedComposerPoll)) && !composerUploadsPending && homePostSubmitState !== 'submitting');
+	const composerHasDirectRecipient = $derived(composerVisibility !== 'direct' || hasComposerAddressMention(composerText));
+	const canSubmitHomePost = $derived(composerHasPostContent && composerHasDirectRecipient && composerRemaining >= 0 && (!composerPoll || Boolean(preparedComposerPoll)) && !composerUploadsPending && homePostSubmitState !== 'submitting');
 	const timelinePosts = $derived([
 		...localHomePosts,
 		...(homeTimelineState.status === 'success' ? homeTimelineState.data.map(postForRebuild) : [])
@@ -1726,13 +1727,20 @@
 	const toggleCommunity = (community: string) => {
 		joinedCommunities = { ...joinedCommunities, [community]: !joinedCommunities[community] };
 	};
+	const resetHomeComposer = () => {
+		composerText = '';
+		composerSpoilerActive = false;
+		composerSpoilerText = '';
+		composerPoll = null;
+		composerUploads = [];
+	};
 	const submitHomePost = async () => {
 		const body = composerText.trim();
 		const spoilerText = composerSpoilerActive ? composerSpoilerText.trim() : '';
 		const pollPayload = composerPoll ? preparedComposerPoll : undefined;
 		const poll = pollPayload ?? undefined;
 		const session = currentSession;
-		if ((!body && composerUploadedMediaIds.length === 0) || composerText.length > composerCharacterLimit || (composerPoll && !pollPayload) || composerUploadsPending || homePostSubmitState === 'submitting' || !session) return;
+		if ((!body && composerUploadedMediaIds.length === 0) || (composerVisibility === 'direct' && !hasComposerAddressMention(body)) || composerText.length > composerCharacterLimit || (composerPoll && !pollPayload) || composerUploadsPending || homePostSubmitState === 'submitting' || !session) return;
 
 		const requestSessionKey = sessionKey(session);
 		const requestId = homePostSubmitRequestId + 1;
@@ -1750,6 +1758,12 @@
 			if (requestId !== homePostSubmitRequestId || !isCurrentSessionRequest(requestSessionKey)) return;
 
 			upsertAccountCache(accountsFromPleromaStatus(status));
+			if (status.visibility === 'direct') {
+				resetHomeComposer();
+				homePostSubmitState = 'idle';
+				await goto(`/app/thread/${encodeURIComponent(status.id)}`);
+				return;
+			}
 			const createdPost = adaptPleromaStatus(status, { timelines: ['home'] });
 			homeTimelineFallbackSinceId = String(createdPost.id);
 			if (homeTimelineState.status === 'success') {
@@ -1770,11 +1784,7 @@
 			} else {
 				localHomePosts = prependTimelineItems(localHomePosts, [postForRebuild(createdPost)]);
 			}
-			composerText = '';
-			composerSpoilerActive = false;
-			composerSpoilerText = '';
-			composerPoll = null;
-			composerUploads = [];
+			resetHomeComposer();
 			homePostSubmitState = 'idle';
 		} catch (error) {
 			if (requestId !== homePostSubmitRequestId || !isCurrentSessionRequest(requestSessionKey)) return;

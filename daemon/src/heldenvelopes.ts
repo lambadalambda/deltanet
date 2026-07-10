@@ -118,6 +118,7 @@ export const heldDanglingTargets = (
  */
 export const storableBundleItem = (env: Envelope): Envelope | null => {
   if (env.type !== 'post' && env.type !== 'reply' && env.type !== 'boost') return null;
+  if (env.visibility === 'direct') return null;
   if (typeof env.uuid !== 'string' || env.uuid.length === 0) return null;
   if (!env.sig || !env.pubkey) return null;
   return env;

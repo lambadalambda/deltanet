@@ -267,6 +267,68 @@ export const createApp = (
     }
   };
 
+  type DirectRecipient = { contactId: number; addr: string };
+
+  /**
+   * Resolve the complete direct audience before the first send. `base` carries
+   * reply recipients already proven reachable by their message-derived contact
+   * id; every body mention is still probed through the E2EE-capable key-contact
+   * lookup. Null means one explicit mention was unreachable, so the caller must
+   * reject the whole request without sending anything.
+   */
+  const resolveDirectRecipients = async (
+    transport: Transport,
+    bodyText: string,
+    base: DirectRecipient[] = [],
+  ): Promise<DirectRecipient[] | null> => {
+    const recipients = new Map<number, DirectRecipient>();
+    for (const recipient of base) {
+      if (recipient.contactId !== DC_CONTACT_ID_SELF) recipients.set(recipient.contactId, recipient);
+    }
+    for (const addr of parseBodyMentions(bodyText)) {
+      const contactId = await transport.keyContactIdForAddr(addr).catch(() => null);
+      if (contactId === null) return null;
+      if (contactId !== DC_CONTACT_ID_SELF) recipients.set(contactId, { contactId, addr });
+    }
+    return [...recipients.values()];
+  };
+
+  type DirectDelivery = { messages: T.Message[]; failed: number; total: number };
+
+  /**
+   * Send one byte-identical signed envelope to every pre-resolved recipient.
+   * Delivery cannot be transactional across independent SMTP messages, so keep
+   * every successful local copy even when another recipient fails. Callers
+   * persist those copies before returning an explicit partial-delivery error.
+   */
+  const sendDirectCopies = async (
+    transport: Transport,
+    wireText: string,
+    recipients: DirectRecipient[],
+    file?: string,
+  ): Promise<DirectDelivery> => {
+    const messages: T.Message[] = [];
+    let failed = 0;
+    for (const { contactId } of recipients) {
+      try {
+        messages.push(await transport.sendContentDm(contactId, wireText, file ? { file } : undefined));
+      } catch {
+        failed += 1;
+      }
+    }
+    return { messages, failed, total: recipients.length };
+  };
+
+  const directDeliveryError = (delivery: DirectDelivery) => ({
+    error: delivery.messages.length > 0
+      ? `direct post reached ${delivery.messages.length} of ${delivery.total} recipients`
+      : 'direct post could not be delivered',
+    code: delivery.messages.length > 0 ? 'partial_delivery' : 'delivery_failed',
+    delivered: delivery.messages.length,
+    total: delivery.total,
+    ...(delivery.messages[0] ? { status_id: String(delivery.messages[0].id) } : {}),
+  });
+
   // Our own multi-use contact invite link (in-band introduction), minted once
   // per daemon lifetime and stamped onto every outgoing content envelope so
   // strangers holding our posts can securejoin us. Failure → envelopes simply
@@ -362,18 +424,19 @@ export const createApp = (
   };
 
   /**
-   * Ingest a message into the store, tolerating a transport that can't
-   * resolve its mid. Every message reaching this helper was loaded via
-   * `timeline`/`timelineFrom`/`message` (feed chats or ids resolved from
-   * feed-registered reply/boost edges), so it's always a FEED message —
-   * unlike the transport's `onMessage` event hook, which also sees DM
-   * copies and must classify per-message (see `deltachat.ts`).
+   * Ingest a message into the store, tolerating a transport that can't resolve
+   * its mid. Timeline/message callers use the feed default; direct send paths
+   * explicitly pass false for their returned 1:1 local copies.
    */
-  const ingest = async (transport: Transport, msg: T.Message): Promise<void> => {
+  const ingest = async (
+    transport: Transport,
+    msg: T.Message,
+    isFeedMessage = true,
+  ): Promise<void> => {
     try {
       const mid = await transport.messageMid(msg.id);
       if (mid) {
-        store.ingestMessage(msg, mid, true);
+        store.ingestMessage(msg, mid, isFeedMessage);
         // Pass our own address so a SELF reaction control DM re-applies our own
         // tally on (re)ingest (see deriveOnIngest); `ownAddr` is memoized.
         deriveOnIngest(store, msg, mid, await mapper.ownAddr(transport));
@@ -1069,9 +1132,13 @@ export const createApp = (
         if (hits.length >= limit) break;
         const msg = await transport.message(msgId);
         if (!msg || !isSearchableContent(msg.text)) continue;
+        const parsed = parseWire(msg.text);
+        if (parsed.visibility === 'direct' || (parsed.uuid && store.isDirectPost(parsed.uuid))) {
+          continue;
+        }
         // Collapse copies of one logical post onto the store-preferred copy
         // (the feed copy when both exist).
-        const key = parseWireUuid(msg.text);
+        const key = parsed.uuid ?? null;
         const canonicalId = key !== null ? (store.resolveKey(key) ?? msg.id) : msg.id;
         const dedupeKey = key ?? `msg:${canonicalId}`;
         if (seenKeys.has(dedupeKey)) continue;
@@ -1091,7 +1158,11 @@ export const createApp = (
         if (statuses.length >= limit) break;
         if (seenKeys.has(uuid) || store.resolveKey(uuid) !== null) continue;
         const held = store.heldEnvelope(uuid);
-        if (!held?.env.text || !held.env.text.toLowerCase().includes(needle)) continue;
+        if (
+          !held?.env.text ||
+          held.env.visibility === 'direct' ||
+          !held.env.text.toLowerCase().includes(needle)
+        ) continue;
         const status = await heldStatusConfirming(transport, uuid, heldReplyParentId(held.env));
         if (!status) continue;
         seenKeys.add(uuid);
@@ -1160,10 +1231,13 @@ export const createApp = (
     const transport = c.get('transport');
     const contactId = Number(c.req.param('id'));
     const limit = intParam(c.req.query('limit')) ?? DEFAULT_PAGE;
-    const messages = await transport.timelineFrom(contactId, {
+    const messages = (await transport.timelineFrom(contactId, {
       limit,
       maxId: intParam(c.req.query('max_id')),
       minId: intParam(c.req.query('min_id')) ?? intParam(c.req.query('since_id')),
+    })).filter((msg) => {
+      const parsed = parseWire(msg.text);
+      return parsed.visibility !== 'direct' && !(parsed.uuid && store.isDirectPost(parsed.uuid));
     });
     for (const msg of messages) await ingest(transport, msg);
     const statuses = await Promise.all(
@@ -1213,7 +1287,10 @@ export const createApp = (
         maxId: intParam(c.req.query('max_id')),
         minId: intParam(c.req.query('min_id')) ?? intParam(c.req.query('since_id')),
       }),
-    );
+    ).filter((msg) => {
+      const parsed = parseWire(msg.text);
+      return parsed.visibility !== 'direct' && !(parsed.uuid && store.isDirectPost(parsed.uuid));
+    });
     for (const msg of messages) await ingest(transport, msg);
     const statuses: MastodonStatus[] = await Promise.all(
       messages.map((msg) => toStatus(transport, msg, mediaStore.descriptionForMessage(msg.id))),
@@ -1251,15 +1328,19 @@ export const createApp = (
     }
 
     const inReplyToId = body['in_reply_to_id'] != null ? String(body['in_reply_to_id']) : undefined;
-    // Visibility channels: 'private' ("Followers") goes to the LOCKED channel;
-    // public/unlisted/default to the public feed. The posted uuid is recorded
-    // so leak guards + rendering know the post is locked. Mutable: reply
-    // privacy INHERITANCE below forces 'locked' for replies to private
-    // parents (leak prevention — stricter than Mastodon's overridable
-    // default; the replier's locked audience is their own followers).
-    let channel: OwnChannel = String(body['visibility'] ?? '') === 'private' ? 'locked' : 'public';
-    /** The unsigned wire marker for locked content (leak prevention). */
-    const privacyMark = () => (channel === 'locked' ? { visibility: 'private' as const } : {});
+    // Visibility delivery: direct bypasses owned broadcasts entirely and uses
+    // pre-resolved 1:1 content DMs; private uses the locked channel; everything
+    // else uses public. Reply inheritance below can force a stricter tier.
+    const requestedVisibility = String(body['visibility'] ?? '');
+    let direct = requestedVisibility === 'direct';
+    let channel: OwnChannel = requestedVisibility === 'private' ? 'locked' : 'public';
+    /** Unsigned honest-machinery marker; the signed body/refs remain unchanged. */
+    const visibilityMark = () =>
+      direct
+        ? { visibility: 'direct' as const }
+        : channel === 'locked'
+          ? { visibility: 'private' as const }
+          : {};
     if (inReplyToId) {
       const parsedParent = parseStatusId(inReplyToId);
       if (parsedParent?.kind === 'orig') {
@@ -1272,7 +1353,11 @@ export const createApp = (
         if (!orig) return c.json({ error: 'Record not found' }, 404);
         // Reply privacy inheritance: a private-marked held parent forces the
         // reply onto the locked channel.
-        if (orig.env.visibility === 'private') channel = 'locked';
+        if (orig.env.visibility === 'direct' || store.isDirectPost(parsedParent.uuid)) {
+          direct = true;
+        } else if (orig.env.visibility === 'private') {
+          channel = 'locked';
+        }
         const envRef: EnvelopeRef = { u: parsedParent.uuid, addr: orig.authorAddr };
         const root =
           orig.env.root ??
@@ -1281,15 +1366,38 @@ export const createApp = (
         const mediaFields = media
           ? { description: media.description, sha256: await sha256File(media.path) }
           : undefined;
+        let directRecipients: DirectRecipient[] | null = null;
+        if (direct) {
+          const parentId = await transport.keyContactIdForAddr(orig.authorAddr).catch(() => null);
+          if (parentId === null) {
+            return c.json({ error: "can't reach every direct recipient", code: 'unreachable_recipient' }, 422);
+          }
+          directRecipients = await resolveDirectRecipients(transport, text, [
+            { contactId: parentId, addr: orig.authorAddr },
+          ]);
+          if (!directRecipients || directRecipients.length === 0) {
+            return c.json({ error: 'direct posts require a non-self key-contact recipient' }, 422);
+          }
+        }
         const replyText = signEnvelope(
-          { ...buildReplyObject(text, uuid, envRef, mediaFields, root), ...privacyMark() },
+          { ...buildReplyObject(text, uuid, envRef, mediaFields, root), ...visibilityMark() },
           await mapper.ownAddr(transport),
           await ownContactInvite(transport),
         );
-        const msg = await transport.post(replyText, { channel, ...(media ? { file: media.path } : {}) });
-        if (media) mediaStore.tagMessage(msg.id, media.description);
-        if (channel === 'locked') store.markLockedPost(uuid);
-        await ingest(transport, msg);
+        const delivery = direct
+          ? await sendDirectCopies(transport, replyText, directRecipients!, media?.path)
+          : null;
+        const sent = delivery?.messages ?? [await transport.post(replyText, { channel, ...(media ? { file: media.path } : {}) })];
+        if (direct && sent.length === 0) return c.json(directDeliveryError(delivery!), 502);
+        const msg = sent[0]!;
+        for (const copy of sent) {
+          if (media) mediaStore.tagMessage(copy.id, media.description);
+          await ingest(transport, copy, !direct);
+        }
+        if (direct) store.markDirectPost(uuid);
+        else if (channel === 'locked') store.markLockedPost(uuid);
+        if (delivery?.failed) return c.json(directDeliveryError(delivery), 502);
+        if (direct) return c.json(await toStatus(transport, msg, media?.description ?? null));
         // Parent-author DM copy + root copy, both key-contact-first with
         // in-band introduction, background + best-effort.
         const myAddr = (await mapper.ownAddr(transport)).toLowerCase();
@@ -1329,8 +1437,14 @@ export const createApp = (
       // own locked parent forces the reply onto the locked channel.
       const parentUuid = parseWireUuid(target.text);
       if (
-        parseWire(target.text).visibility === 'private' ||
-        (parentUuid !== null && store.isLockedPost(parentUuid))
+        parseWire(target.text).visibility === 'direct' ||
+        (parentUuid !== null && store.isDirectPost(parentUuid))
+      ) {
+        direct = true;
+      } else if (
+        !direct &&
+        (parseWire(target.text).visibility === 'private' ||
+          (parentUuid !== null && store.isLockedPost(parentUuid)))
       ) {
         channel = 'locked';
       }
@@ -1351,16 +1465,46 @@ export const createApp = (
       // set before signing — it rides inside the dn3 canonical payload so a
       // mid-thread holder can name the thread + owner.
       const root = await deriveRootRef(transport, target);
+      const directRecipients = direct
+        ? await resolveDirectRecipients(
+            transport,
+            text,
+            target.sender.id === DC_CONTACT_ID_SELF
+              ? []
+              : [{ contactId: target.sender.id, addr: target.sender.address }],
+          )
+        : null;
+      if (direct && (!directRecipients || directRecipients.length === 0)) {
+        return c.json(
+          {
+            error: directRecipients === null
+              ? "can't reach every direct recipient"
+              : 'direct posts require a non-self key-contact recipient',
+            ...(directRecipients === null ? { code: 'unreachable_recipient' } : {}),
+          },
+          422,
+        );
+      }
       const replyText = signEnvelope(
-        { ...buildReplyObject(text, uuid, envRef, mediaFields, root), ...privacyMark() },
+        { ...buildReplyObject(text, uuid, envRef, mediaFields, root), ...visibilityMark() },
         await mapper.ownAddr(transport),
         await ownContactInvite(transport),
       );
 
-      const msg = await transport.post(replyText, { channel, ...(media ? { file: media.path } : {}) });
-      if (media) mediaStore.tagMessage(msg.id, media.description);
-      if (channel === 'locked') store.markLockedPost(uuid);
-      await ingest(transport, msg);
+      const delivery = direct
+        ? await sendDirectCopies(transport, replyText, directRecipients!, media?.path)
+        : null;
+      const sent = delivery?.messages ?? [await transport.post(replyText, { channel, ...(media ? { file: media.path } : {}) })];
+      if (direct && sent.length === 0) return c.json(directDeliveryError(delivery!), 502);
+      const msg = sent[0]!;
+      for (const copy of sent) {
+        if (media) mediaStore.tagMessage(copy.id, media.description);
+        await ingest(transport, copy, !direct);
+      }
+      if (direct) store.markDirectPost(uuid);
+      else if (channel === 'locked') store.markLockedPost(uuid);
+      if (delivery?.failed) return c.json(directDeliveryError(delivery), 502);
+      if (direct) return c.json(await toStatus(transport, msg, media?.description ?? null));
 
       // Thread-subscribe (host side): if WE host the thread this reply belongs to,
       // republish our OWN reply into the channel now — a self-authored feed post
@@ -1423,15 +1567,37 @@ export const createApp = (
       ? { description: media.description, sha256: await sha256File(media.path) }
       : undefined;
     const postUuid = mintUuid();
+    const directRecipients = direct ? await resolveDirectRecipients(transport, text) : null;
+    if (direct && (!directRecipients || directRecipients.length === 0)) {
+      return c.json(
+        {
+          error: directRecipients === null
+            ? "can't reach every direct recipient"
+            : 'direct posts require a non-self key-contact recipient',
+          ...(directRecipients === null ? { code: 'unreachable_recipient' } : {}),
+        },
+        422,
+      );
+    }
     const postText = signEnvelope(
-      { ...buildPostObject(text, postUuid, postMedia), ...privacyMark() },
+      { ...buildPostObject(text, postUuid, postMedia), ...visibilityMark() },
       await mapper.ownAddr(transport),
       await ownContactInvite(transport),
     );
-    const msg = await transport.post(postText, { channel, ...(media ? { file: media.path } : {}) });
-    if (media) mediaStore.tagMessage(msg.id, media.description);
-    if (channel === 'locked') store.markLockedPost(postUuid);
-    await ingest(transport, msg);
+    const delivery = direct
+      ? await sendDirectCopies(transport, postText, directRecipients!, media?.path)
+      : null;
+    const sent = delivery?.messages ?? [await transport.post(postText, { channel, ...(media ? { file: media.path } : {}) })];
+    if (direct && sent.length === 0) return c.json(directDeliveryError(delivery!), 502);
+    const msg = sent[0]!;
+    for (const copy of sent) {
+      if (media) mediaStore.tagMessage(copy.id, media.description);
+      await ingest(transport, copy, !direct);
+    }
+    if (direct) store.markDirectPost(postUuid);
+    else if (channel === 'locked') store.markLockedPost(postUuid);
+    if (delivery?.failed) return c.json(directDeliveryError(delivery), 502);
+    if (direct) return c.json(await toStatus(transport, msg, media?.description ?? null));
     await deliverMentionCopies(transport, postText, text, [
       (await mapper.ownAddr(transport)).toLowerCase(),
     ]);
@@ -1474,8 +1640,8 @@ export const createApp = (
       const orig = await resolveOrigAction(transport, parsed.uuid);
       if (!orig) return c.json({ error: 'Record not found' }, 404);
       // Leak guard: a held/embedded followers-only post is not reboggable.
-      if (orig.env.visibility === 'private') {
-        return c.json({ error: 'private (followers-only) posts cannot be boosted' }, 422);
+      if (orig.env.visibility === 'private' || orig.env.visibility === 'direct' || store.isDirectPost(parsed.uuid)) {
+        return c.json({ error: 'private/locked or direct posts cannot be boosted' }, 422);
       }
       const envRef: EnvelopeRef = { u: parsed.uuid, addr: orig.authorAddr };
       const embed = orig.env.media?.sha256 ? undefined : orig.env;
@@ -1504,9 +1670,11 @@ export const createApp = (
     const targetUuid = parseWireUuid(target.text);
     if (
       (targetUuid && store.isLockedPost(targetUuid)) ||
-      parseWire(target.text).visibility === 'private'
+      (targetUuid && store.isDirectPost(targetUuid)) ||
+      parseWire(target.text).visibility === 'private' ||
+      parseWire(target.text).visibility === 'direct'
     ) {
-      return c.json({ error: 'private (followers-only) posts cannot be boosted' }, 422);
+      return c.json({ error: 'private/locked or direct posts cannot be boosted' }, 422);
     }
     // Target the boosted post's uuid ref (or canonical/mid) so the boost
     // resolves on any node, even when acting on a DM copy.
@@ -1809,14 +1977,18 @@ export const createApp = (
     const rootLocal = store.resolveKey(root.rootUuid);
     const rootMsg = rootLocal !== null ? await transport.message(rootLocal) : null;
     const targetMsg = parsed.kind === 'msg' ? await transport.message(parsed.msgId) : null;
-    const rootPrivate =
+    const rootRestricted =
       store.isLockedPost(root.rootUuid) ||
+      store.isDirectPost(root.rootUuid) ||
       (rootMsg ? parseWire(rootMsg.text).visibility === 'private' : false) ||
+      (rootMsg ? parseWire(rootMsg.text).visibility === 'direct' : false) ||
       (targetMsg ? parseWire(targetMsg.text).visibility === 'private' : false) ||
-      store.heldEnvelope(root.rootUuid)?.env.visibility === 'private';
-    if (rootPrivate) {
+      (targetMsg ? parseWire(targetMsg.text).visibility === 'direct' : false) ||
+      store.heldEnvelope(root.rootUuid)?.env.visibility === 'private' ||
+      store.heldEnvelope(root.rootUuid)?.env.visibility === 'direct';
+    if (rootRestricted) {
       return c.json(
-        { error: 'followers-only threads cannot be subscribed to', code: 'private_thread' },
+        { error: 'restricted threads cannot be subscribed to', code: 'private_thread' },
         422,
       );
     }

@@ -192,7 +192,7 @@
 			<span>Reply</span>
 			{#if post.replies > 0}<span class="focused-action-c">{post.replies}</span>{/if}
 		</button>
-		<button type="button" class="focused-action {post.actions.boost ? 'on' : ''}" aria-pressed={post.actions.boost ? 'true' : 'false'} aria-label={`Boost ${post.boosts + (post.actions.boost ? 1 : 0)}`} disabled={post.visibility === 'private'} title={post.visibility === 'private' ? 'Followers-only posts cannot be boosted' : undefined} onclick={() => onAction?.(post.id, 'boost')}>
+		<button type="button" class="focused-action {post.actions.boost ? 'on' : ''}" aria-pressed={post.actions.boost ? 'true' : 'false'} aria-label={`Boost ${post.boosts + (post.actions.boost ? 1 : 0)}`} disabled={post.visibility === 'private' || post.visibility === 'direct'} title={post.visibility === 'private' ? 'Followers-only posts cannot be boosted' : post.visibility === 'direct' ? 'Direct posts cannot be boosted' : undefined} onclick={() => onAction?.(post.id, 'boost')}>
 			<Icon name="boost" />
 			<span>Boost</span>
 			{#if post.boosts + (post.actions.boost ? 1 : 0) > 0}<span class="focused-action-c">{post.boosts + (post.actions.boost ? 1 : 0)}</span>{/if}

@@ -110,15 +110,15 @@ export type Envelope = {
    */
   invite?: string;
   /**
-   * Visibility marker (leak prevention, meta/issues/visibility-leak-prevention.md):
-   * 'private' on a content envelope means followers-only — honest receivers
-   * refuse to boost/serve it and render it as private. DELIBERATELY UNSIGNED
+   * Visibility marker (leak prevention + direct delivery): 'private' means
+   * followers-only; 'direct' means mentioned recipients only. Honest receivers
+   * refuse to boost/serve either tier and render the marker. DELIBERATELY UNSIGNED
    * (outside the canonical payload, like `invite`): stripping it requires a
    * peer who could equally leak the content itself; the marker guards honest
    * machinery, not malicious holders. Absent = public. Tolerant parse drops
    * any other value.
    */
-  visibility?: 'private';
+  visibility?: 'private' | 'direct';
   /** The emoji of a react/unreact. */
   emoji?: string;
   /** The invite link of an invite-grant. */
@@ -440,9 +440,15 @@ export const parseEnvelope = (text: string): Envelope | null => {
   // `invite` is an unsigned string-only field (in-band introduction); anything
   // else degrades to absent so downstream code never sees junk.
   if (obj['invite'] !== undefined && typeof obj['invite'] !== 'string') delete obj['invite'];
-  // `visibility` (leak prevention): only the literal 'private' means anything;
-  // junk degrades to absent (= public).
-  if (obj['visibility'] !== undefined && obj['visibility'] !== 'private') delete obj['visibility'];
+  // `visibility`: only the supported restricted tiers mean anything; junk
+  // degrades to absent (= public).
+  if (
+    obj['visibility'] !== undefined &&
+    obj['visibility'] !== 'private' &&
+    obj['visibility'] !== 'direct'
+  ) {
+    delete obj['visibility'];
+  }
   return obj as Envelope;
 };
 

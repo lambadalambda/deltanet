@@ -15,6 +15,9 @@ describe('servableEnvelope: verbatim signed content only', () => {
     expect(servableEnvelope(null)).toBeNull();
     expect(servableEnvelope({ dn: 2, type: 'react', emoji: '❤', sig: 'S', pubkey: 'P', ts: 1 } as Envelope)).toBeNull();
   });
+  it('never serves a direct envelope', () => {
+    expect(servableEnvelope(sign({ ...buildPostObject('secret', uuidN(1)), visibility: 'direct' }))).toBeNull();
+  });
 });
 
 describe('chunkBundles: size-capped splitting', () => {

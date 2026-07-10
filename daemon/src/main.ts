@@ -18,6 +18,7 @@ import { createStatusMapper, mapNotification } from './mapping.js';
 import { createStreamingHub } from './streaming.js';
 import { createBackfiller, type SendRequest } from './backfill.js';
 import { buildEnvelopeRequest, type EnvelopeRef } from './envelope.js';
+import { parseWire } from './wire.js';
 import {
   enqueueDangling,
   handleBackfillControlDm,
@@ -262,7 +263,7 @@ const ingestOnMessage = async (
   // `mediaStore`); acceptable for a best-effort live nicety.
   const noDescription = (_msgId: number): string | null => null;
 
-  if (isFeedMessage) {
+  if (isFeedMessage && parseWire(msg.text).visibility !== 'direct') {
     try {
       const status = await mapper.toStatus(t, msg, noDescription(msg.id));
       hub.broadcastUpdate(status, msg.id);

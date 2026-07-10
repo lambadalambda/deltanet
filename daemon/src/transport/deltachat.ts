@@ -916,6 +916,23 @@ const buildTransport = (
       await rpc.sendMsg(accountId, chatId, data);
     },
 
+    sendContentDm: async (contactId, text, opts) => {
+      const chatId = await dm1to1ChatId(contactId);
+      const data: T.MessageData = {
+        text,
+        html: null,
+        viewtype: opts?.file ? 'Image' : null,
+        file: opts?.file ?? null,
+        filename: null,
+        location: null,
+        overrideSenderName: null,
+        quotedMessageId: null,
+        quotedText: null,
+      };
+      const msgId = await rpc.sendMsg(accountId, chatId, data);
+      return withSelfDisplayName(await rpc.getMessage(accountId, msgId), await selfDisplayName());
+    },
+
     deleteMessage: async (msgId) => {
       await rpc.deleteMessagesForAll(accountId, [msgId]);
     },

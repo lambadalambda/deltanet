@@ -99,6 +99,13 @@ export const getComposerUploadedMediaIds = (uploads: ComposerUpload[]) => upload
 
 export const hasComposerUploadsPending = (uploads: ComposerUpload[]) => uploads.some((upload) => upload.status === 'uploading');
 
+// Same pragmatic full-address shape the daemon accepts. This is only an early
+// obvious-invalid guard; the daemon remains authoritative for key reachability.
+const ADDRESS_MENTION_PATTERN =
+	/(?<![\w@.])@[A-Za-z0-9._%+-]+@[A-Za-z0-9_](?:[A-Za-z0-9_-]*[A-Za-z0-9_])?(?:\.[A-Za-z0-9_](?:[A-Za-z0-9_-]*[A-Za-z0-9_])?)*\.[A-Za-z]{2,}(?![\w@.-])/;
+
+export const hasComposerAddressMention = (body: string) => ADDRESS_MENTION_PATTERN.test(body);
+
 export const composerPollPayload = (poll: ComposerPollDraft): ComposerPollPayload | null => {
 	const options = poll.choices.map((choice) => choice.trim()).filter(Boolean);
 	if (options.length < 2) return null;

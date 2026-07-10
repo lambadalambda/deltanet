@@ -387,6 +387,22 @@ describe('leak prevention: locked/private thread gating', () => {
     expect(channelPosts).toHaveLength(0);
   });
 
+  it('a direct-marked reply is never republished into a thread channel', async () => {
+    const store = createStore(join(dir, 'rep-direct.json'));
+    store.addHostedThread(ROOT, 777);
+    const { transport, channelPosts } = fakeTransport();
+    const directReply = makeMessage({
+      id: 63,
+      fromId: 22,
+      sender: makeContact({ id: 22, address: BOB }),
+      text: serializeEnvelope(
+        sign({ ...buildReplyObject('direct reply', REPLY2, { u: REPLY1, addr: BOB }, undefined, rootRef()), visibility: 'direct' }, BOB),
+      ),
+    });
+    expect(await republishReplyToThread(store, transport, directReply, true)).toBe(false);
+    expect(channelPosts).toHaveLength(0);
+  });
+
   it('a thread-invite request for a LOCKED root is refused (no grant, no channel)', async () => {
     const store = createStore(join(dir, 'host-priv.json'));
     store.ingestMessage(

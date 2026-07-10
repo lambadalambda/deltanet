@@ -284,4 +284,24 @@ describe('leak prevention: serve refusal on the wire marker', () => {
     );
     expect(await buildServeBundles(store, transport, [{ u: heldUuid, addr: ALICE }])).toEqual([]);
   });
+
+  it('never serves or holds direct-marked envelopes', async () => {
+    const directUuid = 'dddd0000-1111-4222-8333-444444444444';
+    const direct = signAlice({ ...buildPostObject('direct post', directUuid), visibility: 'direct' as const });
+    store.ingestMessage(makeMessage({ id: 10, text: serializeEnvelope(direct) }), 'mid-10@x', false);
+    const transport = makeTransport(new Map([[10, serializeEnvelope(direct)]]));
+    expect(await buildServeBundles(store, transport, [{ u: directUuid, addr: ALICE }])).toEqual([]);
+
+    const heldUuid = 'eeee0000-1111-4222-8333-444444444444';
+    const heldDirect = signAlice({ ...buildPostObject('held direct', heldUuid), visibility: 'direct' as const });
+    processBundle(
+      store,
+      makeBackfiller().bf,
+      BOB,
+      22,
+      parseEnvelope(buildEnvelopeBundle([heldDirect]))!,
+      1000,
+    );
+    expect(store.heldEnvelope(heldUuid)).toBeNull();
+  });
 });

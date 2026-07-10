@@ -1301,3 +1301,23 @@ describe('locked posts (visibility channels)', () => {
     expect(createStore(filePath).isLockedPost(uuid)).toBe(true);
   });
 });
+
+describe('direct posts (mentioned-people-only visibility)', () => {
+  it('marks and reports direct post uuids', () => {
+    const store = createStore(filePath);
+    const uuid = mintPostUuid();
+    expect(store.isDirectPost(uuid)).toBe(false);
+    store.markDirectPost(uuid);
+    expect(store.isDirectPost(uuid)).toBe(true);
+  });
+
+  it('direct markers survive a schema re-index (non-derivable root)', () => {
+    const store = createStore(filePath);
+    const uuid = mintPostUuid();
+    store.markDirectPost(uuid);
+    const raw = JSON.parse(readFileSync(filePath, 'utf8'));
+    raw.schemaVersion = 0;
+    writeFileSync(filePath, JSON.stringify(raw));
+    expect(createStore(filePath).isDirectPost(uuid)).toBe(true);
+  });
+});

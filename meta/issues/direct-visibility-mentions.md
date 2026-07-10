@@ -16,15 +16,17 @@ render it as visibility 'direct' locally.
 - Once implemented, direct posts must be delivered only to explicitly
   mentioned key-contacts and must not enter a feed channel.
 
-Decisions to make:
-- No mentions + direct → 422 (nothing addressable) or self-note?
-- Recipient side: a direct post arrives as a content DM — it must NOT
-  enter the home feed timeline (DM chat, already excluded) but should be
-  reachable: thread view + notifications (the mention notification
-  already fires). Probably also Mastodon's direct timeline / chats
-  surface — decide how it renders.
-- Leak guards: direct posts join lockedPostUuids-style guards (never
-  served, never boostable) — strictest tier.
+## Decisions
+
+- No non-self key-contact mentions on a direct root returns 422; direct is
+  not a self-note surface.
+- A direct post is reachable through its status/thread and recipient mention
+  notifications, but never enters home, public, profile, or search feeds.
+- Direct posts have their own persisted UUID guard and are never served,
+  held, boosted, thread-subscribed, or thread-republished.
+- Every recipient is resolved before sending. Independent DM sends cannot be
+  transactional; if only some later sends fail, successful local copies remain
+  indexed and the API reports an explicit `partial_delivery` error.
 
 ## Acceptance Criteria
 

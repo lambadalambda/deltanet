@@ -168,6 +168,11 @@ export interface Transport {
   messageMid(msgId: number): Promise<string | null>;
   /** Send a 1:1 DM to a contact (creating the chat if needed), e.g. the reply-notify copy. */
   sendControlDm(contactId: number, text: string, quotedText?: string): Promise<void>;
+  /**
+   * Send user-visible content through a 1:1 chat and return our local message
+   * copy. Unlike control DMs this supports media and is status-addressable.
+   */
+  sendContentDm(contactId: number, text: string, opts?: Pick<PostOptions, 'file'>): Promise<T.Message>;
   /** Delete a message for all recipients (used to implement unreblog). */
   deleteMessage(msgId: number): Promise<void>;
   /** Feeds we've joined (InBroadcast chats), one entry per followed account. */

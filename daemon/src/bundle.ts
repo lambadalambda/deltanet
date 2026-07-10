@@ -28,6 +28,7 @@ export const MAX_BUNDLE_BYTES = 100_000;
 export const servableEnvelope = (env: Envelope | null): Envelope | null => {
   if (!env) return null;
   if (env.type !== 'post' && env.type !== 'reply' && env.type !== 'boost') return null;
+  if (env.visibility === 'direct') return null;
   if (typeof env.uuid !== 'string' || env.uuid.length === 0) return null;
   if (!env.sig || !env.pubkey) return null;
   return env;
