@@ -11,7 +11,7 @@ import {
 import { openRelayTransport, register } from './relay.js';
 import type { Transport } from '../../src/transport/types.js';
 import { createStore, type Store } from '../../src/store.js';
-import { createApp, type AppContext } from '../../src/server.js';
+import { createUnsafeTestApp, type AppContext } from '../../src/server.js';
 import { deriveOnIngest } from '../../src/ingest.js';
 import { parseWire, parseWireUuid } from '../../src/wire.js';
 
@@ -137,9 +137,9 @@ describe('post-uuid third-party thread resolution over chatmail', () => {
     refs.c = c;
     transports.push(a, b, c);
 
-    const aApp = createApp(ctxFor(a), { baseUrl: 'http://localhost:4030', store: aStore });
-    const bApp = createApp(ctxFor(b), { baseUrl: 'http://localhost:4030', store: bStore });
-    const cApp = createApp(ctxFor(c), { baseUrl: 'http://localhost:4030', store: cStore });
+    const aApp = createUnsafeTestApp(ctxFor(a), { baseUrl: 'http://localhost:4030', store: aStore });
+    const bApp = createUnsafeTestApp(ctxFor(b), { baseUrl: 'http://localhost:4030', store: bStore });
+    const cApp = createUnsafeTestApp(ctxFor(c), { baseUrl: 'http://localhost:4030', store: cStore });
 
     // Ensure all feeds exist.
     await Promise.all([a.feedInvite(), b.feedInvite(), c.feedInvite()]);

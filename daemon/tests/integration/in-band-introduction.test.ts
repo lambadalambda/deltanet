@@ -6,7 +6,7 @@ import { type DeltaChatTransport, type IngestPhase } from '../../src/transport/d
 import { openRelayTransport, register } from './relay.js';
 import type { Transport } from '../../src/transport/types.js';
 import { createStore, type Store } from '../../src/store.js';
-import { createApp, type AppContext } from '../../src/server.js';
+import { createUnsafeTestApp, type AppContext } from '../../src/server.js';
 import { deriveOnIngest, runFollowbackOnIngest } from '../../src/ingest.js';
 import { createBackfiller, type Backfiller, type SendRequest } from '../../src/backfill.js';
 import { buildEnvelopeRequest, parseEnvelope, type EnvelopeRef } from '../../src/envelope.js';
@@ -141,9 +141,9 @@ describe('in-band introduction: a total stranger subscribes and root-copies', ()
     bfRefs.b = createBackfiller({ store: bStore, send: sendFor(() => refs.b), ...noTimer });
     bfRefs.c = createBackfiller({ store: cStore, send: sendFor(() => refs.c), ...noTimer });
 
-    const aApp = createApp(ctxFor(a), { baseUrl: 'http://localhost:4030', store: aStore });
-    const bApp = createApp(ctxFor(b), { baseUrl: 'http://localhost:4031', store: bStore });
-    const cApp = createApp(ctxFor(c), { baseUrl: 'http://localhost:4032', store: cStore });
+    const aApp = createUnsafeTestApp(ctxFor(a), { baseUrl: 'http://localhost:4030', store: aStore });
+    const bApp = createUnsafeTestApp(ctxFor(b), { baseUrl: 'http://localhost:4031', store: bStore });
+    const cApp = createUnsafeTestApp(ctxFor(c), { baseUrl: 'http://localhost:4032', store: cStore });
 
     // --- A and B mutual-follow; C follows B ONLY. C never meets A: no follow,
     //     no reverse follow, no DM — nothing. ---
@@ -158,7 +158,7 @@ describe('in-band introduction: a total stranger subscribes and root-copies', ()
     await cJoinsB;
 
     // --- Thread: A root <- B reply ---
-    const post = async (app: ReturnType<typeof createApp>, status: string, inReplyToId?: string): Promise<string> => {
+    const post = async (app: ReturnType<typeof createUnsafeTestApp>, status: string, inReplyToId?: string): Promise<string> => {
       const res = await app.request('/api/v1/statuses', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

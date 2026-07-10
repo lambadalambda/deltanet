@@ -7,7 +7,8 @@ import {
 	createOAuthState,
 	exchangeOAuthCode,
 	parseOAuthCallback,
-	registerOAuthApp
+	registerOAuthApp,
+	revokeOAuthToken
 } from './oauth';
 import { createPleromaResource } from './resource';
 import {
@@ -15,8 +16,10 @@ import {
 	PENDING_OAUTH_TTL_MS,
 	readPendingOAuth,
 	readPleromaAuthState,
+	readPleromaOAuthClient,
 	readSplitPleromaAuthState,
 	signOutPleroma,
+	storePleromaOAuthClient,
 	storePendingOAuth,
 	storePleromaSession
 } from './session';
@@ -214,12 +217,12 @@ test('Pleroma client fetches authenticated notifications with cursor query', asy
 	expect(requests[0].url.searchParams.get('since_id')).toBe('notif-old');
 });
 
-test('Pleroma streaming helpers build WebSocket URLs and parse user stream events', () => {
-	expect(buildPleromaStreamingUrl({ instanceUrl: 'https://pleroma.example', accessToken: 'access-token' })).toBe(
-		'wss://pleroma.example/api/v1/streaming/?stream=user&access_token=access-token'
+test('Pleroma streaming helpers build ticket-only WebSocket URLs and parse user stream events', () => {
+	expect(buildPleromaStreamingUrl({ instanceUrl: 'https://pleroma.example', ticket: 'stream-ticket' })).toBe(
+		'wss://pleroma.example/api/v1/streaming/?stream=user&ticket=stream-ticket'
 	);
-	expect(buildPleromaStreamingUrl({ instanceUrl: 'http://localhost:4000', accessToken: 'local-token', stream: 'public:local' })).toBe(
-		'ws://localhost:4000/api/v1/streaming/?stream=public%3Alocal&access_token=local-token'
+	expect(buildPleromaStreamingUrl({ instanceUrl: 'http://localhost:4000', ticket: 'local-ticket', stream: 'public:local' })).toBe(
+		'ws://localhost:4000/api/v1/streaming/?stream=public%3Alocal&ticket=local-ticket'
 	);
 
 	const message = parsePleromaStreamingMessage(JSON.stringify({
@@ -241,14 +244,20 @@ test('Pleroma streaming helpers build WebSocket URLs and parse user stream event
 	expect(parsePleromaStreamingMessage('not json')).toBeNull();
 });
 
-test('Pleroma streaming lifecycle handles unavailable and closed sockets', () => {
+test('Pleroma streaming lifecycle fetches a bearer-authenticated ticket before opening and handles closed sockets', async () => {
 	const originalWebSocket = globalThis.WebSocket;
 	try {
+		const ticketRequests: RecordedRequest[] = [];
+		const ticketFetch = createJsonFetch((request) => {
+			ticketRequests.push(request);
+			return { body: { ticket: 'one-use-ticket', expires_at: Date.now() + 30_000 } };
+		}).fetchImpl;
 		let unavailableError: unknown;
 		Object.defineProperty(globalThis, 'WebSocket', { configurable: true, value: undefined });
 		openPleromaTimelineStream({
 			instanceUrl: 'https://pleroma.example',
 			accessToken: 'access-token',
+			fetch: ticketFetch,
 			onUpdate: () => undefined,
 			onError: (error) => (unavailableError = error)
 		}).close();
@@ -264,14 +273,16 @@ test('Pleroma streaming lifecycle handles unavailable and closed sockets', () =>
 			onclose: ((event: Event) => void) | null;
 			close: () => void;
 		};
-		openPleromaTimelineStream({
+		const throwingStream = openPleromaTimelineStream({
 			instanceUrl: 'https://pleroma.example',
 			accessToken: 'access-token',
+			fetch: ticketFetch,
 			WebSocketImpl: ThrowingSocket,
 			onUpdate: () => undefined,
 			onError: (error) => (constructorError = error)
-		}).close();
-		expect(constructorError).toBeInstanceOf(Error);
+		});
+		await expect.poll(() => constructorError).toBeInstanceOf(Error);
+		throwingStream.close();
 
 		type TestSocket = {
 			url: string;
@@ -306,6 +317,7 @@ test('Pleroma streaming lifecycle handles unavailable and closed sockets', () =>
 		const stream = openPleromaTimelineStream({
 			instanceUrl: 'https://pleroma.example',
 			accessToken: 'access-token',
+			fetch: ticketFetch,
 			WebSocketImpl: SocketImpl,
 			onUpdate: (status) => updates.push(status.id),
 			onNotification: (notification) => notifications.push(notification.id),
@@ -314,8 +326,13 @@ test('Pleroma streaming lifecycle handles unavailable and closed sockets', () =>
 			onClose: () => (closeCount += 1)
 		});
 
+		await expect.poll(() => sockets.length).toBe(1);
 		const socket = sockets[0];
-		expect(socket.url).toBe('wss://pleroma.example/api/v1/streaming/?stream=user&access_token=access-token');
+		expect(socket.url).toBe('wss://pleroma.example/api/v1/streaming/?stream=user&ticket=one-use-ticket');
+		expect(socket.url).not.toContain('access-token');
+		expectPath(ticketRequests.at(-1)!, '/api/deltanet/streaming/token');
+		expect(ticketRequests.at(-1)!.method).toBe('POST');
+		expect(ticketRequests.at(-1)!.authorization).toBe('Bearer access-token');
 		socket.onopen?.(new Event('open'));
 		socket.onmessage?.({ data: JSON.stringify({ event: 'update', payload: JSON.stringify({ ...pleromaFixtures.status, id: 'status-open' }) }) });
 		socket.onmessage?.({ data: JSON.stringify({ event: 'notification', payload: JSON.stringify({ ...pleromaFixtures.notifications[0], id: 'notif-open' }) }) });
@@ -477,21 +494,23 @@ test('Pleroma client covers mutations, unauthenticated state, and API errors', a
 	});
 });
 
-test('OAuth boundary registers apps, builds redirects, parses callbacks, and stores sessions', async () => {
+test('OAuth boundary enrolls and persists a reusable full-scope client, builds redirects, and stores sessions', async () => {
 	const { fetchImpl, requests } = createJsonFetch((request) => {
 		if (request.url.pathname === '/api/v1/apps') return { body: pleromaFixtures.oauthApp };
 		if (request.url.pathname === '/oauth/token') return { body: pleromaFixtures.token };
+		if (request.url.pathname === '/oauth/revoke') return { body: {} };
 
 		return { status: 404, body: { error: 'missing fixture' } };
 	});
 
 	const redirectUri = 'http://localhost:4173/auth/callback';
-	const scopes = ['read', 'write', 'follow'] as const;
+	const scopes = ['read', 'write', 'follow', 'push'] as const;
 	const app = await registerOAuthApp({
 		instanceUrl: 'https://pleroma.example',
 		clientName: 'DeltaNet',
 		redirectUri,
 		scopes,
+		enrollmentCode: 'terminal-enrollment-code',
 		website: 'https://deltanet.example',
 		fetch: fetchImpl
 	});
@@ -500,7 +519,28 @@ test('OAuth boundary registers apps, builds redirects, parses callbacks, and sto
 	expect(requests[0].method).toBe('POST');
 	expectPath(requests[0], '/api/v1/apps');
 	expect(requests[0].body).toContain('client_name=DeltaNet');
-	expect(requests[0].body).toContain('scopes=read+write+follow');
+	expect(requests[0].body).toContain('scopes=read+write+follow+push');
+	expect(requests[0].body).toContain('enrollment_code=terminal-enrollment-code');
+
+	const clientStorage = createMemoryPleromaStorage();
+	storePleromaOAuthClient(clientStorage, {
+		instanceUrl: 'https://pleroma.example',
+		clientId: app.clientId,
+		clientSecret: app.clientSecret,
+		redirectUri,
+		scopes,
+		createdAt: 1700000000000
+	});
+	expect(readPleromaOAuthClient(clientStorage, {
+		instanceUrl: 'https://pleroma.example',
+		redirectUri,
+		scopes
+	})).toMatchObject({ clientId: 'client-id', clientSecret: 'client-secret' });
+	expect(readPleromaOAuthClient(clientStorage, {
+		instanceUrl: 'https://other.example',
+		redirectUri,
+		scopes
+	})).toBeNull();
 
 	const authorizeUrl = buildAuthorizationUrl({
 		instanceUrl: 'https://pleroma.example/',
@@ -513,7 +553,7 @@ test('OAuth boundary registers apps, builds redirects, parses callbacks, and sto
 	expect(authorize.origin).toBe('https://pleroma.example');
 	expect(authorize.pathname).toBe('/oauth/authorize');
 	expect(authorize.searchParams.get('response_type')).toBe('code');
-	expect(authorize.searchParams.get('scope')).toBe('read write follow');
+	expect(authorize.searchParams.get('scope')).toBe('read write follow push');
 
 	expect(parseOAuthCallback(`${redirectUri}?code=oauth-code&state=state-1`)).toEqual({
 		status: 'success',
@@ -538,6 +578,16 @@ test('OAuth boundary registers apps, builds redirects, parses callbacks, and sto
 	expect(token.accessToken).toBe('access-token');
 	expect(requests[1].body).toContain('grant_type=authorization_code');
 	expect(requests[1].body).toContain('code=oauth-code');
+
+	await revokeOAuthToken({
+		instanceUrl: 'https://pleroma.example',
+		accessToken: token.accessToken,
+		fetch: fetchImpl
+	});
+	expectPath(requests[2], '/oauth/revoke');
+	expect(requests[2].method).toBe('POST');
+	expect(requests[2].authorization).toBe('Bearer access-token');
+	expect(new URLSearchParams(requests[2].body).get('token')).toBe('access-token');
 
 	const storage = createMemoryPleromaStorage();
 	storePendingOAuth(storage, {

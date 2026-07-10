@@ -68,8 +68,12 @@ const DC_CONTACT_ID_SELF = 1;
  * instead of their uuid (the uuid parse failed); the persisted text is clean,
  * so re-indexing with the tolerant parser re-keys them and their reaction
  * tallies line up again.
+ * Version 9 adds positive local feed-message provenance (`feedMsgIds`). It is a
+ * derivable index rebuilt from each message's chat type during the startup
+ * sweep, so migration drops it with the other indices. Anonymous public status
+ * trees use it to distinguish feed-delivered content from DM-only local copies.
  */
-export const STORE_SCHEMA_VERSION = 8;
+export const STORE_SCHEMA_VERSION = 9;
 
 /**
  * Upper bound on stored held envelopes (thread auto-backfill). Held content is
@@ -235,6 +239,8 @@ type StoreData = {
   ownBoosts: Record<string, number>;
   /** msgIds already ingested, so re-ingesting the same message is a no-op. */
   ingestedMsgIds: number[];
+  /** msgIds positively observed in a feed chat; derivable during startup re-index. */
+  feedMsgIds: number[];
   /** POST-KEYs authored by SELF (DC contact id 1). */
   ownMids: string[];
   /** POST-KEY -> reactor address -> emoji[] (a reactor may use several distinct emoji per post). */
@@ -343,6 +349,7 @@ const emptyData = (): StoreData => ({
   boostsByMid: {},
   ownBoosts: {},
   ingestedMsgIds: [],
+  feedMsgIds: [],
   ownMids: [],
   reactions: {},
   notifications: [],
@@ -429,6 +436,8 @@ export type Store = {
    * grant/accept actions in main.ts) on this return value.
    */
   ingestMessage(msg: T.Message, mid: string, isFeedMessage?: boolean): boolean;
+  /** Was this local message positively observed in a feed chat? */
+  isFeedMessage(msgId: number): boolean;
   /**
    * Resolve a mid to its canonical (feed-copy) mid via the alias map, or return
    * it unchanged if no alias is known. The store owns the alias map, so this is
@@ -830,7 +839,15 @@ export const createStore = (
 
     ingestMessage: (msg, mid, isFeedMessage = true) => {
       const d = load();
-      if (ingestedSet().has(msg.id)) return false;
+      if (ingestedSet().has(msg.id)) {
+        if (isFeedMessage && !d.feedMsgIds.includes(msg.id)) {
+          d.feedMsgIds.push(msg.id);
+          save();
+        }
+        return false;
+      }
+
+      if (isFeedMessage) d.feedMsgIds.push(msg.id);
 
       d.midToMsgId[mid] = msg.id;
       d.msgIdToMid[msg.id] = mid;
@@ -892,6 +909,8 @@ export const createStore = (
       save();
       return true;
     },
+
+    isFeedMessage: (msgId) => load().feedMsgIds.includes(msgId),
 
     canonicalize: (mid) => canon(mid),
 

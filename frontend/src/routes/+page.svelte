@@ -4,15 +4,20 @@
 		buildAuthorizationUrl,
 		createOAuthState,
 		defaultDeltanetInstanceUrl,
+		DELTANET_OAUTH_SCOPES,
 		DELTANET_DEFAULT_RELAY,
 		fetchDeltanetStatus,
+		normalizeInstanceUrl,
+		readPleromaOAuthClient,
 		registerOAuthApp,
 		readPleromaSession,
+		removePleromaOAuthClient,
 		restoreDeltanet,
 		signupDeltanet,
+		storePleromaOAuthClient,
 		storePendingOAuth
 	} from '$lib/pleroma';
-	import type { PendingPleromaOAuth, PleromaScope } from '$lib/pleroma';
+	import type { PendingPleromaOAuth } from '$lib/pleroma';
 	import Icon from '$lib/rebuild/Icon.svelte';
 	import { env } from '$env/dynamic/public';
 	import { onMount } from 'svelte';
@@ -21,7 +26,7 @@
 	type AuthStep = 'enter' | 'signup-success' | 'restore-success' | 'redirect';
 	type SignupView = 'create' | 'restore';
 
-	const scopes = ['read', 'write', 'follow'] as const satisfies readonly PleromaScope[];
+	const scopes = DELTANET_OAUTH_SCOPES;
 
 	let mode = $state<AuthMode>('signin');
 	let authStep = $state<AuthStep>('enter');
@@ -29,6 +34,9 @@
 	let showAdvanced = $state(false);
 	let authorizationUrl = $state('');
 	let authError = $state('');
+	let enrollmentCode = $state('');
+	let storageReady = $state(false);
+	let reusableClient = $state(false);
 	let authAttempt = 0;
 
 	let displayName = $state('');
@@ -48,7 +56,7 @@
 		const trimmed = instance.trim().replace(/\/$/, '');
 		return /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
 	})());
-	const continueDisabled = $derived(!instance.trim());
+	const continueDisabled = $derived(!instance.trim() || (!reusableClient && !enrollmentCode.trim()));
 	const signupDisabled = $derived(!displayName.trim() || signupPending);
 
 	const selectMode = (nextMode: AuthMode) => {
@@ -78,20 +86,38 @@
 
 		const redirectUri = `${window.location.origin}/auth/callback`;
 		try {
-			const app = await registerOAuthApp({
-				instanceUrl: selectedInstanceUrl,
-				clientName: 'DeltaNet',
-				redirectUri,
-				scopes,
-				website: window.location.origin,
-				fetch: window.fetch.bind(window)
-			});
+			const instanceUrl = normalizeInstanceUrl(selectedInstanceUrl);
+			const code = enrollmentCode.trim();
+			let app = code ? null : readPleromaOAuthClient(localStorage, { instanceUrl, redirectUri, scopes });
+			if (!app) {
+				if (!code) throw new Error('Enter the one-time enrollment code printed by the daemon.');
+				const registered = await registerOAuthApp({
+					instanceUrl,
+					clientName: 'DeltaNet',
+					redirectUri,
+					scopes,
+					enrollmentCode: code,
+					website: window.location.origin,
+					fetch: window.fetch.bind(window)
+				});
+				app = {
+					instanceUrl,
+					clientId: registered.clientId,
+					clientSecret: registered.clientSecret,
+					redirectUri,
+					scopes,
+					createdAt: Date.now()
+				};
+				storePleromaOAuthClient(localStorage, app);
+				reusableClient = true;
+				enrollmentCode = '';
+			}
 
 			if (attempt !== authAttempt || authStep !== 'redirect') return;
 
 			const state = createOAuthState();
 			const pending = {
-				instanceUrl: selectedInstanceUrl,
+				instanceUrl,
 				clientId: app.clientId,
 				clientSecret: app.clientSecret,
 				redirectUri,
@@ -100,7 +126,7 @@
 				createdAt: Date.now()
 			} satisfies PendingPleromaOAuth;
 			const url = buildAuthorizationUrl({
-				instanceUrl: selectedInstanceUrl,
+				instanceUrl,
 				clientId: app.clientId,
 				redirectUri,
 				scopes,
@@ -130,11 +156,11 @@
 				fetch: window.fetch.bind(window)
 			});
 			restoredAddress = result.acct;
+			removePleromaOAuthClient(localStorage, selectedInstanceUrl);
+			reusableClient = false;
+			enrollmentCode = '';
 			authStep = 'restore-success';
 			restorePending = false;
-			await new Promise((resolve) => window.setTimeout(resolve, 900));
-			if (authStep !== 'restore-success') return;
-			void startOAuth();
 		} catch (error) {
 			restorePending = false;
 			if (error && typeof error === 'object' && 'kind' in error) {
@@ -166,11 +192,11 @@
 				fetch: window.fetch.bind(window)
 			});
 			signupAddress = result.acct;
+			removePleromaOAuthClient(localStorage, selectedInstanceUrl);
+			reusableClient = false;
+			enrollmentCode = '';
 			authStep = 'signup-success';
 			signupPending = false;
-			await new Promise((resolve) => window.setTimeout(resolve, 900));
-			if (authStep !== 'signup-success') return;
-			void startOAuth();
 		} catch (error) {
 			signupPending = false;
 			if (error && typeof error === 'object' && 'kind' in error) {
@@ -200,6 +226,7 @@
 			windowOrigin: window.location.origin,
 			publicInstanceUrl: env.PUBLIC_PLEROMA_INSTANCE_URL
 		});
+		storageReady = true;
 
 		void (async () => {
 			try {
@@ -209,6 +236,19 @@
 				// Default to sign-in if status can't be read; the field is still editable.
 			}
 		})();
+	});
+
+	$effect(() => {
+		if (!storageReady || !instance.trim()) return;
+		try {
+			reusableClient = Boolean(readPleromaOAuthClient(localStorage, {
+				instanceUrl: selectedInstanceUrl,
+				redirectUri: `${window.location.origin}/auth/callback`,
+				scopes
+			}));
+		} catch {
+			reusableClient = false;
+		}
 	});
 </script>
 
@@ -256,6 +296,13 @@
 						{#if authError}
 							<p class="so-error">{authError}</p>
 						{/if}
+						<div class="so-field">
+							<label for="enrollment-code">One-time enrollment code</label>
+							<div class="so-input-wrap">
+								<input id="enrollment-code" aria-label="One-time enrollment code" autocomplete="one-time-code" spellcheck="false" value={enrollmentCode} oninput={(event) => (enrollmentCode = event.currentTarget.value)} placeholder={reusableClient ? 'Optional: replace this client' : 'Printed in the daemon terminal'} />
+							</div>
+							<p class="so-hint">{reusableClient ? "Continue to reuse this browser's registered client. Enter a fresh code only after resetting or changing the daemon account." : 'The daemon prints a single-use code valid for 10 minutes. It is used only to register this browser.'}</p>
+						</div>
 						<button type="button" class="so-advanced-toggle" aria-expanded={showAdvanced} onclick={() => (showAdvanced = !showAdvanced)}>{showAdvanced ? 'Hide advanced' : 'Advanced: change home server'}</button>
 						{#if showAdvanced}
 							<div class="so-field">
@@ -325,13 +372,23 @@
 					<div class="so-auth-body so-redirect">
 						<h2>Node restored</h2>
 						<p>Welcome back, <strong>{restoredAddress}</strong>.</p>
-						<div class="so-chain" role="status">Continuing into sign-in...</div>
+						<p>Enter the new one-time enrollment code printed by the daemon after restore.</p>
+						<div class="so-field">
+							<label for="restore-enrollment-code">One-time enrollment code</label>
+							<div class="so-input-wrap"><input id="restore-enrollment-code" aria-label="One-time enrollment code" autocomplete="one-time-code" spellcheck="false" value={enrollmentCode} oninput={(event) => (enrollmentCode = event.currentTarget.value)} /></div>
+						</div>
+						<button type="button" class="so-cta" disabled={!enrollmentCode.trim()} onclick={startOAuth}>Continue to sign in</button>
 					</div>
 				{:else if authStep === 'signup-success'}
 					<div class="so-auth-body so-redirect">
 						<h2>Account created</h2>
 						<p>Your address is <strong>{signupAddress}</strong>.</p>
-						<div class="so-chain" role="status">Continuing into sign-in...</div>
+						<p>Enter the new one-time enrollment code printed by the daemon after account creation.</p>
+						<div class="so-field">
+							<label for="signup-enrollment-code">One-time enrollment code</label>
+							<div class="so-input-wrap"><input id="signup-enrollment-code" aria-label="One-time enrollment code" autocomplete="one-time-code" spellcheck="false" value={enrollmentCode} oninput={(event) => (enrollmentCode = event.currentTarget.value)} /></div>
+						</div>
+						<button type="button" class="so-cta" disabled={!enrollmentCode.trim()} onclick={startOAuth}>Continue to sign in</button>
 					</div>
 				{:else}
 					<div class="so-auth-body so-redirect">

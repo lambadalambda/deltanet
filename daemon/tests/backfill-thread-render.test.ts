@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { T } from '@deltachat/jsonrpc-client';
 import { createStore, type Store } from '../src/store.js';
-import { createApp, type AppContext } from '../src/server.js';
+import { createUnsafeTestApp, type AppContext } from '../src/server.js';
 import { openAttestor } from '../src/attest.js';
 import {
   buildPostObject,
@@ -97,7 +97,7 @@ describe('suppression: held envelopes stay out of timelines + notifications', ()
       message: async () => null,
       messageMid: async () => null,
     } as unknown as Transport;
-    const app = createApp(ctxFor(transport), { baseUrl: BASE, store });
+    const app = createUnsafeTestApp(ctxFor(transport), { baseUrl: BASE, store });
     for (const path of ['/api/v1/timelines/home', '/api/v1/timelines/public']) {
       const statuses = (await (await app.request(path)).json()) as any[];
       expect(statuses.every((s) => !String(s.id).startsWith('orig-'))).toBe(true);
@@ -111,7 +111,7 @@ describe('suppression: held envelopes stay out of timelines + notifications', ()
 describe('resolveOrigStatus: held-envelope path', () => {
   it('GET /statuses/orig-<uuid> renders a verified held post attributed to its author', async () => {
     const { transport } = seedCarol();
-    const app = createApp(ctxFor(transport), { baseUrl: BASE, store });
+    const app = createUnsafeTestApp(ctxFor(transport), { baseUrl: BASE, store });
     const res = await app.request(`/api/v1/statuses/orig-${A_ROOT}`);
     expect(res.status).toBe(200);
     const status = (await res.json()) as any;
@@ -125,7 +125,7 @@ describe('resolveOrigStatus: held-envelope path', () => {
   it('drops + 404s a tampered held envelope (body changed after signing)', async () => {
     const tampered = { ...signAlice(buildPostObject('orig', A_ROOT)), text: 'HACKED' };
     store.addHeldEnvelope(tampered, BOB, 22, ALICE, 1);
-    const app = createApp(ctxFor(makeTransport(new Map())), { baseUrl: BASE, store });
+    const app = createUnsafeTestApp(ctxFor(makeTransport(new Map())), { baseUrl: BASE, store });
     const res = await app.request(`/api/v1/statuses/orig-${A_ROOT}`);
     expect(res.status).toBe(404);
     // Hard-failed verification drops it from the store.
@@ -136,7 +136,7 @@ describe('resolveOrigStatus: held-envelope path', () => {
 describe('context endpoint: held-envelope thread traversal', () => {
   it("carol's context of alice's ROOT shows the COMPLETE thread (held alice posts + local bob reply)", async () => {
     const { transport } = seedCarol();
-    const app = createApp(ctxFor(transport), { baseUrl: BASE, store });
+    const app = createUnsafeTestApp(ctxFor(transport), { baseUrl: BASE, store });
     // Ask for the thread of alice's root (which carol only holds as a held envelope).
     const res = await app.request(`/api/v1/statuses/orig-${A_ROOT}/context`);
     expect(res.status).toBe(200);
@@ -160,7 +160,7 @@ describe('context endpoint: held-envelope thread traversal', () => {
 
   it("carol's context of bob's LOCAL reply climbs held ancestors up to alice's root", async () => {
     const { transport } = seedCarol();
-    const app = createApp(ctxFor(transport), { baseUrl: BASE, store });
+    const app = createUnsafeTestApp(ctxFor(transport), { baseUrl: BASE, store });
     const res = await app.request('/api/v1/statuses/30/context');
     const ctx = (await res.json()) as any;
     const ancestorIds: string[] = ctx.ancestors.map((s: any) => s.id);
@@ -176,7 +176,7 @@ describe('context endpoint: held-envelope thread traversal', () => {
     store.dropHeldEnvelope(A_MID);
     store.addHeldEnvelope({ ...signAlice(buildReplyObject('x', A_MID, { u: A_ROOT, addr: ALICE })), text: 'TAMPER' }, BOB, 22, ALICE, 2);
     const bobMsg = (await makeTransport(new Map()).message(30)) as T.Message | null;
-    const app = createApp(ctxFor(makeTransport(new Map([[30, makeMessage({
+    const app = createUnsafeTestApp(ctxFor(makeTransport(new Map([[30, makeMessage({
       id: 30,
       fromId: 22,
       text: serializeEnvelope(buildReplyObject('bob reply', B_REPLY, { u: A_MID, addr: ALICE }, undefined, { u: A_ROOT, addr: ALICE })),
@@ -194,7 +194,7 @@ describe('context endpoint: held-envelope thread traversal', () => {
 describe('unconfirmed-author mark + thread-view key confirmation', () => {
   it('an unpinned held author renders author_unconfirmed; a matching pin clears it', async () => {
     const { transport } = seedCarol();
-    const app = createApp(ctxFor(transport), { baseUrl: BASE, store });
+    const app = createUnsafeTestApp(ctxFor(transport), { baseUrl: BASE, store });
     const before = (await (await app.request(`/api/v1/statuses/orig-${A_ROOT}`)).json()) as any;
     expect(before.pleroma.deltanet?.author_unconfirmed).toBe(true);
 
@@ -228,7 +228,7 @@ describe('unconfirmed-author mark + thread-view key confirmation', () => {
         dms.push({ contactId, text });
       },
     } as unknown as Transport;
-    const app = createApp(ctxFor(transport), { baseUrl: BASE, store });
+    const app = createUnsafeTestApp(ctxFor(transport), { baseUrl: BASE, store });
 
     expect((await app.request(`/api/v1/statuses/orig-${A_ROOT}`)).status).toBe(200);
     await vi.waitFor(() => {

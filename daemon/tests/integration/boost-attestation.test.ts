@@ -8,7 +8,7 @@ import { type DeltaChatTransport, type IngestPhase } from '../../src/transport/d
 import { openRelayTransport, register } from './relay.js';
 import type { Transport } from '../../src/transport/types.js';
 import { createStore, type Store } from '../../src/store.js';
-import { createApp, type AppContext } from '../../src/server.js';
+import { createUnsafeTestApp, type AppContext } from '../../src/server.js';
 import { deriveOnIngest } from '../../src/ingest.js';
 import { parseWire } from '../../src/wire.js';
 
@@ -108,17 +108,17 @@ describe('post-attestations: verified boost embed with media across a third-part
     transports.push(a, b, c);
 
     // Each app persists its signing key under its own scratch data dir.
-    const aApp = createApp(ctxFor(a), {
+    const aApp = createUnsafeTestApp(ctxFor(a), {
       baseUrl: 'http://localhost:4030',
       store: aStore,
       dataDir: mkdtempSync(join(tmpdir(), 'attest-a-data-')),
     });
-    const bApp = createApp(ctxFor(b), {
+    const bApp = createUnsafeTestApp(ctxFor(b), {
       baseUrl: 'http://localhost:4030',
       store: bStore,
       dataDir: mkdtempSync(join(tmpdir(), 'attest-b-data-')),
     });
-    const cApp = createApp(ctxFor(c), {
+    const cApp = createUnsafeTestApp(ctxFor(c), {
       baseUrl: 'http://localhost:4030',
       store: cStore,
       dataDir: mkdtempSync(join(tmpdir(), 'attest-c-data-')),

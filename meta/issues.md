@@ -4,7 +4,6 @@
 - [ ] [Verifiable reaction receipts](issues/reaction-receipts.md)
 - [ ] [Expanding the new-follower backfill (10 → N)](issues/join-backfill-expansion.md)
 - [ ] [Second-device pairing (backup-transfer QR)](issues/second-device-pairing.md)
-- [ ] [Harden the local daemon API security boundary](issues/local-api-security-boundary.md)
 - [ ] [Make persistent store writes atomic and corruption-safe](issues/atomic-store-persistence.md)
 - [ ] [Enforce media and backup resource limits](issues/media-backup-resource-limits.md)
 - [ ] [Align exposed frontend controls with daemon capabilities](issues/frontend-daemon-capability-contract.md)

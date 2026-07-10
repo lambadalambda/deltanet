@@ -15,6 +15,16 @@ const session = {
 
 const authenticateWithSession = async (page: Page, storedSession: unknown) => {
 	await mockRightRailApis(page);
+	let streamTicket = 0;
+	await page.route('https://pleroma.example/api/deltanet/streaming/token', async (route) => {
+		expect(route.request().headers().authorization).toBe('Bearer access-token');
+		streamTicket += 1;
+		await route.fulfill({
+			status: 200,
+			contentType: 'application/json',
+			body: JSON.stringify({ ticket: `stream-ticket-${streamTicket}`, expires_at: Date.now() + 30_000 })
+		});
+	});
 	await page.addInitScript((storedSession) => {
 		type MockSocket = {
 			url: string;

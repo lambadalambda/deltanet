@@ -339,6 +339,15 @@ export type PendingPleromaOAuth = {
 	createdAt: number;
 };
 
+export type PleromaOAuthClientRegistration = {
+	instanceUrl: string;
+	clientId: string;
+	clientSecret: string;
+	redirectUri: string;
+	scopes: readonly PleromaScope[];
+	createdAt: number;
+};
+
 export type PleromaSession = {
 	instanceUrl: string;
 	accessToken: string;

@@ -10,7 +10,7 @@ import {
 import { openRelayTransport, register } from './relay.js';
 import type { Transport } from '../../src/transport/types.js';
 import { createStore, type Store } from '../../src/store.js';
-import { createApp, type AppContext } from '../../src/server.js';
+import { createUnsafeTestApp, type AppContext } from '../../src/server.js';
 import { deriveOnIngest } from '../../src/ingest.js';
 import { parseEnvelope } from '../../src/envelope.js';
 import { parseWire } from '../../src/wire.js';
@@ -83,7 +83,7 @@ describe('backup & restore over the relay', () => {
         throw new Error('already configured');
       },
     });
-    const aApp = createApp(ctxFor(a), { baseUrl: 'http://localhost:4030', store: aStore, dataDir: A_DATA });
+    const aApp = createUnsafeTestApp(ctxFor(a), { baseUrl: 'http://localhost:4030', store: aStore, dataDir: A_DATA });
 
     // Mutual follow: B joins A's feed (so B pins A's key from A's posts), and
     // A joins B's feed (so `following` has something to survive the wipe).
@@ -94,7 +94,7 @@ describe('backup & restore over the relay', () => {
     await a.follow(await b.feedInvite());
     await aJoinsB;
 
-    const post = async (app: ReturnType<typeof createApp>, status: string): Promise<void> => {
+    const post = async (app: ReturnType<typeof createUnsafeTestApp>, status: string): Promise<void> => {
       const res = await app.request('/api/v1/statuses', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -167,7 +167,7 @@ describe('backup & restore over the relay', () => {
         return transport;
       },
     };
-    const a2App = createApp(restoreCtx, { baseUrl: 'http://localhost:4030', store: a2Store, dataDir: A_DATA });
+    const a2App = createUnsafeTestApp(restoreCtx, { baseUrl: 'http://localhost:4030', store: a2Store, dataDir: A_DATA });
 
     // Wrong passphrase: clean 422, node untouched (GCM rejects before core import).
     const badFd = new FormData();

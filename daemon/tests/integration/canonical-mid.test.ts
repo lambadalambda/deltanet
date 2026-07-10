@@ -10,7 +10,7 @@ import {
 import { openRelayTransport, register } from './relay.js';
 import type { Transport } from '../../src/transport/types.js';
 import { createStore, type Store } from '../../src/store.js';
-import { createApp, type AppContext } from '../../src/server.js';
+import { createUnsafeTestApp, type AppContext } from '../../src/server.js';
 import { deriveOnIngest } from '../../src/ingest.js';
 import { parseWire, parseWireUuid } from '../../src/wire.js';
 
@@ -90,8 +90,8 @@ describe('canonical-mid unification over chatmail', () => {
     refs.b = b;
     transports.push(a, b);
 
-    const aApp = createApp(ctxFor(a), { baseUrl: BASE, store: aStore });
-    const bApp = createApp(ctxFor(b), { baseUrl: BASE, store: bStore });
+    const aApp = createUnsafeTestApp(ctxFor(a), { baseUrl: BASE, store: aStore });
+    const bApp = createUnsafeTestApp(ctxFor(b), { baseUrl: BASE, store: bStore });
 
     // Ensure both feeds exist.
     await a.feedInvite();

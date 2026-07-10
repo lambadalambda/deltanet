@@ -17,7 +17,7 @@ const createPendingOAuth = (): PendingPleromaOAuth => ({
 	clientId: 'client-id',
 	clientSecret: 'client-secret',
 	redirectUri: 'http://localhost:4173/auth/callback',
-	scopes: ['read', 'write', 'follow'],
+	scopes: ['read', 'write', 'follow', 'push'],
 	state: 'oauth-state',
 	createdAt: Date.now()
 });
@@ -26,7 +26,7 @@ const createSession = (): PleromaSession => ({
 	instanceUrl: 'https://pleroma.example',
 	accessToken: 'access-token',
 	tokenType: 'Bearer',
-	scope: 'read write follow',
+	scope: 'read write follow push',
 	createdAt: 1700000001000
 });
 

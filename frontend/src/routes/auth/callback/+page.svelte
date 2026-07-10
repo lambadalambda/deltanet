@@ -8,7 +8,6 @@
 		storePleromaSession,
 		writePleromaSession
 	} from '$lib/pleroma';
-	import { page } from '$app/state';
 	import { onMount } from 'svelte';
 
 	type CallbackState =
@@ -37,13 +36,14 @@
 		}
 	};
 	const completeCallback = async () => {
+		const callback = parseOAuthCallback(window.location.href);
+		window.history.replaceState(window.history.state, '', window.location.pathname);
 		const pending = readPendingOAuth(sessionStorage);
 		if (!pending) {
 			callbackState = { status: 'missing-pending' };
 			return;
 		}
 
-		const callback = parseOAuthCallback(page.url);
 		if (callback.status === 'error') {
 			clearPending();
 			callbackState = {

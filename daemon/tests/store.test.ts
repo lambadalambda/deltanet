@@ -244,6 +244,19 @@ describe('createStore: persistence', () => {
     const store = createStore(join(dir, 'does-not-exist-yet.json'));
     expect(store.resolveMid('anything@example.org')).toBeNull();
   });
+
+  it('persists only positive feed-message provenance across reloads', () => {
+    const store = createStore(filePath);
+    store.ingestMessage(makeMessage({ id: 71, text: 'feed post' }), 'feed@example.org', true);
+    store.ingestMessage(makeMessage({ id: 72, text: 'DM-only post' }), 'dm@example.org', false);
+
+    expect(store.isFeedMessage(71)).toBe(true);
+    expect(store.isFeedMessage(72)).toBe(false);
+
+    const reloaded = createStore(filePath);
+    expect(reloaded.isFeedMessage(71)).toBe(true);
+    expect(reloaded.isFeedMessage(72)).toBe(false);
+  });
 });
 
 describe('createStore: resolver shape used by entities mapping', () => {
@@ -870,6 +883,20 @@ describe('createStore: schema migration / re-index', () => {
     store.ingestMessage(makeMessage({ id: 5, text: 'hi' }), 'keep@example.org');
     const reloaded = createStore(filePath);
     expect(reloaded.resolveMid('keep@example.org')).toBe(5);
+  });
+
+  it('drops feed provenance from an older schema so the startup sweep rebuilds it', () => {
+    writeFileSync(filePath, JSON.stringify({
+      schemaVersion: STORE_SCHEMA_VERSION - 1,
+      feedMsgIds: [7],
+      ingestedMsgIds: [7],
+    }));
+
+    const store = createStore(filePath);
+    expect(store.isFeedMessage(7)).toBe(false);
+
+    store.ingestMessage(makeMessage({ id: 7, text: 'rebuilt feed post' }), 'rebuilt@example.org', true);
+    expect(store.isFeedMessage(7)).toBe(true);
   });
 
   it('drops a v1 store\'s replyChildren (msgId value shape) so a re-index rebuilds canonical-mid values', () => {

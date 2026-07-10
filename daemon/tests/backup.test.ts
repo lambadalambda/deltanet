@@ -12,7 +12,7 @@ const SIDECAR: BackupSidecar = {
   addr: 'alice@nine.testrun.org',
   exportedAt: 1751884800000,
   signingKey: '{"privatePem":"-----BEGIN PRIVATE KEY-----\\n...","pubkey":"abc"}\n',
-  store: '{"schemaVersion":8}\n',
+  store: '{"schemaVersion":9}\n',
 };
 
 // Deliberately non-UTF8 bytes: the tar section must round-trip verbatim.

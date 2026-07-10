@@ -1,4 +1,4 @@
-import { normalizeInstanceUrl } from './http';
+import { createPleromaHttp, normalizeInstanceUrl, type FetchLike } from './http';
 import type { PleromaNotification, PleromaStatus } from './types';
 
 type StreamName = 'user' | 'public' | 'public:local';
@@ -24,6 +24,7 @@ type TimelineStreamOptions = {
 	instanceUrl: string;
 	accessToken: string;
 	stream?: StreamName;
+	fetch?: FetchLike;
 	WebSocketImpl?: WebSocketFactory;
 	onUpdate?: (status: PleromaStatus) => void;
 	onNotification?: (notification: PleromaNotification) => void;
@@ -31,6 +32,8 @@ type TimelineStreamOptions = {
 	onError?: (error: unknown) => void;
 	onClose?: (event: unknown) => void;
 };
+
+type StreamingUrlInput = Pick<TimelineStreamOptions, 'instanceUrl' | 'stream'> & { ticket: string };
 
 const parsePayload = (payload: unknown) => {
 	if (typeof payload !== 'string') return payload;
@@ -76,14 +79,29 @@ const isPleromaNotificationPayload = (payload: unknown): payload is PleromaNotif
 		(status == null || isPleromaStatusPayload(status));
 };
 
-export const buildPleromaStreamingUrl = ({ instanceUrl, accessToken, stream = 'user' }: Pick<TimelineStreamOptions, 'instanceUrl' | 'accessToken' | 'stream'>) => {
+export const buildPleromaStreamingUrl = ({ instanceUrl, ticket, stream = 'user' }: StreamingUrlInput) => {
 	const origin = normalizeInstanceUrl(instanceUrl);
 	const url = new URL('/api/v1/streaming/', origin);
 	url.protocol = url.protocol === 'http:' ? 'ws:' : 'wss:';
 	url.searchParams.set('stream', stream);
-	url.searchParams.set('access_token', accessToken);
+	url.searchParams.set('ticket', ticket);
 
 	return url.toString();
+};
+
+export const fetchPleromaStreamingTicket = async ({
+	instanceUrl,
+	accessToken,
+	fetch,
+	signal
+}: Pick<TimelineStreamOptions, 'instanceUrl' | 'accessToken' | 'fetch'> & { signal?: AbortSignal }) => {
+	const http = createPleromaHttp({ instanceUrl, accessToken, fetch });
+	return http.request<{ ticket: string; expires_at: number }>({
+		method: 'POST',
+		path: '/api/deltanet/streaming/token',
+		signal,
+		auth: 'required'
+	});
 };
 
 export const parsePleromaStreamingMessage = (data: unknown): PleromaStreamingMessage | null => {
@@ -111,6 +129,7 @@ export const openPleromaTimelineStream = ({
 	instanceUrl,
 	accessToken,
 	stream = 'user',
+	fetch,
 	WebSocketImpl,
 	onUpdate,
 	onNotification,
@@ -124,41 +143,50 @@ export const openPleromaTimelineStream = ({
 		return { close: () => undefined };
 	}
 
-	let socket: WebSocketLike;
+	let socket: WebSocketLike | null = null;
 	let closed = false;
-	try {
-		socket = new SocketImpl(buildPleromaStreamingUrl({ instanceUrl, accessToken, stream }));
-	} catch (error) {
-		onError?.(error);
-		return { close: () => undefined };
-	}
-
-	socket.onopen = (event) => {
-		if (!closed) onOpen?.(event);
-	};
-	socket.onmessage = (event) => {
+	const ticketRequest = new AbortController();
+	void (async () => {
+		const { ticket } = await fetchPleromaStreamingTicket({
+			instanceUrl,
+			accessToken,
+			fetch,
+			signal: ticketRequest.signal
+		});
 		if (closed) return;
-		const message = parsePleromaStreamingMessage(event.data);
-		if (!message?.status && !message?.notification) return;
 
-		try {
-			if (message.status) onUpdate?.(message.status);
-			if (message.notification) onNotification?.(message.notification);
-		} catch (error) {
-			if (!closed) onError?.(error);
-		}
-	};
-	socket.onerror = (event) => {
-		if (!closed) onError?.(event);
-	};
-	socket.onclose = (event) => {
-		if (!closed) onClose?.(event);
-	};
+		socket = new SocketImpl(buildPleromaStreamingUrl({ instanceUrl, ticket, stream }));
+		socket.onopen = (event) => {
+			if (!closed) onOpen?.(event);
+		};
+		socket.onmessage = (event) => {
+			if (closed) return;
+			const message = parsePleromaStreamingMessage(event.data);
+			if (!message?.status && !message?.notification) return;
+
+			try {
+				if (message.status) onUpdate?.(message.status);
+				if (message.notification) onNotification?.(message.notification);
+			} catch (error) {
+				if (!closed) onError?.(error);
+			}
+		};
+		socket.onerror = (event) => {
+			if (!closed) onError?.(event);
+		};
+		socket.onclose = (event) => {
+			if (!closed) onClose?.(event);
+		};
+	})().catch((error) => {
+		if (!closed) onError?.(error);
+	});
 
 	return {
 		close: () => {
 			if (closed) return;
 			closed = true;
+			ticketRequest.abort();
+			if (!socket) return;
 			socket.onopen = null;
 			socket.onmessage = null;
 			socket.onerror = null;

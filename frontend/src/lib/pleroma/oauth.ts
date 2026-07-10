@@ -6,6 +6,7 @@ type RegisterOAuthAppInput = {
 	clientName: string;
 	redirectUri: string;
 	scopes: readonly PleromaScope[];
+	enrollmentCode?: string;
 	website?: string;
 	fetch?: FetchLike;
 };
@@ -45,7 +46,15 @@ type BuildAuthorizationInput = {
 	forceLogin?: boolean;
 };
 
+type RevokeOAuthTokenInput = {
+	instanceUrl: string;
+	accessToken: string;
+	signal?: AbortSignal;
+	fetch?: FetchLike;
+};
+
 const scopeString = (scopes: readonly PleromaScope[]) => scopes.join(' ');
+export const DELTANET_OAUTH_SCOPES = ['read', 'write', 'follow', 'push'] as const satisfies readonly PleromaScope[];
 
 const mapOAuthApp = (app: RawOAuthApp): PleromaOAuthApp => ({
 	id: app.id,
@@ -69,6 +78,7 @@ export const registerOAuthApp = async ({
 	clientName,
 	redirectUri,
 	scopes,
+	enrollmentCode,
 	website,
 	fetch
 }: RegisterOAuthAppInput) => {
@@ -79,6 +89,7 @@ export const registerOAuthApp = async ({
 		scopes: scopeString(scopes)
 	});
 
+	if (enrollmentCode) form.set('enrollment_code', enrollmentCode);
 	if (website) form.set('website', website);
 
 	const app = await http.request<RawOAuthApp>({
@@ -156,6 +167,17 @@ export const exchangeOAuthCode = async ({
 	});
 
 	return mapToken(token);
+};
+
+export const revokeOAuthToken = async ({ instanceUrl, accessToken, signal, fetch }: RevokeOAuthTokenInput) => {
+	const http = createPleromaHttp({ instanceUrl, accessToken, fetch });
+	await http.request<Record<string, never>>({
+		method: 'POST',
+		path: '/oauth/revoke',
+		form: new URLSearchParams({ token: accessToken }),
+		signal,
+		auth: 'required'
+	});
 };
 
 export const createOAuthState = () => {

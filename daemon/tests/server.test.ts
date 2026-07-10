@@ -2,7 +2,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import type { Context } from 'hono';
 import type { UpgradeWebSocket, WSEvents } from 'hono/ws';
 import type { T } from '@deltachat/jsonrpc-client';
-import { createApp, type AppContext } from '../src/server.js';
+import { createUnsafeTestApp, type AppContext } from '../src/server.js';
 import type { TimelineQuery, Transport } from '../src/transport/types.js';
 import { createStore, ephemeralStorePath } from '../src/store.js';
 import { buildReactionText, buildReplyText, mintPostUuid, refFromToken, type RefToken } from '../src/protocol.js';
@@ -270,7 +270,7 @@ const makeUnconfiguredCtx = (signup?: AppContext['signup']): AppContext => {
   };
 };
 
-const makeApp = () => createApp(makeConfiguredCtx(makeFakeTransport().transport), { baseUrl: BASE });
+const makeApp = () => createUnsafeTestApp(makeConfiguredCtx(makeFakeTransport().transport), { baseUrl: BASE });
 
 // --- thread-subscribe endpoint fixtures ---
 const THREAD_ROOT_UUID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
@@ -363,13 +363,13 @@ describe('instance metadata', () => {
   });
 
   it('serves v2 instance metadata even when unconfigured', async () => {
-    const app = createApp(makeUnconfiguredCtx(), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeUnconfiguredCtx(), { baseUrl: BASE });
     const res = await app.request('/api/v2/instance');
     expect(res.status).toBe(200);
   });
 
   it('registers apps and serves oauth stubs even when unconfigured', async () => {
-    const app = createApp(makeUnconfiguredCtx(), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeUnconfiguredCtx(), { baseUrl: BASE });
     const appRes = await app.request('/api/v1/apps', {
       method: 'POST',
       body: new URLSearchParams({ client_name: 'x', redirect_uris: 'http://x/y' }),
@@ -406,7 +406,7 @@ describe('timelines', () => {
 
   it('a reply status in the timeline carries in_reply_to_account_id and mentions for its parent author', async () => {
     const { transport } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
 
     // message 12 ("newest, from bob") is the parent; reply to it.
     const postRes = await app.request('/api/v1/statuses', {
@@ -429,7 +429,7 @@ describe('timelines', () => {
 describe('posting', () => {
   it('creates a status from form-encoded body and shows it in the timeline', async () => {
     const { transport } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     const res = await app.request('/api/v1/statuses', {
       method: 'POST',
       headers: { Authorization: 'Bearer whatever' },
@@ -461,7 +461,7 @@ describe('deltanet: default images', () => {
   });
 
   it('serves the header even when unconfigured', async () => {
-    const app = createApp(makeUnconfiguredCtx(), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeUnconfiguredCtx(), { baseUrl: BASE });
     const res = await app.request('/deltanet/header.png');
     expect(res.status).toBe(200);
   });
@@ -495,7 +495,7 @@ describe('deltanet: served-file content types', () => {
     const { transport } = makeFakeTransport();
     transport.avatarPath = async () => path;
     transport.blobPath = async () => path;
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     return { app, path, bytes };
   };
 
@@ -546,7 +546,7 @@ describe('deltanet: served-file content types', () => {
 describe('PATCH /api/v1/accounts/update_credentials', () => {
   it('updates display_name and note (JSON body) and returns the fresh account with stats', async () => {
     const { transport, profileUpdates } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
 
     const res = await app.request('/api/v1/accounts/update_credentials', {
       method: 'PATCH',
@@ -576,7 +576,7 @@ describe('PATCH /api/v1/accounts/update_credentials', () => {
 
   it('accepts an empty note to clear the bio', async () => {
     const { transport, profileUpdates } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     const res = await app.request('/api/v1/accounts/update_credentials', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -588,7 +588,7 @@ describe('PATCH /api/v1/accounts/update_credentials', () => {
 
   it('422s a blank display_name', async () => {
     const { transport, profileUpdates } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     const res = await app.request('/api/v1/accounts/update_credentials', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -600,7 +600,7 @@ describe('PATCH /api/v1/accounts/update_credentials', () => {
 
   it('accepts a multipart avatar upload and sets the transport avatar path', async () => {
     const { transport, profileUpdates } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
 
     const form = new FormData();
     form.append('display_name', 'pic haver');
@@ -619,7 +619,7 @@ describe('PATCH /api/v1/accounts/update_credentials', () => {
 
   it('422s a non-image avatar upload', async () => {
     const { transport, profileUpdates } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     const form = new FormData();
     form.append('avatar', new File(['nope'], 'notes.txt', { type: 'text/plain' }));
     const res = await app.request('/api/v1/accounts/update_credentials', { method: 'PATCH', body: form });
@@ -629,7 +629,7 @@ describe('PATCH /api/v1/accounts/update_credentials', () => {
 
   it('stores an uploaded header and serves it for SELF via the per-contact route', async () => {
     const { transport } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
 
     const form = new FormData();
     form.append('header', new File(['bannerbytes'], 'banner.png', { type: 'image/png' }));
@@ -642,7 +642,7 @@ describe('PATCH /api/v1/accounts/update_credentials', () => {
   });
 
   it('returns 401 when unconfigured', async () => {
-    const app = createApp(makeUnconfiguredCtx(), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeUnconfiguredCtx(), { baseUrl: BASE });
     const res = await app.request('/api/v1/accounts/update_credentials', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -697,7 +697,7 @@ describe('media uploads', () => {
 
   it('attaches an uploaded media id to a new status', async () => {
     const { transport, posts } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
 
     const form = new FormData();
     form.append('file', new File(['fakepngbytes'], 'photo.png', { type: 'image/png' }));
@@ -714,7 +714,7 @@ describe('media uploads', () => {
 
   it('round-trips the alt text description into the posted status attachment', async () => {
     const { transport } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
 
     const form = new FormData();
     form.append('file', new File(['fakepngbytes'], 'photo.png', { type: 'image/png' }));
@@ -732,7 +732,7 @@ describe('media uploads', () => {
 
   it('allows an image-only post with no text', async () => {
     const { transport } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
 
     const form = new FormData();
     form.append('file', new File(['fakepngbytes'], 'photo.png', { type: 'image/png' }));
@@ -750,7 +750,7 @@ describe('media uploads', () => {
 describe('POST /api/v1/statuses with in_reply_to_id', () => {
   it('rejects a non-numeric, non-orig reply target with 404 (never a 500)', async () => {
     const { transport } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     const res = await app.request('/api/v1/statuses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -761,7 +761,7 @@ describe('POST /api/v1/statuses with in_reply_to_id', () => {
 
   it('posts a reply to own feed as a v2 envelope (no quotedText) and DMs the author byte-identically', async () => {
     const { transport, posts, dms } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
 
     const res = await app.request('/api/v1/statuses', {
       method: 'POST',
@@ -803,7 +803,7 @@ describe('POST /api/v1/statuses with in_reply_to_id', () => {
 
   it('does not send a DM when replying to your own post', async () => {
     const { transport, dms } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
 
     // message 11 is authored by self (fromId defaults to 1)
     const res = await app.request('/api/v1/statuses', {
@@ -852,7 +852,7 @@ describe('acting on a DM copy uses the canonical mid (issue point 5)', () => {
 
   it('reply to a DM copy embeds the canonical mid in the outgoing marker', async () => {
     const { transport, posts, dms } = withDmCopy();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
 
     const res = await app.request('/api/v1/statuses', {
       method: 'POST',
@@ -869,7 +869,7 @@ describe('acting on a DM copy uses the canonical mid (issue point 5)', () => {
 
   it('reblog of a DM copy boosts the canonical mid', async () => {
     const { transport, posts } = withDmCopy();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
 
     const res = await app.request('/api/v1/statuses/600/reblog', { method: 'POST' });
     expect(res.status).toBe(200);
@@ -879,7 +879,7 @@ describe('acting on a DM copy uses the canonical mid (issue point 5)', () => {
 
   it('favouriting a DM copy DMs a reaction referencing the canonical mid', async () => {
     const { transport, dms } = withDmCopy();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
 
     const res = await app.request('/api/v1/statuses/600/favourite', { method: 'POST' });
     expect(res.status).toBe(200);
@@ -955,7 +955,7 @@ describe('reply thread-root ref derivation + root DM copy', () => {
 
   it('parent-with-root: reuses the parent reply\'s root verbatim', async () => {
     const { transport, posts, store } = await withThread();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
 
     const res = await app.request('/api/v1/statuses', {
       method: 'POST',
@@ -970,7 +970,7 @@ describe('reply thread-root ref derivation + root DM copy', () => {
 
   it('parent-is-root: a non-reply parent with a uuid becomes the root', async () => {
     const { transport, posts, store } = await withThread();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
 
     // Reply directly to ALICE's root post (300) → parent IS the root.
     const res = await app.request('/api/v1/statuses', {
@@ -986,7 +986,7 @@ describe('reply thread-root ref derivation + root DM copy', () => {
     // BOB's reply carries NO root (older reply) → deriving SELF's root must walk
     // from BOB's reply up to ALICE's held root post.
     const { transport, posts, store } = await withThread({ bReplyRoot: undefined });
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
 
     const res = await app.request('/api/v1/statuses', {
       method: 'POST',
@@ -999,7 +999,7 @@ describe('reply thread-root ref derivation + root DM copy', () => {
 
   it('unknown -> omitted: a legacy (uuid-less, non-envelope) parent yields no root', async () => {
     const { transport, posts } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     // Message 12 ("newest, from bob") is a plain non-envelope string: no uuid,
     // not a reply → parent-is-root but uuid-less → omit.
     const res = await app.request('/api/v1/statuses', {
@@ -1013,7 +1013,7 @@ describe('reply thread-root ref derivation + root DM copy', () => {
 
   it('DM recipients: parent author AND root author, deduped, never SELF, both byte-identical', async () => {
     const { transport, posts, dms, store, createdContacts } = await withThread();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
 
     const res = await app.request('/api/v1/statuses', {
       method: 'POST',
@@ -1037,7 +1037,7 @@ describe('reply thread-root ref derivation + root DM copy', () => {
     // ALICE is NOT a known contact here (message 300 is from contact id 21 but
     // the parent-copy uses target.sender.id), so only the parent copy goes out.
     const { transport, dms, store } = await withThread();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
 
     const res = await app.request('/api/v1/statuses', {
       method: 'POST',
@@ -1074,7 +1074,7 @@ describe('reply thread-root ref derivation + root DM copy', () => {
     store.ingestMessage(selfRoot, 'selfroot@example.org', true);
     store.ingestMessage(bReplyMsg, 'breply2@example.org', true);
 
-    const app = createApp(makeConfiguredCtx(h.transport), { baseUrl: BASE, store });
+    const app = createUnsafeTestApp(makeConfiguredCtx(h.transport), { baseUrl: BASE, store });
     const res = await app.request('/api/v1/statuses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1096,7 +1096,7 @@ describe('reply thread-root ref derivation + root DM copy', () => {
       if (contactId === 999) throw new Error('cold encrypt failed');
       return origSend(contactId, text, quotedText);
     };
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
 
     const res = await app.request('/api/v1/statuses', {
       method: 'POST',
@@ -1110,7 +1110,7 @@ describe('reply thread-root ref derivation + root DM copy', () => {
 
   it('stamps our contact invite (unsigned) onto outgoing content envelopes', async () => {
     const { transport, posts, store } = await withThread();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
     for (const body of [
       { status: 'a plain post' },
       { status: 'a reply', in_reply_to_id: '301' },
@@ -1130,7 +1130,7 @@ describe('reply thread-root ref derivation + root DM copy', () => {
       rootReachable: false,
       rootInvite: 'OPENPGP4FPR:ALICE-INVITE',
     });
-    const app = createApp(makeConfiguredCtx(h.transport), { baseUrl: BASE, store: h.store });
+    const app = createUnsafeTestApp(makeConfiguredCtx(h.transport), { baseUrl: BASE, store: h.store });
 
     const res = await app.request('/api/v1/statuses', {
       method: 'POST',
@@ -1159,7 +1159,7 @@ describe('reply thread-root ref derivation + root DM copy', () => {
       attempts.push(invite);
       return null; // dead invite / handshake never completes
     };
-    const app = createApp(makeConfiguredCtx(h.transport), { baseUrl: BASE, store: h.store });
+    const app = createUnsafeTestApp(makeConfiguredCtx(h.transport), { baseUrl: BASE, store: h.store });
 
     for (const text of ['first deep reply', 'second deep reply']) {
       const res = await app.request('/api/v1/statuses', {
@@ -1180,7 +1180,7 @@ describe('reply thread-root ref derivation + root DM copy', () => {
     // A foreign message CARRYING an invite must not make the daemon securejoin
     // anyone — introductions run only on explicit need (own sends, subscribe).
     const h = await withThread({ rootInvite: 'OPENPGP4FPR:ALICE-INVITE' });
-    const app = createApp(makeConfiguredCtx(h.transport), { baseUrl: BASE, store: h.store });
+    const app = createUnsafeTestApp(makeConfiguredCtx(h.transport), { baseUrl: BASE, store: h.store });
     await app.request('/api/v1/timelines/home'); // ingests all fake messages
     await app.request('/api/v1/statuses/300/context');
     expect(h.introductions).toEqual([]);
@@ -1190,7 +1190,7 @@ describe('reply thread-root ref derivation + root DM copy', () => {
 describe('POST /api/v1/statuses/:id/reblog and unreblog', () => {
   it('boosts a status: posts a v2 boost envelope (ref only, no embedded content) and returns a status with reblog embedded', async () => {
     const { transport, posts } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
 
     const res = await app.request('/api/v1/statuses/12/reblog', { method: 'POST' });
     expect(res.status).toBe(200);
@@ -1228,7 +1228,7 @@ describe('POST /api/v1/statuses/:id/reblog and unreblog', () => {
     messages.push(
       makeMessage({ id: 13, text: serializeEnvelope(signed), fromId: 11, sender: BOB, timestamp: 1751800300 }),
     );
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
 
     const res = await app.request('/api/v1/statuses/13/reblog', { method: 'POST' });
     expect(res.status).toBe(200);
@@ -1243,7 +1243,7 @@ describe('POST /api/v1/statuses/:id/reblog and unreblog', () => {
 
   it('stays ref-only (no orig) when boosting an UNSIGNED/legacy post', async () => {
     const { transport, posts } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     // message #12 is plain text ("newest, from bob") — unsigned, nothing to attest.
     await app.request('/api/v1/statuses/12/reblog', { method: 'POST' });
     const env = JSON.parse(posts.at(-1)!.text);
@@ -1258,7 +1258,7 @@ describe('POST /api/v1/statuses/:id/reblog and unreblog', () => {
 
   it('unreblog deletes our boost message and returns reblogged:false', async () => {
     const { transport, deleted } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
 
     const reblogRes = await app.request('/api/v1/statuses/12/reblog', { method: 'POST' });
     const reblogStatus = await reblogRes.json() as any;
@@ -1283,7 +1283,7 @@ describe('POST /api/v1/statuses/:id/reblog and unreblog', () => {
 describe('status mapping: boost from a follower (unresolvable -> placeholder)', () => {
   it('renders an honest placeholder (reblog:null) when the boosted target is unknown locally', async () => {
     const { transport, messages } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
 
     const { buildBoostText } = await import('../src/protocol.js');
     const ref = midRef('unknown-mid@remote.org', 'remote@remote.org');
@@ -1310,7 +1310,7 @@ describe('status mapping: boost from a follower (unresolvable -> placeholder)', 
 describe('GET /api/v1/statuses/:id/context', () => {
   it('walks ancestors via reply markers and lists descendants via reply children', async () => {
     const { transport } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
 
     // reply to message 12 (mid-12)
     const replyRes = await app.request('/api/v1/statuses', {
@@ -1350,7 +1350,7 @@ describe('GET /api/v1/statuses/:id/context', () => {
     // THROUGH the mid-ref link to the legacy root, not stop at the boundary —
     // /thread/<reply2> and /thread/<reply> must render the same ancestors.
     const { transport } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
 
     const reply = await (await app.request('/api/v1/statuses', {
       method: 'POST',
@@ -1393,7 +1393,7 @@ describe('GET /api/v1/statuses/:id/context', () => {
 
     expect(store.childrenCount(parentMid)).toBe(1);
 
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
     const context = await (await app.request('/api/v1/statuses/12/context')).json() as any;
     expect(context.descendants.map((s: any) => s.id)).toEqual(['500']);
 
@@ -1415,7 +1415,7 @@ describe('GET /api/v1/statuses/:id/context', () => {
     mids.set(500, 'feed-copy@example.org');
     store.ingestMessage(feedCopy, 'feed-copy@example.org', true);
 
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
     const context = await (await app.request('/api/v1/statuses/12/context')).json() as any;
     expect(context.descendants.map((s: any) => s.id)).toEqual(['500']);
 
@@ -1482,7 +1482,7 @@ describe('GET /api/v1/statuses/orig-<uuid> (verified boost embed thread view)', 
     // Ingest the boost as a FEED message so boostsByMid[ORIG_UUID] registers.
     store.ingestMessage(messages.find((m) => m.id === 60)!, 'mid-60@example.org', true);
 
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
     return { app, store };
   };
 
@@ -1505,7 +1505,7 @@ describe('GET /api/v1/statuses/orig-<uuid> (verified boost embed thread view)', 
     // resolves to the real local message rather than an embed.
     const { transport } = makeFakeTransport();
     const store = createStore(ephemeralStorePath());
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
 
     // Give #12 a uuid by reposting as a signed v2 post from SELF.
     const postRes = await app.request('/api/v1/statuses', {
@@ -1560,7 +1560,7 @@ describe('GET /api/v1/statuses/orig-<uuid>/context', () => {
     messages.push(replyMsg);
     store.ingestMessage(replyMsg, 'mid-70@example.org', true);
 
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
     const res = await app.request(`/api/v1/statuses/orig-${ORIG_UUID}/context`);
     expect(res.status).toBe(200);
     const context = await res.json() as any;
@@ -1618,7 +1618,7 @@ describe('deltanet follow endpoints', () => {
 describe('POST /api/v1/statuses/:id/favourite and unfavourite', () => {
   it('favouriting another contact\'s status DMs a reaction and applies our own reaction locally', async () => {
     const { transport, dms } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
 
     const res = await app.request('/api/v1/statuses/12/favourite', { method: 'POST' });
     expect(res.status).toBe(200);
@@ -1634,7 +1634,7 @@ describe('POST /api/v1/statuses/:id/favourite and unfavourite', () => {
 
   it('favouriting your own status applies directly without a DM', async () => {
     const { transport, dms } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
 
     const res = await app.request('/api/v1/statuses/11/favourite', { method: 'POST' });
     expect(res.status).toBe(200);
@@ -1646,7 +1646,7 @@ describe('POST /api/v1/statuses/:id/favourite and unfavourite', () => {
 
   it('unfavouriting sends a retraction DM and updates local state', async () => {
     const { transport, dms } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
 
     await app.request('/api/v1/statuses/12/favourite', { method: 'POST' });
     const res = await app.request('/api/v1/statuses/12/unfavourite', { method: 'POST' });
@@ -1671,7 +1671,7 @@ describe('POST /api/v1/statuses/:id/favourite and unfavourite', () => {
 describe('PUT/DELETE /api/v1/pleroma/statuses/:id/reactions/:emoji', () => {
   it('adds an arbitrary emoji reaction via DM + local state', async () => {
     const { transport, dms } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
 
     const res = await app.request('/api/v1/pleroma/statuses/12/reactions/%F0%9F%8E%89', { method: 'PUT' });
     expect(res.status).toBe(200);
@@ -1683,7 +1683,7 @@ describe('PUT/DELETE /api/v1/pleroma/statuses/:id/reactions/:emoji', () => {
 
   it('removes an emoji reaction via DELETE', async () => {
     const { transport } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
 
     await app.request('/api/v1/pleroma/statuses/12/reactions/%F0%9F%8E%89', { method: 'PUT' });
     const res = await app.request('/api/v1/pleroma/statuses/12/reactions/%F0%9F%8E%89', { method: 'DELETE' });
@@ -1694,7 +1694,7 @@ describe('PUT/DELETE /api/v1/pleroma/statuses/:id/reactions/:emoji', () => {
 
   it('keeps ❤ favourite-only: reacting with ❤ via the emoji endpoint still counts as favourited', async () => {
     const { transport } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
 
     const res = await app.request('/api/v1/pleroma/statuses/12/reactions/%E2%9D%A4', { method: 'PUT' });
     const status = await res.json() as any;
@@ -1773,7 +1773,7 @@ describe('GET /api/v1/accounts/lookup', () => {
 describe('POST /api/v1/accounts/:id/unfollow and /follow', () => {
   it('unfollow stops the feed and returns the relationship', async () => {
     const { transport, unfollowed } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
 
     const res = await app.request('/api/v1/accounts/11/unfollow', { method: 'POST' });
     expect(res.status).toBe(200);
@@ -1787,7 +1787,7 @@ describe('POST /api/v1/accounts/:id/unfollow and /follow', () => {
     // Make id 11 (bob) a *known but not-yet-followed* contact.
     transport.following = async () => [];
     const store = createStore(ephemeralStorePath());
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
 
     const res = await app.request('/api/v1/accounts/11/follow', { method: 'POST' });
     expect(res.status).toBe(200);
@@ -1809,7 +1809,7 @@ describe('POST /api/v1/accounts/:id/unfollow and /follow', () => {
   it('follow on an already-followed contact is a no-op returning following:true', async () => {
     const { transport, dms } = makeFakeTransport(); // bob (11) is already followed
     const store = createStore(ephemeralStorePath());
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
 
     const res = await app.request('/api/v1/accounts/11/follow', { method: 'POST' });
     expect(res.status).toBe(200);
@@ -1822,7 +1822,7 @@ describe('POST /api/v1/accounts/:id/unfollow and /follow', () => {
 
   it('follow on an unknown contact id 404s', async () => {
     const { transport } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     const res = await app.request('/api/v1/accounts/999/follow', { method: 'POST' });
     expect(res.status).toBe(404);
   });
@@ -1834,7 +1834,7 @@ describe('follow-back: relationships report requested for pending contacts', () 
     transport.following = async () => [];
     const store = createStore(ephemeralStorePath());
     store.addPendingFollowRequest(BOB.address, 1000);
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
 
     const res = await app.request('/api/v1/accounts/relationships?id[]=11');
     const rels = await res.json() as any;
@@ -1849,7 +1849,7 @@ describe('follow-back: relationships report requested for pending contacts', () 
     // Simulate: request was pending, then the grant arrived and we joined.
     store.addPendingFollowRequest(BOB.address, 1000);
     store.clearPendingFollowRequest(BOB.address);
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store });
 
     const res = await app.request('/api/v1/accounts/relationships?id[]=11');
     const rels = await res.json() as any;
@@ -1891,7 +1891,7 @@ describe('GET /api/v1/notifications', () => {
 
   it('lists a favourite notification after a reaction DM is ingested', async () => {
     const { transport, mids, messages } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
 
     // First, ingest message 11 (our own post) so its mid is a known own mid.
     await app.request('/api/v1/timelines/home');
@@ -1920,7 +1920,7 @@ describe('GET /api/v1/notifications', () => {
 
   it('supports a limit query param', async () => {
     const { transport, mids, messages } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     const { buildReactionText } = await import('../src/protocol.js');
 
     await app.request('/api/v1/timelines/home');
@@ -1960,13 +1960,14 @@ describe('stub endpoints pleromanet polls', () => {
 
   it('sends CORS headers', async () => {
     const res = await makeApp().request('/api/v1/timelines/home', {
-      headers: { Origin: 'http://localhost:5173' },
+      headers: { Origin: BASE },
     });
-    expect(res.headers.get('access-control-allow-origin')).toBe('*');
+    expect(res.headers.get('access-control-allow-origin')).toBe(BASE);
+    expect(res.headers.get('access-control-allow-origin')).not.toBe('*');
   });
 
   it('stub endpoints still respond when unconfigured', async () => {
-    const app = createApp(makeUnconfiguredCtx(), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeUnconfiguredCtx(), { baseUrl: BASE });
     const res = await app.request('/api/v1/notifications');
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual([]);
@@ -1975,7 +1976,7 @@ describe('stub endpoints pleromanet polls', () => {
 
 describe('GET /api/deltanet/status', () => {
   it('reports unconfigured with a null address', async () => {
-    const app = createApp(makeUnconfiguredCtx(), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeUnconfiguredCtx(), { baseUrl: BASE });
     const res = await app.request('/api/deltanet/status');
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ configured: false, address: null });
@@ -1998,7 +1999,7 @@ describe('POST /api/deltanet/signup', () => {
       requestedRelay = relay;
       return transport;
     });
-    const app = createApp(ctx, { baseUrl: BASE });
+    const app = createUnsafeTestApp(ctx, { baseUrl: BASE });
 
     const statusBefore = await (await app.request('/api/deltanet/status')).json() as any;
     expect(statusBefore.configured).toBe(false);
@@ -2028,7 +2029,7 @@ describe('POST /api/deltanet/signup', () => {
       requestedRelay = relay;
       return makeFakeTransport().transport;
     });
-    const app = createApp(ctx, { baseUrl: BASE });
+    const app = createUnsafeTestApp(ctx, { baseUrl: BASE });
     await app.request('/api/deltanet/signup', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2038,7 +2039,7 @@ describe('POST /api/deltanet/signup', () => {
   });
 
   it('422s when display_name is missing', async () => {
-    const app = createApp(makeUnconfiguredCtx(), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeUnconfiguredCtx(), { baseUrl: BASE });
     const res = await app.request('/api/deltanet/signup', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2048,7 +2049,7 @@ describe('POST /api/deltanet/signup', () => {
   });
 
   it('422s when display_name is blank', async () => {
-    const app = createApp(makeUnconfiguredCtx(), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeUnconfiguredCtx(), { baseUrl: BASE });
     const res = await app.request('/api/deltanet/signup', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2070,7 +2071,7 @@ describe('POST /api/deltanet/signup', () => {
 });
 
 describe('unconfigured mastodon endpoints', () => {
-  const app = createApp(makeUnconfiguredCtx(), { baseUrl: BASE });
+  const app = createUnsafeTestApp(makeUnconfiguredCtx(), { baseUrl: BASE });
 
   it.each([
     ['/api/v1/accounts/verify_credentials', 'GET'],
@@ -2130,7 +2131,7 @@ describe('GET /api/v1/streaming: route registration', () => {
         return c.body(JSON.stringify({ sent: fakeSocket.sent }), 200);
       }) as unknown as UpgradeWebSocket;
 
-  it('is absent (404s) when upgradeWebSocket/hub are not provided to createApp', async () => {
+  it('is absent (404s) when upgradeWebSocket/hub are not provided to createUnsafeTestApp', async () => {
     const app = makeApp();
     const res = await app.request('/api/v1/streaming');
     expect(res.status).toBe(404);
@@ -2138,7 +2139,7 @@ describe('GET /api/v1/streaming: route registration', () => {
 
   it('registers both the bare path and the trailing-slash variant when wired', async () => {
     const hub = createStreamingHub();
-    const app = createApp(makeConfiguredCtx(makeFakeTransport().transport), {
+    const app = createUnsafeTestApp(makeConfiguredCtx(makeFakeTransport().transport), {
       baseUrl: BASE,
       upgradeWebSocket: makeFakeUpgradeWebSocket(),
       hub,
@@ -2155,7 +2156,7 @@ describe('GET /api/v1/streaming: route registration', () => {
     // Broadcast to 'public' while the socket is still registered (between
     // onOpen and onClose), proving the route wired the real query-parsed
     // stream name through to `hub.register` rather than some fixed default.
-    const app = createApp(makeConfiguredCtx(makeFakeTransport().transport), {
+    const app = createUnsafeTestApp(makeConfiguredCtx(makeFakeTransport().transport), {
       baseUrl: BASE,
       upgradeWebSocket: makeFakeUpgradeWebSocket(() => hub.broadcastUpdate({ id: 'x' }, 999)),
       hub,
@@ -2170,7 +2171,7 @@ describe('GET /api/v1/streaming: route registration', () => {
 
   it('defaults to the "user" stream (no ?stream= param), which receives notifications', async () => {
     const hub = createStreamingHub();
-    const app = createApp(makeConfiguredCtx(makeFakeTransport().transport), {
+    const app = createUnsafeTestApp(makeConfiguredCtx(makeFakeTransport().transport), {
       baseUrl: BASE,
       upgradeWebSocket: makeFakeUpgradeWebSocket(() => hub.broadcastNotification({ id: 'n' })),
       hub,
@@ -2190,7 +2191,7 @@ describe('thread subscription endpoints (thread-subscribe)', () => {
     fake.messages.push(bobRootMessage(500));
     if (opts?.reachable === false) fake.keyReachable.clear();
     const store = createStore(ephemeralStorePath());
-    const app = createApp(makeConfiguredCtx(fake.transport), { baseUrl: BASE, store });
+    const app = createUnsafeTestApp(makeConfiguredCtx(fake.transport), { baseUrl: BASE, store });
     return { app, store, fake };
   };
   const parseEnv = (text: string) => JSON.parse(text) as Record<string, any>;
@@ -2228,7 +2229,7 @@ describe('thread subscription endpoints (thread-subscribe)', () => {
     fake.messages.push(rootMsg);
     fake.keyReachable.clear(); // never met BOB
     const store = createStore(ephemeralStorePath());
-    const app = createApp(makeConfiguredCtx(fake.transport), { baseUrl: BASE, store });
+    const app = createUnsafeTestApp(makeConfiguredCtx(fake.transport), { baseUrl: BASE, store });
 
     const res = await app.request('/api/v1/pleroma/statuses/500/subscribe', { method: 'POST' });
     expect(res.status).toBe(200);
@@ -2249,7 +2250,7 @@ describe('thread subscription endpoints (thread-subscribe)', () => {
     fake.keyReachable.clear();
     fake.transport.introduceViaInvite = async () => null;
     const store = createStore(ephemeralStorePath());
-    const app = createApp(makeConfiguredCtx(fake.transport), { baseUrl: BASE, store });
+    const app = createUnsafeTestApp(makeConfiguredCtx(fake.transport), { baseUrl: BASE, store });
 
     const res = await app.request('/api/v1/pleroma/statuses/500/subscribe', { method: 'POST' });
     expect(res.status).toBe(422);
@@ -2263,7 +2264,7 @@ describe('thread subscription endpoints (thread-subscribe)', () => {
     fake.messages.push(
       makeMessage({ id: 501, text: JSON.stringify({ dn: 2, type: 'post', uuid: THREAD_ROOT_UUID, text: 'mine' }) }),
     );
-    const app = createApp(makeConfiguredCtx(fake.transport), { baseUrl: BASE, store: createStore(ephemeralStorePath()) });
+    const app = createUnsafeTestApp(makeConfiguredCtx(fake.transport), { baseUrl: BASE, store: createStore(ephemeralStorePath()) });
     const res = await app.request('/api/v1/pleroma/statuses/501/subscribe', { method: 'POST' });
     expect(res.status).toBe(422);
     expect(((await res.json()) as any).code).toBe('own_thread');
@@ -2303,7 +2304,7 @@ describe('thread channels are excluded from following()/home timeline', () => {
     fake.following.push({ contactId: 77, chatId: 300, name: 'Thread abc', addr: 'host@x' });
     const store = createStore(ephemeralStorePath());
     store.addThreadSubscription('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', 300);
-    const app = createApp(makeConfiguredCtx(fake.transport), { baseUrl: BASE, store });
+    const app = createUnsafeTestApp(makeConfiguredCtx(fake.transport), { baseUrl: BASE, store });
     // The relationships endpoint reads followedFeeds — 77 must NOT be "following".
     const res = await app.request('/api/v1/accounts/relationships?id[]=77');
     const rels = (await res.json()) as any[];
@@ -2316,7 +2317,7 @@ describe('thread channels are excluded from following()/home timeline', () => {
     fake.messages.push(makeMessage({ id: 600, chatId: 300, text: 'republished thread reply' }));
     const store = createStore(ephemeralStorePath());
     store.addThreadSubscription('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', 300);
-    const app = createApp(makeConfiguredCtx(fake.transport), { baseUrl: BASE, store });
+    const app = createUnsafeTestApp(makeConfiguredCtx(fake.transport), { baseUrl: BASE, store });
     const home = (await (await app.request('/api/v1/timelines/home')).json()) as any[];
     expect(home.some((s) => s.content.includes('republished thread reply'))).toBe(false);
   });
@@ -2342,7 +2343,7 @@ describe('embed-only interactions (orig-<uuid> action targets)', () => {
     const signed = { ...env, ...attestor.sign(env, AUTHOR) };
     const stored = opts.tamper ? { ...signed, text: 'tampered' } : signed;
     store.addHeldEnvelope(stored, BOB.address, 11, AUTHOR, 1);
-    const app = createApp(makeConfiguredCtx(h.transport), { baseUrl: BASE, store });
+    const app = createUnsafeTestApp(makeConfiguredCtx(h.transport), { baseUrl: BASE, store });
     return { ...h, store, app };
   };
   const flush = () => new Promise((r) => setTimeout(r, 20));
@@ -2416,7 +2417,7 @@ describe('backup endpoints', () => {
   });
 
   it('401s unconfigured on both backup info and export', async () => {
-    const app = createApp(makeUnconfiguredCtx(), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeUnconfiguredCtx(), { baseUrl: BASE });
     expect((await app.request('/api/deltanet/backup')).status).toBe(401);
     const res = await app.request('/api/deltanet/backup/export', {
       method: 'POST',
@@ -2440,7 +2441,7 @@ describe('backup endpoints', () => {
     const store = createStore(join(dir, 'deltanet-store.json'));
     store.markRepublished('seed-uuid-for-backup');
     const { transport } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
 
     // Sign once so the attestation key file exists (it is created lazily).
     const postRes = await app.request('/api/v1/statuses', {
@@ -2478,7 +2479,7 @@ describe('backup endpoints', () => {
   });
 
   it('501s a restore when the context does not support it', async () => {
-    const app = createApp(makeUnconfiguredCtx(), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeUnconfiguredCtx(), { baseUrl: BASE });
     const fd = new FormData();
     fd.append('file', new File([Buffer.from('x')], 'b.dnbk'));
     fd.append('passphrase', 'pw');
@@ -2500,7 +2501,7 @@ describe('backup endpoints', () => {
         throw new Error('unused');
       },
     };
-    const app = createApp(ctx, { baseUrl: BASE, store, dataDir: dir });
+    const app = createUnsafeTestApp(ctx, { baseUrl: BASE, store, dataDir: dir });
 
     const post = async (bytes: Buffer, passphrase: string) => {
       const fd = new FormData();
@@ -2530,7 +2531,7 @@ describe('backup endpoints', () => {
         throw new Error('unused');
       },
     };
-    const app = createApp(ctx, { baseUrl: BASE, dataDir: dir });
+    const app = createUnsafeTestApp(ctx, { baseUrl: BASE, dataDir: dir });
     const fd = new FormData();
     fd.append('passphrase', 'pw');
     expect((await app.request('/api/deltanet/restore', { method: 'POST', body: fd })).status).toBe(422);
@@ -2581,7 +2582,7 @@ describe('backup endpoints', () => {
         return transport;
       },
     };
-    const app = createApp(ctx, { baseUrl: BASE, store, dataDir: dir });
+    const app = createUnsafeTestApp(ctx, { baseUrl: BASE, store, dataDir: dir });
 
     const fd = new FormData();
     fd.append('file', new File([new Uint8Array(container)], 'backup.dnbk'));
@@ -2614,7 +2615,7 @@ describe('backup endpoints', () => {
 // --- petnames (see meta/issues/petnames.md) ---------------------------------
 
 describe('POST /api/deltanet/contacts/:id/petname', () => {
-  const post = (app: ReturnType<typeof createApp>, id: string, petname: string) =>
+  const post = (app: ReturnType<typeof createUnsafeTestApp>, id: string, petname: string) =>
     app.request(`/api/deltanet/contacts/${id}/petname`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2622,27 +2623,27 @@ describe('POST /api/deltanet/contacts/:id/petname', () => {
     });
 
   it('401s when unconfigured', async () => {
-    const app = createApp(makeUnconfiguredCtx(), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeUnconfiguredCtx(), { baseUrl: BASE });
     expect((await post(app, '11', 'carol')).status).toBe(401);
   });
 
   it('404s an unknown contact', async () => {
     const { transport } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     expect((await post(app, '77', 'carol')).status).toBe(404);
     expect((await post(app, 'not-a-number', 'carol')).status).toBe(404);
   });
 
   it('422s a petname for SELF', async () => {
     const { transport, setNames } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     expect((await post(app, '1', 'me')).status).toBe(422);
     expect(setNames).toEqual([]);
   });
 
   it('sets a petname and returns the updated account', async () => {
     const { transport, setNames } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     const res = await post(app, '11', '  bobby  ');
     expect(res.status).toBe(200);
     const account = (await res.json()) as any;
@@ -2653,7 +2654,7 @@ describe('POST /api/deltanet/contacts/:id/petname', () => {
 
   it('clears the petname with an empty string, reverting to the auth name', async () => {
     const { transport, setNames } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     await post(app, '11', 'bobby');
     const res = await post(app, '11', '');
     expect(res.status).toBe(200);
@@ -2671,13 +2672,13 @@ describe('POST /api/deltanet/contacts/:id/petname', () => {
 
 describe('GET /api/v1/accounts/search', () => {
   it('401s when unconfigured', async () => {
-    const app = createApp(makeUnconfiguredCtx(), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeUnconfiguredCtx(), { baseUrl: BASE });
     expect((await app.request('/api/v1/accounts/search?q=car')).status).toBe(401);
   });
 
   it('returns ranked known contacts (petname first), never SELF', async () => {
     const { transport } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     // Give bob a petname so the petname-rank path is exercised end to end.
     await app.request('/api/deltanet/contacts/11/petname', {
       method: 'POST',
@@ -2695,7 +2696,7 @@ describe('GET /api/v1/accounts/search', () => {
 
   it('returns [] for a blank query and respects the limit', async () => {
     const { transport } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     expect(await (await app.request('/api/v1/accounts/search?q=')).json()).toEqual([]);
     const limited = (await (await app.request('/api/v1/accounts/search?q=b&limit=0')).json()) as any[];
     expect(limited).toEqual([]);
@@ -2705,7 +2706,7 @@ describe('GET /api/v1/accounts/search', () => {
 describe('mention addressing on POST /api/v1/statuses', () => {
   it('DM-copies the same signed envelope to a mentioned key-contact', async () => {
     const { transport, dms, posts } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     const res = await app.request('/api/v1/statuses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2720,7 +2721,7 @@ describe('mention addressing on POST /api/v1/statuses', () => {
 
   it('skips unknown addresses and never DMs itself', async () => {
     const { transport, dms } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     const res = await app.request('/api/v1/statuses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2732,7 +2733,7 @@ describe('mention addressing on POST /api/v1/statuses', () => {
 
   it('does not double-DM the reply parent when the reply also mentions them', async () => {
     const { transport, dms } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     // Message 12 is authored by BOB in the fake timeline.
     const res = await app.request('/api/v1/statuses', {
       method: 'POST',
@@ -2749,7 +2750,7 @@ describe('mention addressing on POST /api/v1/statuses', () => {
 describe('body mentions on status JSON', () => {
   it('resolves @addr body tokens to mention entries with names', async () => {
     const { transport } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     const res = await app.request('/api/v1/statuses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2771,7 +2772,7 @@ describe('body mentions on status JSON', () => {
 
   it('does not duplicate the reply parent in mentions', async () => {
     const { transport } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     // Message 12 is authored by BOB; mentioning him in the reply body too
     // must yield ONE mention entry.
     const res = await app.request('/api/v1/statuses', {
@@ -2789,7 +2790,7 @@ describe('body mentions on status JSON', () => {
 
 describe('GET /api/v2/search', () => {
   it('401s unconfigured; blank q returns the empty shape', async () => {
-    expect((await createApp(makeUnconfiguredCtx(), { baseUrl: BASE }).request('/api/v2/search?q=x')).status).toBe(401);
+    expect((await createUnsafeTestApp(makeUnconfiguredCtx(), { baseUrl: BASE }).request('/api/v2/search?q=x')).status).toBe(401);
     const res = await makeApp().request('/api/v2/search?q=');
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ accounts: [], statuses: [], hashtags: [] });
@@ -2797,7 +2798,7 @@ describe('GET /api/v2/search', () => {
 
   it('finds known users (by petname too) and known posts', async () => {
     const { transport } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     await app.request('/api/deltanet/contacts/11/petname', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2814,7 +2815,7 @@ describe('GET /api/v2/search', () => {
 
   it('type narrows to accounts or statuses', async () => {
     const { transport } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     const accountsOnly = (await (await app.request('/api/v2/search?q=bob&type=accounts')).json()) as any;
     expect(accountsOnly.statuses).toEqual([]);
     expect(accountsOnly.accounts.length).toBe(1);
@@ -2826,7 +2827,7 @@ describe('GET /api/v2/search', () => {
     const dir = mkdtempSync(join(tmpdir(), 'deltanet-search-test-'));
     const store = createStore(join(dir, 'store.json'));
     const { transport, messages, mids } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
 
     // A reaction control DM whose text matches the query must never surface.
     const reactionMsg = makeMessage({
@@ -2860,7 +2861,7 @@ describe('GET /api/v2/search', () => {
     const dir = mkdtempSync(join(tmpdir(), 'deltanet-search-held-'));
     const store = createStore(join(dir, 'store.json'));
     const { transport } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
 
     // A properly SIGNED held envelope (verify-at-render must pass).
     const authorAddr = 'stranger@far.example';
@@ -2890,7 +2891,7 @@ describe('visibility channels: posting + invites', () => {
     const dir = mkdtempSync(join(tmpdir(), 'deltanet-vis-'));
     const store = createStore(join(dir, 'store.json'));
     const { transport, posts } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
 
     const res = await app.request('/api/v1/statuses', {
       method: 'POST',
@@ -2912,7 +2913,7 @@ describe('visibility channels: posting + invites', () => {
 
   it('public/unlisted/default go to the public feed and render public', async () => {
     const { transport, posts } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     for (const body of [{ status: 'plain' }, { status: 'pub', visibility: 'public' }, { status: 'unl', visibility: 'unlisted' }]) {
       const res = await app.request('/api/v1/statuses', {
         method: 'POST',
@@ -2929,7 +2930,7 @@ describe('visibility channels: posting + invites', () => {
     const dir = mkdtempSync(join(tmpdir(), 'deltanet-vis-reply-'));
     const store = createStore(join(dir, 'store.json'));
     const { transport, posts } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
     const res = await app.request('/api/v1/statuses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2943,7 +2944,7 @@ describe('visibility channels: posting + invites', () => {
 
   it('the invite endpoint hands out the locked invite on request', async () => {
     const { transport } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     const pub = (await (await app.request('/api/deltanet/invite')).json()) as any;
     expect(pub.invite).toBe('OPENPGP4FPR:FAKEINVITE');
     const locked = (await (await app.request('/api/deltanet/invite?channel=locked')).json()) as any;
@@ -2956,7 +2957,7 @@ describe('visibility channels: own-boost leak guard', () => {
     const dir = mkdtempSync(join(tmpdir(), 'deltanet-vis-boost-'));
     const store = createStore(join(dir, 'store.json'));
     const { transport, posts } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
 
     const postRes = await app.request('/api/v1/statuses', {
       method: 'POST',
@@ -2976,7 +2977,7 @@ describe('visibility channels: own-boost leak guard', () => {
 describe('direct visibility: mentioned-people-only delivery', () => {
   it('rejects a direct root without a non-self key-contact mention and never broadcasts', async () => {
     const { transport, posts, dms, contentDms } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
 
     for (const status of ['nothing addressable', 'self only @p6yalimhl@nine.testrun.org']) {
       const res = await app.request('/api/v1/statuses', {
@@ -2993,7 +2994,7 @@ describe('direct visibility: mentioned-people-only delivery', () => {
 
   it('resolves every body mention before sending, failing the whole request on one unreachable address', async () => {
     const { transport, posts, dms, contentDms } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     const res = await app.request('/api/v1/statuses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3014,7 +3015,7 @@ describe('direct visibility: mentioned-people-only delivery', () => {
     const store = createStore(join(dir, 'store.json'));
     const { transport, posts, dms, contentDms, keyReachable } = makeFakeTransport();
     keyReachable.set('carol@relay.example', 22);
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
     const text = `secret @${BOB.address} and @carol@relay.example`;
     const res = await app.request('/api/v1/statuses', {
       method: 'POST',
@@ -3061,7 +3062,7 @@ describe('direct visibility: mentioned-people-only delivery', () => {
       if (attempts === 2) throw new Error('relay unavailable');
       return sendContentDm(...args);
     };
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
     const res = await app.request('/api/v1/statuses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3086,7 +3087,7 @@ describe('direct visibility: mentioned-people-only delivery', () => {
 
   it('sends direct media through the same 1:1 content transport and returns the attachment', async () => {
     const { transport, posts, contentDms } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     const upload = new FormData();
     upload.append('file', new File(['fakepngbytes'], 'secret.png', { type: 'image/png' }));
     upload.append('description', 'secret alt');
@@ -3127,7 +3128,7 @@ describe('direct visibility: mentioned-people-only delivery', () => {
       }),
     }));
     mids.set(84, 'mid-84@example.org');
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
     const res = await app.request('/api/v1/statuses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3160,7 +3161,7 @@ describe('direct visibility: mentioned-people-only delivery', () => {
       text: JSON.stringify({ dn: 2, type: 'post', uuid, text: `for @p6yalimhl@nine.testrun.org`, visibility: 'direct' }),
     }));
     mids.set(85, 'mid-85@example.org');
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
 
     expect(((await (await app.request('/api/v1/statuses/85')).json()) as any).visibility).toBe('direct');
     expect((await app.request('/api/v1/statuses/85/reblog', { method: 'POST' })).status).toBe(422);
@@ -3185,7 +3186,7 @@ describe('visibility channels 1B: follow_requests endpoints', () => {
     const store = createStore(join(dir, 'store.json'));
     await seedRequest(store);
     const { transport } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
     const res = await app.request('/api/v1/follow_requests');
     expect(res.status).toBe(200);
     const accounts = (await res.json()) as any[];
@@ -3198,7 +3199,7 @@ describe('visibility channels 1B: follow_requests endpoints', () => {
     const store = createStore(join(dir, 'store.json'));
     await seedRequest(store);
     const { transport, dms } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
     const res = await app.request('/api/v1/follow_requests/11/authorize', { method: 'POST' });
     expect(res.status).toBe(200);
     expect(((await res.json()) as any).followed_by).toBe(true);
@@ -3216,7 +3217,7 @@ describe('visibility channels 1B: follow_requests endpoints', () => {
     const store = createStore(join(dir, 'store.json'));
     await seedRequest(store);
     const { transport, dms } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
     const res = await app.request('/api/v1/follow_requests/11/reject', { method: 'POST' });
     expect(res.status).toBe(200);
     expect(dms).toHaveLength(0);
@@ -3226,7 +3227,7 @@ describe('visibility channels 1B: follow_requests endpoints', () => {
 
   it('authorize/reject 404 an id with no pending request', async () => {
     const { transport } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     expect((await app.request('/api/v1/follow_requests/11/authorize', { method: 'POST' })).status).toBe(404);
     expect((await app.request('/api/v1/follow_requests/99/reject', { method: 'POST' })).status).toBe(404);
   });
@@ -3237,7 +3238,7 @@ describe('visibility channels 1B: requesting locked access', () => {
     const dir = mkdtempSync(join(tmpdir(), 'deltanet-reqlock-'));
     const store = createStore(join(dir, 'store.json'));
     const { transport, dms } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
     const res = await app.request('/api/deltanet/contacts/11/request-locked', { method: 'POST' });
     expect(res.status).toBe(200);
     expect(((await res.json()) as any).requested).toBe(true);
@@ -3252,7 +3253,7 @@ describe('visibility channels 1B: requesting locked access', () => {
 
   it('404s an unknown contact and 422s SELF', async () => {
     const { transport } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     expect((await app.request('/api/deltanet/contacts/77/request-locked', { method: 'POST' })).status).toBe(404);
     expect((await app.request('/api/deltanet/contacts/1/request-locked', { method: 'POST' })).status).toBe(422);
   });
@@ -3265,7 +3266,7 @@ describe('leak prevention: the wire marker', () => {
     const dir = mkdtempSync(join(tmpdir(), 'deltanet-lp-'));
     const store = createStore(join(dir, 'store.json'));
     const { transport, posts } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
     await app.request('/api/v1/statuses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3303,7 +3304,7 @@ describe('leak prevention: receiver honoring', () => {
     const { transport, messages, mids } = makeFakeTransport();
     messages.push(markedMessage(80, 'their locked post'));
     mids.set(80, 'mid-80@example.org');
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     const status = (await (await app.request('/api/v1/statuses/80')).json()) as any;
     expect(status.visibility).toBe('private');
   });
@@ -3312,7 +3313,7 @@ describe('leak prevention: receiver honoring', () => {
     const { transport, messages, mids, posts } = makeFakeTransport();
     messages.push(markedMessage(81, 'do not boost me'));
     mids.set(81, 'mid-81@example.org');
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     const res = await app.request('/api/v1/statuses/81/reblog', { method: 'POST' });
     expect(res.status).toBe(422);
     expect(posts.filter((p) => parseEnvelope(p.text)?.type === 'boost')).toHaveLength(0);
@@ -3324,7 +3325,7 @@ describe('leak prevention: receiver honoring', () => {
     const { transport, messages, mids, posts } = makeFakeTransport();
     messages.push(markedMessage(82, 'locked parent'));
     mids.set(82, 'mid-82@example.org');
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
     const res = await app.request('/api/v1/statuses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3345,7 +3346,7 @@ describe('leak prevention: receiver honoring', () => {
     const { transport, messages, mids } = makeFakeTransport();
     messages.push(markedMessage(83, 'private root'));
     mids.set(83, 'mid-83@example.org');
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
     const res = await app.request('/api/v1/pleroma/statuses/83/subscribe', { method: 'POST' });
     expect(res.status).toBe(422);
     rmSync(dir, { recursive: true, force: true });
@@ -3355,7 +3356,7 @@ describe('leak prevention: receiver honoring', () => {
 describe('leak prevention: revocation', () => {
   it('remove_from_followers removes the contact from both channels', async () => {
     const { transport, removedFollowers } = makeFakeTransport();
-    const app = createApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
     const res = await app.request('/api/v1/accounts/11/remove_from_followers', { method: 'POST' });
     expect(res.status).toBe(200);
     expect(removedFollowers).toEqual([11]);

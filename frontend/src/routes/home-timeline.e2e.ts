@@ -18,6 +18,12 @@ const customEmojisUrl = 'https://pleroma.example/api/v1/custom_emojis';
 
 const authenticate = async (page: Page) => {
 	await mockRightRailApis(page);
+	let streamTicket = 0;
+	await page.route('https://pleroma.example/api/deltanet/streaming/token', async (route) => {
+		expect(route.request().headers().authorization).toMatch(/^Bearer .+-token$/);
+		streamTicket += 1;
+		await fulfillHome(route, { ticket: `stream-ticket-${streamTicket}`, expires_at: Date.now() + 30_000 });
+	});
 	await page.route('https://pleroma.example/api/v1/notifications**', async (route) => {
 		await fulfillHome(route, []);
 	});
@@ -63,6 +69,9 @@ const authenticate = async (page: Page) => {
 
 const authenticateWithThrowingWebSocket = async (page: Page) => {
 	await mockRightRailApis(page);
+	await page.route('https://pleroma.example/api/deltanet/streaming/token', async (route) => {
+		await fulfillHome(route, { ticket: 'stream-ticket', expires_at: Date.now() + 30_000 });
+	});
 	await page.route(customEmojisUrl, async (route) => {
 		await fulfillHome(route, pleromaFixtures.customEmojis);
 	});
@@ -2275,7 +2284,7 @@ test('home timeline opens a user stream and queues streamed posts behind the ind
 	expect(await page.evaluate(() => {
 		const testWindow = window as typeof window & { __deltanetSockets?: Array<{ url: string }> };
 		return testWindow.__deltanetSockets?.[0]?.url;
-	})).toBe('wss://pleroma.example/api/v1/streaming/?stream=user&access_token=access-token');
+	})).toBe('wss://pleroma.example/api/v1/streaming/?stream=user&ticket=stream-ticket-1');
 
 	await emitStreamUpdate(page, statusWithText('status-stream', 'fresh streamed post'));
 	const indicator = page.getByTestId('timeline-header-actions').getByRole('button', { name: '1 new posts' });

@@ -6,7 +6,7 @@ import { type DeltaChatTransport, type IngestPhase } from '../../src/transport/d
 import { openRelayTransport, register } from './relay.js';
 import type { Transport } from '../../src/transport/types.js';
 import { createStore, type Store } from '../../src/store.js';
-import { createApp, type AppContext } from '../../src/server.js';
+import { createUnsafeTestApp, type AppContext } from '../../src/server.js';
 import { deriveOnIngest, runFollowbackOnIngest } from '../../src/ingest.js';
 import { parseWire } from '../../src/wire.js';
 
@@ -86,8 +86,8 @@ describe('visibility channels over the relay', () => {
         throw new Error('already configured');
       },
     });
-    const aApp = createApp(ctxFor(a), { baseUrl: 'http://localhost:4030', store: aStore, dataDir: A_DATA });
-    const bApp = createApp(ctxFor(b), { baseUrl: 'http://localhost:4031', store: bStore, dataDir: B_DATA });
+    const aApp = createUnsafeTestApp(ctxFor(a), { baseUrl: 'http://localhost:4030', store: aStore, dataDir: A_DATA });
+    const bApp = createUnsafeTestApp(ctxFor(b), { baseUrl: 'http://localhost:4031', store: bStore, dataDir: B_DATA });
 
     // B and C follow A's PUBLIC feed.
     const bJoins = a.waitForEvent('SecurejoinInviterProgress', 120_000, (e) => e.progress === 1000);

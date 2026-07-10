@@ -9,7 +9,7 @@ import {
 import { openRelayTransport, register } from './relay.js';
 import type { Transport } from '../../src/transport/types.js';
 import { createStore, type Store } from '../../src/store.js';
-import { createApp, type AppContext } from '../../src/server.js';
+import { createUnsafeTestApp, type AppContext } from '../../src/server.js';
 import { deriveOnIngest } from '../../src/ingest.js';
 import { parseWire, parseWireUuid } from '../../src/wire.js';
 
@@ -122,8 +122,8 @@ describe('non-follower thread rendering + own-reaction re-index over chatmail', 
     refs.b = b;
     transports.push(a, b);
 
-    let aApp = createApp(ctxFor(a), { baseUrl: BASE, store: aStore });
-    const bApp = createApp(ctxFor(b), { baseUrl: BASE, store: bStore });
+    let aApp = createUnsafeTestApp(ctxFor(a), { baseUrl: BASE, store: aStore });
+    const bApp = createUnsafeTestApp(ctxFor(b), { baseUrl: BASE, store: bStore });
 
     await a.feedInvite();
     await b.feedInvite();
@@ -228,7 +228,7 @@ describe('non-follower thread rendering + own-reaction re-index over chatmail', 
     );
     refs2.a = a2;
     transports.push(a2);
-    aApp = createApp(ctxFor(a2), { baseUrl: BASE, store: aStore });
+    aApp = createUnsafeTestApp(ctxFor(a2), { baseUrl: BASE, store: aStore });
 
     // Wait for the backfill re-index to rebuild edges + own reaction.
     {

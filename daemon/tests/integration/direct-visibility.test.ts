@@ -6,7 +6,7 @@ import { type DeltaChatTransport, type IngestPhase } from '../../src/transport/d
 import { openRelayTransport, register } from './relay.js';
 import type { Transport } from '../../src/transport/types.js';
 import { createStore, type Store } from '../../src/store.js';
-import { createApp, type AppContext } from '../../src/server.js';
+import { createUnsafeTestApp, type AppContext } from '../../src/server.js';
 import { deriveOnIngest } from '../../src/ingest.js';
 import { parseWire } from '../../src/wire.js';
 
@@ -89,8 +89,8 @@ describe('direct visibility over the relay', () => {
     refs.c = c;
     transports.push(a, b, c);
 
-    const aApp = createApp(contextFor(a), { baseUrl: 'http://localhost:4030', store: aStore, dataDir: A_DATA });
-    const bApp = createApp(contextFor(b), { baseUrl: 'http://localhost:4031', store: bStore, dataDir: B_DATA });
+    const aApp = createUnsafeTestApp(contextFor(a), { baseUrl: 'http://localhost:4030', store: aStore, dataDir: A_DATA });
+    const bApp = createUnsafeTestApp(contextFor(b), { baseUrl: 'http://localhost:4031', store: bStore, dataDir: B_DATA });
 
     // B and C both follow A's public feed. This gives A E2EE key contacts for
     // both and makes C an active leak canary if direct ever hits the broadcast.

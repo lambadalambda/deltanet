@@ -39,7 +39,8 @@
 		type DeltanetBackupInfo
 	} from '$lib/pleroma/deltanet';
 	import { NOTIFICATION_POLL_EVENT, NOTIFICATION_POLL_INTERVAL_MS, readNotificationLastSeenAt, writeNotificationLastSeenAt } from '$lib/pleroma/notifications';
-	import { readPleromaSession, signOutPleroma, writePleromaSession } from '$lib/pleroma/session';
+	import { revokeOAuthToken } from '$lib/pleroma/oauth';
+	import { readPleromaSession, removePleromaOAuthClient, signOutPleroma, writePleromaSession } from '$lib/pleroma/session';
 	import { openPleromaTimelineStream } from '$lib/pleroma/streaming';
 	import {
 		mergeTimelineItems,
@@ -170,6 +171,7 @@
 	const HOME_TIMELINE_STREAM_RECONNECT_MS = HOME_TIMELINE_FALLBACK_INTERVAL_MS;
 	const APP_PUBLIC_TIMELINE_STREAM_RECONNECT_MS = HOME_TIMELINE_FALLBACK_INTERVAL_MS;
 	const NOTIFICATION_STREAM_RECONNECT_MS = NOTIFICATION_POLL_INTERVAL_MS;
+	const SIGN_OUT_REVOKE_TIMEOUT_MS = 2_000;
 	const HEADER_SEARCH_DEBOUNCE_MS = 160;
 	const SEARCH_PAGE_DEBOUNCE_MS = 260;
 	const SEARCH_RECENTS_STORAGE_KEY = 'pn-search-recents';
@@ -2042,8 +2044,24 @@
 	};
 	const signOutFromUserMenu = () => {
 		userMenuOpen = false;
+		const session = currentSession ?? readPleromaSession(localStorage);
+		closeHomeTimelineStreaming();
+		closeNotificationStreaming();
 		signOutPleroma(localStorage);
+		if (session) removePleromaOAuthClient(localStorage, session.instanceUrl);
 		redirectToLanding();
+		if (!session) return;
+
+		const revokeController = new AbortController();
+		const revokeTimeout = window.setTimeout(() => revokeController.abort(), SIGN_OUT_REVOKE_TIMEOUT_MS);
+		void revokeOAuthToken({
+			instanceUrl: session.instanceUrl,
+			accessToken: session.accessToken,
+			signal: revokeController.signal,
+			fetch: window.fetch.bind(window)
+		})
+			.catch(() => undefined)
+			.finally(() => window.clearTimeout(revokeTimeout));
 	};
 	const handleWindowKeydown = (event: KeyboardEvent) => {
 		if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
@@ -3319,6 +3337,7 @@
 		const stream = openPleromaTimelineStream({
 			instanceUrl: session.instanceUrl,
 			accessToken: session.accessToken,
+			fetch: window.fetch.bind(window),
 			onNotification: (notification) => applyStreamedNotification(requestSessionKey, notification),
 			onOpen: () => {
 				if (notificationStreamKey === requestSessionKey && isCurrentSessionRequest(requestSessionKey)) notificationStreamReadyKey = requestSessionKey;
@@ -3446,6 +3465,7 @@
 		const stream = openPleromaTimelineStream({
 			instanceUrl: session.instanceUrl,
 			accessToken: session.accessToken,
+			fetch: window.fetch.bind(window),
 			onUpdate: (status) => queueStreamedHomeStatus(requestSessionKey, status),
 			onNotification: (notification) => applyStreamedNotification(requestSessionKey, notification),
 			onOpen: () => {
@@ -4286,9 +4306,10 @@
 										<svg viewBox="0 0 24 24" fill="none" width="16" height="16" aria-hidden="true"><circle cx="9" cy="8" r="3" stroke="currentColor" stroke-width="1.5"/><path d="M3 19c0-3 3-5 6-5s6 2 6 5M16 7l3 3-3 3M19 10h-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
 										<span>Switch account</span>
 									</button>
+									<div class="user-menu-label">Next sign-in needs a fresh terminal enrollment code.</div>
 									<button type="button" class="user-menu-item user-menu-danger" onclick={signOutFromUserMenu}>
 										<svg viewBox="0 0 24 24" fill="none" width="16" height="16" aria-hidden="true"><path d="M14 4h4a1 1 0 011 1v14a1 1 0 01-1 1h-4M10 8l-4 4 4 4M6 12h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-										<span>Sign out</span>
+										<span>Sign out &amp; forget this browser</span>
 									</button>
 								</div>
 								<div class="user-menu-foot"><span>DeltaNet™</span><span class="user-menu-dot"></span><span>{headerInstanceDomain}</span></div>

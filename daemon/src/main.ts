@@ -32,12 +32,19 @@ import {
   republishReplyToThread,
 } from './thread-subscribe.js';
 import type { T } from '@deltachat/jsonrpc-client';
+import { createAuthStore } from './auth.js';
+import { resolveListenerConfig } from './listener.js';
 
-const PORT = Number(process.env['PORT'] ?? 4030);
+const { hostname: HOSTNAME, port: PORT } = resolveListenerConfig(process.env);
 const ACCOUNT = process.env['DELTANET_ACCOUNT'] ?? 'main';
 const DATA_DIR = process.env['DELTANET_DATA'] ?? `data/${ACCOUNT}`;
 const BASE_URL = process.env['DELTANET_BASE_URL'] ?? `http://localhost:${PORT}`;
 const ACCOUNTS_FILE = process.env['DELTANET_ACCOUNTS'] ?? 'accounts.local.json';
+const AUTH_FILE = process.env['DELTANET_AUTH'] ?? `${DATA_DIR}.auth.json`;
+const ALLOWED_ORIGINS = (process.env['DELTANET_ALLOWED_ORIGINS'] ?? '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 const STATIC_DIR_CONFIG = process.env['DELTANET_STATIC'] ?? '../frontend/build';
 const STATIC_DIR = resolve(process.cwd(), STATIC_DIR_CONFIG);
 
@@ -45,13 +52,22 @@ const STATIC_DIR = resolve(process.cwd(), STATIC_DIR_CONFIG);
 // the transport's ingestion hook (timeline loads + IncomingMsg events) and
 // the API layer's mapping/context assembly.
 const store = createStore(join(DATA_DIR, 'deltanet-store.json'));
+const auth = createAuthStore(AUTH_FILE);
 
 // Streaming websocket hub (see ./streaming.ts) + the same status/notification
 // mapping REST responses use (see ./mapping.ts), so live-streamed frames are
 // never a divergent JSON shape from `GET /api/v1/timelines/*` or
 // `GET /api/v1/notifications`.
 const hub = createStreamingHub();
-const mapper = createStatusMapper(store, BASE_URL);
+const mapper = createStatusMapper(store, BASE_URL, {
+  blobUrl: (msgId) => {
+    const signed = auth.signBlobPath(msgId);
+    const url = new URL(`/deltanet/blob/${msgId}`, BASE_URL);
+    url.searchParams.set('expires', String(signed.expires));
+    url.searchParams.set('signature', signed.signature);
+    return url.toString();
+  },
+});
 
 // Thread auto-backfill (design-sketch #3): the auto-fetch loop that heals
 // dangling reply/boost/root refs by asking the peer who showed them to us. The
@@ -301,6 +317,12 @@ const notifyFollower = async (contactId: number) => {
 };
 
 const creds = readAccounts(ACCOUNTS_FILE)[ACCOUNT];
+const printEnrollmentCode = () => {
+  const enrollment = auth.createEnrollmentCode();
+  console.log(`deltanet: one-time frontend enrollment code (10 minutes): ${enrollment.code}`);
+};
+auth.bindAccount(creds?.addr ?? null);
+printEnrollmentCode();
 if (creds) {
   console.log(`configuring ${creds.addr} (data: ${DATA_DIR}) ...`);
   transport = await openTransport(DATA_DIR, creds, { onMessage: ingestOnMessage });
@@ -327,6 +349,8 @@ const ctx: AppContext = {
     writeAccount(ACCOUNTS_FILE, ACCOUNT, newCreds);
     const opened = await openTransport(DATA_DIR, newCreds, { onMessage: ingestOnMessage });
     opened.onFollower(notifyFollower);
+    auth.bindAccount(addr);
+    printEnrollmentCode();
     transport = opened;
     await announce(opened);
     return opened;
@@ -345,6 +369,8 @@ const ctx: AppContext = {
     );
     writeAccount(ACCOUNTS_FILE, ACCOUNT, restoredCreds);
     opened.onFollower(notifyFollower);
+    auth.bindAccount(restoredCreds.addr);
+    printEnrollmentCode();
     transport = opened;
     await announce(opened);
     // Same startup seeding a normal boot does: the restored store may carry
@@ -360,6 +386,7 @@ if (staticDir) console.log(`serving static frontend from ${staticDir}`);
 
 const app = createApp(ctx, {
   baseUrl: BASE_URL,
+  security: { auth, trustedOrigins: ALLOWED_ORIGINS },
   staticDir,
   store,
   upgradeWebSocket,
@@ -375,5 +402,5 @@ const app = createApp(ctx, {
 // separate `injectWebSocket(server)` call needed, unlike the older
 // `@hono/node-server/ws`/`createNodeWebSocket` API.
 const wss = new WebSocketServer({ noServer: true });
-serve({ fetch: app.fetch, port: PORT, websocket: { server: wss } });
-console.log(`deltanet: mastodon api on ${BASE_URL}`);
+serve({ fetch: app.fetch, hostname: HOSTNAME, port: PORT, websocket: { server: wss } });
+console.log(`deltanet: mastodon api on ${BASE_URL} (listening on ${HOSTNAME}:${PORT})`);

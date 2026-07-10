@@ -65,18 +65,56 @@ test('status configured:true defaults to sign in and starts the OAuth redirect o
 	const appRegistrationBody = await mockOAuthAppRegistration(page, origin);
 
 	await expect(page.getByRole('tab', { name: 'Sign in' })).toHaveAttribute('aria-selected', 'true');
+	await expect(page.getByRole('textbox', { name: 'One-time enrollment code' })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Continue' })).toBeDisabled();
+	await page.getByRole('textbox', { name: 'One-time enrollment code' }).fill('terminal-code');
 	await page.getByRole('button', { name: 'Continue' }).click();
 
 	await expect(page.getByText(`Redirecting to ${origin}`)).toBeVisible();
 	const authorizationLink = page.getByRole('link', { name: /Open .*authorization/ });
 	await expect(authorizationLink).toHaveAttribute('href', new RegExp(`^${origin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/oauth/authorize\\?`));
 	expect(appRegistrationBody()).toContain('client_name=DeltaNet');
+	expect(appRegistrationBody()).toContain('scopes=read+write+follow+push');
+	expect(appRegistrationBody()).toContain('enrollment_code=terminal-code');
+	const storedClient = await page.evaluate((key) => window.localStorage.getItem(key), `deltanet.oauth.client.${encodeURIComponent(origin)}`);
+	expect(storedClient).toContain(`${origin}-client`);
 
 	const pending = await page.evaluate(() => JSON.parse(window.sessionStorage.getItem('deltanet.oauth.pending') ?? 'null'));
-	expect(pending).toMatchObject({ instanceUrl: origin, clientId: `${origin}-client`, state: expect.any(String) });
+	expect(pending).toMatchObject({ instanceUrl: origin, clientId: `${origin}-client`, scopes: ['read', 'write', 'follow', 'push'], state: expect.any(String) });
 
 	await page.getByRole('button', { name: 'Cancel redirect' }).click();
 	await expect(page.getByText('DeltaNet never sees your password')).toBeVisible();
+});
+
+test('normal sign-in reuses the persisted client without consuming another enrollment code', async ({ page }) => {
+	await setViewport(page, 'desktop');
+	await mockDeltanetStatus(page, { configured: true, address: null });
+	await page.goto('/');
+	const origin = new URL(page.url()).origin;
+	await page.evaluate(({ key, client }) => window.localStorage.setItem(key, JSON.stringify(client)), {
+		key: `deltanet.oauth.client.${encodeURIComponent(origin)}`,
+		client: {
+			instanceUrl: origin,
+			clientId: 'persisted-client',
+			clientSecret: 'persisted-secret',
+			redirectUri: `${origin}/auth/callback`,
+			scopes: ['read', 'write', 'follow', 'push'],
+			createdAt: Date.now()
+		}
+	});
+	await page.reload();
+
+	let registrationRequests = 0;
+	await page.route(`${origin}/api/v1/apps`, async (route) => {
+		registrationRequests += 1;
+		await route.abort();
+	});
+	await expect(page.getByText(/reuse this browser's registered client/i)).toBeVisible();
+	await page.getByRole('button', { name: 'Continue' }).click();
+
+	const link = page.getByRole('link', { name: /Open .*authorization/ });
+	await expect(link).toHaveAttribute('href', /client_id=persisted-client/);
+	expect(registrationRequests).toBe(0);
 });
 
 test('status configured:false defaults to the create-account tab', async ({ page }) => {
@@ -108,7 +146,9 @@ test('signup happy path registers the account and continues into OAuth sign-in',
 
 	await expect(page.getByText('quietfox@nine.testrun.org')).toBeVisible();
 	expect(signupBody).toMatchObject({ display_name: 'Quiet Fox' });
-
+	await expect(page.getByText(/new one-time enrollment code printed by the daemon/i)).toBeVisible();
+	await page.getByRole('textbox', { name: 'One-time enrollment code' }).fill('post-signup-code');
+	await page.getByRole('button', { name: 'Continue to sign in' }).click();
 	await expect(page.getByText(`Redirecting to ${origin}`)).toBeVisible();
 	const authorizationLink = page.getByRole('link', { name: /Open .*authorization/ });
 	await expect(authorizationLink).toHaveAttribute('href', /\/oauth\/authorize\?/);
@@ -209,7 +249,8 @@ test('restore happy path uploads the backup and continues into OAuth sign-in', a
 	expect(restoreBody).toContain('name="passphrase"');
 	expect(restoreBody).toContain('correct horse');
 	expect(restoreBody).toContain('filename="deltanet-backup.dnbk"');
-
+	await page.getByRole('textbox', { name: 'One-time enrollment code' }).fill('post-restore-code');
+	await page.getByRole('button', { name: 'Continue to sign in' }).click();
 	await expect(page.getByText(`Redirecting to ${origin}`)).toBeVisible();
 });
 

@@ -1,5 +1,62 @@
 # deltanet devlog
 
+## 2026-07-10 - local API security boundary
+
+The local Mastodon-compatible API now has an explicit authorization boundary
+(meta/issues/local-api-security-boundary.md):
+
+- Production `main.ts` and security tests use `createApp` with a persisted auth
+  store; every non-security unit/integration fixture explicitly uses the
+  conspicuous `createUnsafeTestApp` factory. The production mode is
+  fail-closed, with a method/path allowlist for the SPA, constrained onboarding,
+  OAuth, instance metadata, public assets, and sanitized public projections.
+  Notifications, backup, relationship/search APIs, mutations, and private-state
+  stubs all require a valid Bearer session.
+- OAuth apps, codes, and sessions are random per flow (32 bytes). The mode-0600
+  auth file stores hashes of client secrets, codes, and tokens, replaces itself
+  atomically, binds codes to client + exact redirect + scope, consumes codes
+  once, expires them after five minutes, and persists session expiry/revocation.
+  Client registration requires a one-use 10-minute terminal enrollment code or
+  an existing bearer, accepts only the complete `read write follow push` scope,
+  and is persisted per daemon instance by the frontend for normal sign-in reuse.
+- CORS is no longer wildcard in production. It echoes only the base origin plus
+  `DELTANET_ALLOWED_ORIGINS`; untrusted browser mutations, OAuth, and onboarding
+  requests are rejected. A Vite origin is an explicit development choice.
+- REST uses `Authorization: Bearer`; WebSocket upgrades consume a one-use
+  30-second ticket issued through authenticated REST, never a bearer in the URL.
+  Tickets remain associated with their session, and live sockets close on
+  revocation, account rotation, or session expiry. Frontend sign-out closes
+  streams and local state first, then makes a bounded best-effort revoke.
+- Every message blob requires either a bearer or a one-minute HMAC-signed URL
+  capability from the auth store's persistent signing secret, allowing UI images
+  without leaking the bearer into image URLs.
+- Anonymous public timelines/profile statuses filter both wire-marked and
+  store-marked private/direct posts and strip local petnames, relationships,
+  action flags, and subscription state. Nested boosts fail closed unless their
+  complete status tree is known public. Security re-review tightened "known" to
+  persisted positive feed provenance for every locally resolved tree node:
+  schema v9 reindexes `feedMsgIds`, outer timeline/profile feed messages are
+  ingested before projection, and a feed boost cannot surface or placeholder a
+  DM-only post. No message blob can be fetched from its bare URL.
+- Explicit signout now unpairs the OAuth client identified by its authenticated
+  bearer, atomically removing that client and all of its sessions, authorization
+  codes, and stream tickets, then notifying every session socket. The daemon
+  prints a fresh one-use terminal enrollment code for the browser's next pairing.
+  Authorization state permits one outstanding code per client and a bounded
+  global set (including restart normalization); OAuth app/code/token responses
+  are `no-store`/`no-cache`.
+- OAuth callbacks remove code/error parameters from browser history immediately
+  after parsing. Signed blob URLs remain intentionally usable for at most their
+  60-second lifetime after session/client revocation, and every blob response is
+  `private, no-store`.
+- Signup and restore share one configuration mutex. Auth state is account-bound:
+  changing identity rotates clients, codes, sessions, tickets, and blob signing
+  material rather than carrying browser authority across accounts.
+- The listener defaults to `127.0.0.1`. Any non-loopback hostname requires the
+  exact `DELTANET_ALLOW_NON_LOOPBACK=1` opt-in and a documented HTTPS/reverse-
+  proxy security model. Existing fixed `deltanet-token` sessions intentionally
+  fail validation and reauthenticate.
+
 ## 2026-07-10 — direct visibility: mentioned recipients only
 
 `visibility: direct` now has a transport-level meaning rather than falling

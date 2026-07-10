@@ -1,10 +1,9 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { Hono, type Context, type Next } from 'hono';
-import { cors } from 'hono/cors';
 import { serveStatic } from '@hono/node-server/serve-static';
 import type { UpgradeWebSocket, WSEvents } from 'hono/ws';
 import type { T } from '@deltachat/jsonrpc-client';
@@ -55,6 +54,7 @@ import { deriveOnIngest } from './ingest.js';
 import { createStatusMapper, mapNotification } from './mapping.js';
 import { createStreamingEvents, type StreamingHub } from './streaming.js';
 import { republishReplyToThread } from './thread-subscribe.js';
+import { AuthError, type AuthSession, type AuthStore } from './auth.js';
 
 const DC_CONTACT_ID_SELF = 1;
 const FAVOURITE_EMOJI = '❤';
@@ -63,6 +63,14 @@ const MAX_CONTEXT_DESCENDANTS = 100;
 
 export type ServerOptions = {
   baseUrl: string;
+  /** Mandatory: production auth, or the conspicuous unsafe test-only factory below. */
+  security:
+    | {
+        auth: AuthStore;
+        /** Additional browser origins trusted alongside baseUrl's own origin. */
+        trustedOrigins?: string[];
+      }
+    | { unsafeTestOnly: true };
   /** Absolute path to a built frontend SPA to serve as static files; skipped if unset/missing. */
   staticDir?: string;
   /**
@@ -117,12 +125,13 @@ export type AppContext = {
   restore?(backupTarPath: string, passphrase: string, beforeOpen: () => void): Promise<Transport>;
 };
 
-type TransportEnv = { Variables: { transport: Transport } };
+type AppEnv = { Variables: { transport: Transport; authSession: AuthSession } };
 
 const OAUTH_SCOPE = 'read write follow push';
 const MAX_POST_CHARS = 5000;
 const DEFAULT_PAGE = 20;
 const DEFAULT_RELAY = 'https://nine.testrun.org';
+const testOnlyRandomCredential = (): string => randomBytes(32).toString('base64url');
 
 const intParam = (value: string | undefined): number | undefined => {
   const parsed = Number(value);
@@ -158,9 +167,10 @@ const contentTypeForPath = (path: string): string => {
 
 export const createApp = (
   ctx: AppContext,
-  { baseUrl, staticDir, store: injectedStore, upgradeWebSocket, hub, dataDir }: ServerOptions,
+  { baseUrl, staticDir, store: injectedStore, upgradeWebSocket, hub, dataDir, security }: ServerOptions,
 ) => {
-  const app = new Hono();
+  const enabledSecurity = 'auth' in security ? security : null;
+  const app = new Hono<AppEnv>();
   const mediaStore = createMediaStore();
   const store: Store = injectedStore ?? createStore(ephemeralStorePath());
   // Where profile-editing persists the uploaded avatar + SELF header banner.
@@ -405,7 +415,17 @@ export const createApp = (
   // every REST handler below, and `main.ts`'s live-ingestion path builds its
   // own instance over the same `store` so streamed frames use identical
   // mapping logic.
-  const mapper = createStatusMapper(store, baseUrl);
+  const mapper = createStatusMapper(store, baseUrl, {
+    blobUrl: enabledSecurity
+      ? (msgId) => {
+          const signed = enabledSecurity.auth.signBlobPath(msgId);
+          const url = new URL(`/deltanet/blob/${msgId}`, baseUrl);
+          url.searchParams.set('expires', String(signed.expires));
+          url.searchParams.set('signature', signed.signature);
+          return url.toString();
+        }
+      : undefined,
+  });
   const { toStatus } = mapper;
 
   /**
@@ -705,22 +725,106 @@ export const createApp = (
     };
   };
 
-  app.use(
-    '*',
-    cors({
-      origin: '*',
-      allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-      allowHeaders: ['Authorization', 'Content-Type', 'Idempotency-Key'],
-      // Content-Disposition is not CORS-safelisted; without exposing it a
-      // cross-origin frontend (two-node dev setup) can't read the backup
-      // download's filename and falls back to a generic one.
-      exposeHeaders: ['Content-Disposition'],
-    }),
-  );
+  const trustedOrigins = new Set<string>([
+    new URL(baseUrl).origin,
+    ...(enabledSecurity?.trustedOrigins ?? []).map((origin) => new URL(origin).origin),
+  ]);
+  const isStreamingPath = (path: string) =>
+    path === '/api/v1/streaming' || path === '/api/v1/streaming/';
+  const isAnonymousRequest = (method: string, path: string): boolean => {
+    if (method === 'GET' && (path === '/api/v1/instance' || path === '/api/v2/instance')) return true;
+    if (method === 'GET' && path === '/api/deltanet/status') return true;
+    if (method === 'POST' && path === '/api/v1/apps') return true;
+    if (method === 'GET' && path === '/oauth/authorize') return true;
+    if (method === 'POST' && path === '/oauth/token') return true;
+    if (
+      method === 'POST' &&
+      (path === '/api/deltanet/signup' || path === '/api/deltanet/restore') &&
+      ctx.getTransport() === null
+    ) return true;
+    if (method === 'GET' && path === '/api/v1/timelines/public') return true;
+    if (method === 'GET' && /^\/api\/v1\/accounts\/\d+(?:\/statuses)?$/.test(path)) return true;
+    if (method === 'GET' && /^\/deltanet\/(?:avatar|header)\//.test(path)) return true;
+    if (method === 'GET' && (path === '/deltanet/header.png' || /^\/deltanet\/blob\/[^/]+$/.test(path))) return true;
+    if (method === 'GET' && (path === '/api/v1/custom_emojis' || path === '/api/v1/trends' || path === '/api/v1/trends/tags')) return true;
+    if (
+      (method === 'GET' || method === 'HEAD') &&
+      !path.startsWith('/api') &&
+      !path.startsWith('/oauth') &&
+      !path.startsWith('/deltanet')
+    ) return true;
+    return false;
+  };
+  const bearerToken = (authorization: string | undefined): string | null => {
+    const match = /^Bearer ([A-Za-z0-9_-]+)$/.exec(authorization ?? '');
+    return match?.[1] ?? null;
+  };
+
+  app.use('*', async (c, next) => {
+    c.header('Vary', 'Origin');
+    const origin = c.req.header('origin');
+    const trustedOrigin = origin !== undefined && trustedOrigins.has(origin);
+    const path = new URL(c.req.url).pathname;
+    const method = c.req.method.toUpperCase();
+    if (path === '/api/v1/apps' || path.startsWith('/oauth/')) {
+      c.header('Cache-Control', 'no-store');
+      c.header('Pragma', 'no-cache');
+    }
+    const publicBrowserBoundary =
+      isStreamingPath(path) ||
+      path.startsWith('/oauth') ||
+      path === '/api/v1/apps' ||
+      path === '/api/deltanet/status' ||
+      path === '/api/deltanet/signup' ||
+      path === '/api/deltanet/restore';
+
+    const setCorsHeaders = () => {
+      if (!trustedOrigin) return;
+      c.header('Access-Control-Allow-Origin', origin);
+      c.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+      c.header('Access-Control-Allow-Headers', 'Authorization, Content-Type, Idempotency-Key');
+      c.header('Access-Control-Expose-Headers', 'Content-Disposition');
+    };
+    setCorsHeaders();
+
+    if (
+      enabledSecurity &&
+      origin &&
+      !trustedOrigin &&
+      (method === 'OPTIONS' || !['GET', 'HEAD'].includes(method) || publicBrowserBoundary)
+    ) {
+      return c.json({ error: 'untrusted browser origin' }, 403);
+    }
+
+    if (method === 'OPTIONS') {
+      return c.body(null, 204);
+    }
+
+    if (enabledSecurity) {
+      if (isStreamingPath(path)) {
+        const ticket = c.req.query('ticket') ?? '';
+        const session = enabledSecurity.auth.consumeStreamTicket(ticket);
+        if (!session) return c.json({ error: 'invalid or missing stream ticket' }, 401);
+        c.set('authSession', session);
+      } else if (isAnonymousRequest(method, path)) {
+        const token = bearerToken(c.req.header('authorization'));
+        const session = token ? enabledSecurity.auth.validateAccessToken(token) : null;
+        if (session) c.set('authSession', session);
+      } else {
+        const token = bearerToken(c.req.header('authorization'));
+        const session = token ? enabledSecurity.auth.validateAccessToken(token) : null;
+        if (!session) return c.json({ error: 'invalid or missing bearer token' }, 401);
+        c.set('authSession', session);
+      }
+    }
+
+    await next();
+    setCorsHeaders();
+  });
 
   // --- transport gate: attach the live transport, or 401 if unconfigured ---
 
-  const requireTransport = async (c: Context<TransportEnv>, next: Next) => {
+  const requireTransport = async (c: Context<AppEnv>, next: Next) => {
     const transport = ctx.getTransport();
     if (!transport) return c.json({ error: 'not configured' }, 401);
     c.set('transport', transport);
@@ -729,23 +833,34 @@ export const createApp = (
 
   // --- deltanet: status + signup --------------------------------------------
 
+  let configuring = false;
+
   app.get('/api/deltanet/status', async (c) => {
     const transport = ctx.getTransport();
     if (!transport) return c.json({ configured: false, address: null });
-    const self = await transport.self();
-    return c.json({ configured: true, address: self.address });
+    // Configuration is safe onboarding metadata; the account address itself is
+    // private unless this request already carries a valid session.
+    const session = enabledSecurity ? c.get('authSession') : true;
+    const self = session ? await transport.self() : null;
+    return c.json({ configured: true, address: self?.address ?? null });
   });
 
   app.post('/api/deltanet/signup', async (c) => {
     if (ctx.getTransport()) return c.json({ error: 'already configured' }, 409);
-    const body = await c.req.json<{ display_name?: string; relay?: string }>().catch(() => ({}) as any);
-    const displayName = String(body.display_name ?? '').trim();
-    if (!displayName) {
-      return c.json({ error: "Validation failed: display_name can't be blank" }, 422);
+    if (configuring) return c.json({ error: 'configuration already in progress' }, 409);
+    configuring = true;
+    try {
+      const body = await c.req.json<{ display_name?: string; relay?: string }>().catch(() => ({}) as any);
+      const displayName = String(body.display_name ?? '').trim();
+      if (!displayName) {
+        return c.json({ error: "Validation failed: display_name can't be blank" }, 422);
+      }
+      const relay = body.relay ?? DEFAULT_RELAY;
+      const transport = await ctx.signup(displayName, relay);
+      return c.json({ account: contactToAccount(await transport.self(), baseUrl) });
+    } finally {
+      configuring = false;
     }
-    const relay = body.relay ?? DEFAULT_RELAY;
-    const transport = await ctx.signup(displayName, relay);
-    return c.json({ account: contactToAccount(await transport.self(), baseUrl) });
   });
 
   // --- deltanet: backup & restore (see ../meta/issues/backup-second-device.md)
@@ -800,6 +915,9 @@ export const createApp = (
   app.post('/api/deltanet/restore', async (c) => {
     if (ctx.getTransport()) return c.json({ error: 'already configured' }, 409);
     if (!ctx.restore) return c.json({ error: 'restore not supported' }, 501);
+    if (configuring) return c.json({ error: 'configuration already in progress' }, 409);
+    configuring = true;
+    try {
     const body = await c.req.parseBody().catch(() => null);
     const file = body?.['file'];
     const passphrase = String(body?.['passphrase'] ?? '');
@@ -867,48 +985,181 @@ export const createApp = (
     } finally {
       rmSync(scratch, { recursive: true, force: true });
     }
+    } finally {
+      configuring = false;
+    }
   });
 
-  // --- OAuth: single-user daemon, auto-granted ---------------------------
+  // --- OAuth: persisted local bearer sessions, auto-granted ---------------
+
+  const oauthScopes = new Set(OAUTH_SCOPE.split(' '));
+  const normalizedScope = (raw: unknown): string | null => {
+    const scopes = [...new Set(String(raw ?? '').trim().split(/\s+/).filter(Boolean))];
+    return scopes.length === oauthScopes.size && scopes.every((scope) => oauthScopes.has(scope))
+      ? OAUTH_SCOPE
+      : null;
+  };
+  const validatedRedirect = (raw: unknown): string | null => {
+    const value = String(raw ?? '').trim();
+    if (!value || /\s/.test(value)) return null;
+    try {
+      const url = new URL(value);
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.hash) return null;
+      return trustedOrigins.has(url.origin) ? url.toString() : null;
+    } catch {
+      return null;
+    }
+  };
 
   app.post('/api/v1/apps', async (c) => {
-    const body = await c.req.parseBody();
-    return c.json({
-      id: '1',
-      name: String(body['client_name'] ?? 'app'),
-      website: null,
-      redirect_uri: String(body['redirect_uris'] ?? ''),
-      client_id: 'deltanet',
-      client_secret: 'deltanet-single-user',
-      vapid_key: '',
-    });
+    if (!enabledSecurity) {
+      const body = await c.req.parseBody();
+      return c.json({
+        id: testOnlyRandomCredential(),
+        name: String(body['client_name'] ?? 'app'),
+        website: null,
+        redirect_uri: String(body['redirect_uris'] ?? ''),
+        client_id: testOnlyRandomCredential(),
+        client_secret: testOnlyRandomCredential(),
+        vapid_key: '',
+      });
+    }
+    const body = await c.req.parseBody().catch(() => null);
+    const name = String(body?.['client_name'] ?? '').trim();
+    const redirectUri = validatedRedirect(body?.['redirect_uris']);
+    const scope = normalizedScope(body?.['scopes'] ?? OAUTH_SCOPE);
+    if (!name || name.length > 200 || !redirectUri || !scope) {
+      return c.json({ error: 'invalid_client_metadata' }, 422);
+    }
+    try {
+      const client = enabledSecurity.auth.registerClient(
+        { name, redirectUri, scope },
+        {
+          enrollmentCode: String(body?.['enrollment_code'] ?? '') || undefined,
+          accessToken: bearerToken(c.req.header('authorization')) ?? undefined,
+        },
+      );
+      return c.json({
+        id: client.clientId,
+        name: client.name,
+        website: null,
+        redirect_uri: client.redirectUri,
+        client_id: client.clientId,
+        client_secret: client.clientSecret,
+        vapid_key: '',
+      });
+    } catch (error) {
+      const authError = error instanceof AuthError ? error : null;
+      if (authError?.code === 'client_limit') return c.json({ error: authError.code }, 429);
+      return c.json({ error: authError?.code ?? 'invalid_enrollment' }, 403);
+    }
   });
 
   app.get('/oauth/authorize', (c) => {
     const redirectUri = c.req.query('redirect_uri');
-    if (!redirectUri) return c.json({ error: 'redirect_uri missing' }, 400);
-    const target = new URL(redirectUri);
-    target.searchParams.set('code', 'deltanet-code');
-    const state = c.req.query('state');
-    if (state) target.searchParams.set('state', state);
-    return c.redirect(target.toString(), 302);
+    if (!enabledSecurity) {
+      if (!redirectUri) return c.json({ error: 'redirect_uri missing' }, 400);
+      const target = new URL(redirectUri);
+      target.searchParams.set('code', testOnlyRandomCredential());
+      const state = c.req.query('state');
+      if (state) target.searchParams.set('state', state);
+      return c.redirect(target.toString(), 302);
+    }
+    if (!ctx.getTransport()) return c.json({ error: 'not configured' }, 409);
+    const clientId = c.req.query('client_id') ?? '';
+    const client = enabledSecurity.auth.client(clientId);
+    const scope = normalizedScope(c.req.query('scope'));
+    if (
+      !client ||
+      c.req.query('response_type') !== 'code' ||
+      !redirectUri ||
+      redirectUri !== client.redirectUri ||
+      !scope
+    ) {
+      return c.json({ error: 'invalid_request' }, 400);
+    }
+    try {
+      const code = enabledSecurity.auth.issueAuthorizationCode({ clientId, redirectUri, scope });
+      const target = new URL(redirectUri);
+      target.searchParams.set('code', code);
+      const state = c.req.query('state');
+      if (state) target.searchParams.set('state', state);
+      return c.redirect(target.toString(), 302);
+    } catch {
+      return c.json({ error: 'invalid_request' }, 400);
+    }
   });
 
-  app.post('/oauth/token', (c) =>
-    c.json({
-      access_token: 'deltanet-token',
-      token_type: 'Bearer',
-      scope: OAUTH_SCOPE,
-      created_at: Math.floor(Date.now() / 1000),
-    }),
-  );
+  app.post('/oauth/token', async (c) => {
+    if (!enabledSecurity) {
+      return c.json({
+        access_token: testOnlyRandomCredential(),
+        token_type: 'Bearer',
+        scope: OAUTH_SCOPE,
+        created_at: Math.floor(Date.now() / 1000),
+      });
+    }
+    const body = await c.req.parseBody().catch(() => null);
+    if (!body || body['grant_type'] !== 'authorization_code') {
+      return c.json({ error: 'unsupported_grant_type' }, 400);
+    }
+    try {
+      const session = enabledSecurity.auth.exchangeAuthorizationCode({
+        clientId: String(body['client_id'] ?? ''),
+        clientSecret: String(body['client_secret'] ?? ''),
+        redirectUri: String(body['redirect_uri'] ?? ''),
+        code: String(body['code'] ?? ''),
+      });
+      return c.json({
+        access_token: session.accessToken,
+        token_type: session.tokenType,
+        scope: session.scope,
+        created_at: Math.floor(session.createdAt / 1000),
+        expires_in: Math.max(0, Math.floor((session.expiresAt - session.createdAt) / 1000)),
+      });
+    } catch (error) {
+      const authError = error instanceof AuthError ? error : null;
+      return c.json(
+        { error: authError?.code ?? 'invalid_grant' },
+        authError?.code === 'invalid_client' ? 401 : 400,
+      );
+    }
+  });
 
-  app.post('/oauth/revoke', (c) => c.json({}));
+  app.post('/oauth/revoke', async (c) => {
+    if (!enabledSecurity) return c.json({});
+    const body = await c.req.parseBody().catch(() => ({} as Record<string, string | File>));
+    const fromBody = String(body['token'] ?? '');
+    const fromHeader = bearerToken(c.req.header('authorization')) ?? '';
+    if (!fromBody || !fromHeader || fromHeader !== fromBody) {
+      return c.json({ error: 'invalid_token' }, 401);
+    }
+    if (!enabledSecurity.auth.revokeClientForAccessToken(fromHeader)) {
+      return c.json({ error: 'invalid_token' }, 401);
+    }
+    const enrollment = enabledSecurity.auth.createEnrollmentCode();
+    console.log(`deltanet: one-time frontend enrollment code (10 minutes): ${enrollment.code}`);
+    return c.json({});
+  });
+
+  app.post('/api/deltanet/streaming/token', (c) => {
+    if (!enabledSecurity) {
+      return c.json({ ticket: testOnlyRandomCredential(), expires_at: Date.now() + 30_000 });
+    }
+    const accessToken = bearerToken(c.req.header('authorization')) ?? '';
+    try {
+      const issued = enabledSecurity.auth.issueStreamTicket(accessToken);
+      c.header('Cache-Control', 'private, no-store');
+      return c.json({ ticket: issued.ticket, expires_at: issued.expiresAt });
+    } catch {
+      return c.json({ error: 'invalid session' }, 401);
+    }
+  });
 
   // --- Streaming (Mastodon websocket API) ----------------------------------
   //
-  // `stream` (default 'user') and `access_token` (accepted unconditionally,
-  // consistent with the single-user auth model — see requireTransport)
+  // `stream` (default 'user') and a one-use short-lived `ticket` consumed by
+  // the global security middleware before this upgrade handler can run
   // match the frontend's `buildPleromaStreamingUrl`
   // (../frontend/src/lib/pleroma/streaming.ts). Registered under both
   // '/api/v1/streaming' and the trailing-slash variant the frontend actually
@@ -923,9 +1174,54 @@ export const createApp = (
     // `StreamingWsContext` (see ./streaming.ts) so it's testable with plain
     // fakes; hono's real `WSContext.raw` is `unknown` (it's generic over the
     // adapter), so this cast is the one place that ties the two together.
-    const streamingHandler = upgradeWebSocket(
-      (c) => createStreamingEvents(hub, c.req.query('stream')) as unknown as WSEvents,
-    );
+    const streamingHandler = upgradeWebSocket((c) => {
+      const events = createStreamingEvents(hub, c.req.query('stream'));
+      if (!enabledSecurity) return events as unknown as WSEvents;
+      const session = c.get('authSession');
+      let expiryTimer: ReturnType<typeof setTimeout> | null = null;
+      let unsubscribeInvalidation: (() => void) | null = null;
+      let terminated = false;
+
+      const clearSessionGuards = () => {
+        if (expiryTimer !== null) clearTimeout(expiryTimer);
+        expiryTimer = null;
+        unsubscribeInvalidation?.();
+        unsubscribeInvalidation = null;
+      };
+
+      return {
+        onOpen(event, ws) {
+          events.onOpen(event, ws as any);
+          const close = (reason: 'session revoked' | 'session expired') => {
+            if (terminated) return;
+            terminated = true;
+            clearSessionGuards();
+            events.onClose(undefined, ws as any);
+            (ws as unknown as { close(code?: number, reason?: string): void }).close(4001, reason);
+          };
+          const scheduleExpiry = () => {
+            const remaining = session.expiresAt - Date.now();
+            if (remaining <= 0) {
+              close('session expired');
+              return;
+            }
+            expiryTimer = setTimeout(scheduleExpiry, Math.min(remaining, 2_147_000_000));
+          };
+          unsubscribeInvalidation = enabledSecurity.auth.onSessionInvalidated((sessionId) => {
+            if (sessionId === session.sessionId) close('session revoked');
+          });
+          scheduleExpiry();
+        },
+        onClose(event, ws) {
+          clearSessionGuards();
+          events.onClose(event, ws as any);
+        },
+        onError(event, ws) {
+          clearSessionGuards();
+          events.onError(event, ws as any);
+        },
+      } as WSEvents;
+    });
     app.get('/api/v1/streaming', streamingHandler);
     app.get('/api/v1/streaming/', streamingHandler);
   }
@@ -1055,6 +1351,97 @@ export const createApp = (
       contact.id,
       store.hasPendingFollowRequest(contact.address),
     );
+
+  const isPublicMessage = (msg: T.Message): boolean => {
+    const parsed = parseWire(msg.text);
+    return (
+      parsed.visibility !== 'private' &&
+      parsed.visibility !== 'direct' &&
+      !(parsed.uuid && (store.isLockedPost(parsed.uuid) || store.isDirectPost(parsed.uuid)))
+    );
+  };
+
+  const publicAccountProjection = (account: MastodonStatus['account']): MastodonStatus['account'] => {
+    const pleroma = account.pleroma as Record<string, unknown>;
+    const deltanet = (pleroma['deltanet'] ?? {}) as Record<string, unknown>;
+    const { relationship: _relationship, ...publicPleroma } = pleroma;
+    const { petname: _petname, ...publicDeltanet } = deltanet;
+    const authName = typeof publicDeltanet['auth_name'] === 'string' && publicDeltanet['auth_name']
+      ? publicDeltanet['auth_name']
+      : account.display_name;
+    return {
+      ...account,
+      display_name: authName,
+      pleroma: { ...publicPleroma, deltanet: publicDeltanet },
+    } as MastodonStatus['account'];
+  };
+
+  const publicStatusProjection = (status: MastodonStatus): MastodonStatus => {
+    return {
+      ...status,
+      account: publicAccountProjection(status.account),
+      in_reply_to_id: null,
+      in_reply_to_account_id: null,
+      favourites_count: 0,
+      reblogs_count: 0,
+      replies_count: 0,
+      favourited: false,
+      reblogged: false,
+      bookmarked: false,
+      muted: false,
+      pinned: false,
+      mentions: [],
+      reblog: status.reblog ? publicStatusProjection(status.reblog) : null,
+      pleroma: {
+        ...status.pleroma,
+        conversation_id: null,
+        emoji_reactions: [],
+        deltanet: undefined,
+      },
+    };
+  };
+
+  const isPublicStatusTree = (status: MastodonStatus): boolean =>
+    status.visibility === 'public' &&
+    (status.reblog === null || isPublicStatusTree(status.reblog));
+
+  const isPublicMessageTree = async (
+    transport: Transport,
+    msg: T.Message,
+    seen = new Set<number>(),
+  ): Promise<boolean> => {
+    if (seen.has(msg.id) || !store.isFeedMessage(msg.id) || !isPublicMessage(msg)) return false;
+    seen.add(msg.id);
+    const parsed = parseWire(msg.text);
+    if (parsed.boostOrig?.visibility === 'private' || parsed.boostOrig?.visibility === 'direct') {
+      return false;
+    }
+    if (!parsed.boost) return true;
+    const targetId = store.resolveKey(parsed.boost.keyString);
+    if (targetId === null) return false;
+    const target = await transport.message(targetId);
+    return target ? isPublicMessageTree(transport, target, seen) : false;
+  };
+
+  const mapPublicMessages = async (
+    transport: Transport,
+    messages: T.Message[],
+  ): Promise<MastodonStatus[]> => {
+    const statuses: MastodonStatus[] = [];
+    for (const msg of messages) {
+      if (!(await isPublicMessageTree(transport, msg))) continue;
+      const status = await toStatus(transport, msg, mediaStore.descriptionForMessage(msg.id));
+      if (isPublicStatusTree(status)) statuses.push(publicStatusProjection(status));
+    }
+    return statuses;
+  };
+
+  const hasPublicMessage = async (transport: Transport, messages: T.Message[]): Promise<boolean> => {
+    for (const message of messages) {
+      if (await isPublicMessageTree(transport, message)) return true;
+    }
+    return false;
+  };
 
   // Leak prevention: revoke a follower from BOTH channels (Mastodon's
   // remove_from_followers). Future delivery only — already-delivered posts
@@ -1189,9 +1576,24 @@ export const createApp = (
   });
 
   app.get('/api/v1/accounts/:id', requireTransport, async (c) => {
-    const contact = await c.get('transport').contact(Number(c.req.param('id')));
+    const transport = c.get('transport');
+    const contactId = Number(c.req.param('id'));
+    const contact = await transport.contact(contactId);
     if (!contact) return c.json({ error: 'Record not found' }, 404);
-    const followedIds = new Set((await followedFeeds(c.get('transport'))).map((f) => f.contactId));
+    const authenticated = !enabledSecurity || Boolean(c.get('authSession'));
+    if (!authenticated && contactId !== DC_CONTACT_ID_SELF) {
+      const publicMessages = await transport.timelineFrom(contactId, { limit: DEFAULT_PAGE });
+      for (const message of publicMessages) await ingest(transport, message, true);
+      if (!(await hasPublicMessage(transport, publicMessages))) return c.json({ error: 'Record not found' }, 404);
+    }
+    if (!authenticated) {
+      return c.json(publicAccountProjection(contactToAccount({
+        ...contact,
+        name: '',
+        displayName: contact.authName || contact.displayName,
+      }, baseUrl)));
+    }
+    const followedIds = new Set((await followedFeeds(transport)).map((f) => f.contactId));
     const relationship = relationshipForContact(contact, followedIds);
     return c.json(contactToAccount(contact, baseUrl, relationship));
   });
@@ -1231,18 +1633,21 @@ export const createApp = (
     const transport = c.get('transport');
     const contactId = Number(c.req.param('id'));
     const limit = intParam(c.req.query('limit')) ?? DEFAULT_PAGE;
-    const messages = (await transport.timelineFrom(contactId, {
+    const publicOnly = Boolean(enabledSecurity) && !c.get('authSession');
+    const outerMessages = await transport.timelineFrom(contactId, {
       limit,
       maxId: intParam(c.req.query('max_id')),
       minId: intParam(c.req.query('min_id')) ?? intParam(c.req.query('since_id')),
-    })).filter((msg) => {
+    });
+    for (const message of outerMessages) await ingest(transport, message, true);
+    const messages = outerMessages.filter((msg) => {
+      if (publicOnly) return isPublicMessage(msg);
       const parsed = parseWire(msg.text);
       return parsed.visibility !== 'direct' && !(parsed.uuid && store.isDirectPost(parsed.uuid));
     });
-    for (const msg of messages) await ingest(transport, msg);
-    const statuses = await Promise.all(
-      messages.map((msg) => toStatus(transport, msg, mediaStore.descriptionForMessage(msg.id))),
-    );
+    const statuses = publicOnly
+      ? await mapPublicMessages(transport, messages)
+      : await Promise.all(messages.map((msg) => toStatus(transport, msg, mediaStore.descriptionForMessage(msg.id))));
     return c.json(statuses);
   });
 
@@ -1278,23 +1683,25 @@ export const createApp = (
     return excluded.size === 0 ? feeds : feeds.filter((f) => !excluded.has(f.chatId));
   };
 
-  const timeline = async (c: Context<TransportEnv>) => {
+  const timeline = async (c: Context<AppEnv>, publicOnly = false) => {
     const transport = c.get('transport');
     const limit = intParam(c.req.query('limit')) ?? DEFAULT_PAGE;
-    const messages = excludeThreadSubscriptionMessages(
+    const outerMessages = excludeThreadSubscriptionMessages(
       await transport.timeline({
         limit,
         maxId: intParam(c.req.query('max_id')),
         minId: intParam(c.req.query('min_id')) ?? intParam(c.req.query('since_id')),
       }),
-    ).filter((msg) => {
+    );
+    for (const message of outerMessages) await ingest(transport, message, true);
+    const messages = outerMessages.filter((msg) => {
+      if (publicOnly) return isPublicMessage(msg);
       const parsed = parseWire(msg.text);
       return parsed.visibility !== 'direct' && !(parsed.uuid && store.isDirectPost(parsed.uuid));
     });
-    for (const msg of messages) await ingest(transport, msg);
-    const statuses: MastodonStatus[] = await Promise.all(
-      messages.map((msg) => toStatus(transport, msg, mediaStore.descriptionForMessage(msg.id))),
-    );
+    const statuses: MastodonStatus[] = publicOnly
+      ? await mapPublicMessages(transport, messages)
+      : await Promise.all(messages.map((msg) => toStatus(transport, msg, mediaStore.descriptionForMessage(msg.id))));
     const link = timelineLinkHeader(
       `${baseUrl}${new URL(c.req.url).pathname}`,
       statuses.map((s) => s.id),
@@ -1303,8 +1710,8 @@ export const createApp = (
     return c.json(statuses);
   };
 
-  app.get('/api/v1/timelines/home', requireTransport, timeline);
-  app.get('/api/v1/timelines/public', requireTransport, timeline);
+  app.get('/api/v1/timelines/home', requireTransport, (c) => timeline(c));
+  app.get('/api/v1/timelines/public', requireTransport, (c) => timeline(c, enabledSecurity !== null));
 
   // --- Statuses -----------------------------------------------------------
 
@@ -1766,7 +2173,7 @@ export const createApp = (
    * delivery), and DMs the author unless the target is our own post.
    */
   const reactToStatus = async (
-    c: Context<TransportEnv>,
+    c: Context<AppEnv>,
     emoji: string,
     action: 'react' | 'unreact',
   ) => {
@@ -2169,11 +2576,24 @@ export const createApp = (
 
   const NEUTRAL_BADGE = { initial: '?', color: '#2a3542' };
 
-  app.get('/deltanet/avatar/:contactId', requireTransport, async (c) => {
+  app.get('/deltanet/avatar/:contactId', async (c) => {
     const contactId = Number(c.req.param('contactId'));
-    const path = await c.get('transport').avatarPath(contactId);
+    const transport = ctx.getTransport();
+    if (enabledSecurity && !c.get('authSession') && contactId !== DC_CONTACT_ID_SELF) {
+      const publicMessages = transport && Number.isInteger(contactId)
+        ? await transport.timelineFrom(contactId, { limit: DEFAULT_PAGE })
+        : [];
+      if (transport) {
+        for (const message of publicMessages) await ingest(transport, message, true);
+      }
+      if (!transport || !(await hasPublicMessage(transport, publicMessages))) {
+        const svg = avatarPlaceholderSvg(NEUTRAL_BADGE.initial, NEUTRAL_BADGE.color);
+        return c.body(svg, 200, { 'Content-Type': 'image/svg+xml' });
+      }
+    }
+    const path = transport ? await transport.avatarPath(contactId) : null;
     if (path) return serveFile(path, c);
-    const badge = (await c.get('transport').contactBadge(contactId)) ?? NEUTRAL_BADGE;
+    const badge = transport ? (await transport.contactBadge(contactId)) ?? NEUTRAL_BADGE : NEUTRAL_BADGE;
     const svg = avatarPlaceholderSvg(badge.initial, badge.color);
     return c.body(svg, 200, { 'Content-Type': 'image/svg+xml' });
   });
@@ -2202,9 +2622,28 @@ export const createApp = (
   // default gradient) so any cached URLs / synthesized accounts keep working.
   app.get('/deltanet/header.png', gradientHeader);
 
-  app.get('/deltanet/blob/:msgId', requireTransport, async (c) =>
-    serveFile(await c.get('transport').blobPath(Number(c.req.param('msgId'))), c),
-  );
+  app.get('/deltanet/blob/:msgId', async (c) => {
+    c.header('Cache-Control', 'private, no-store');
+    const msgId = Number(c.req.param('msgId'));
+    if (enabledSecurity) {
+      const expires = Number(c.req.query('expires'));
+      const signature = c.req.query('signature') ?? '';
+      if (
+        !c.get('authSession') &&
+        !enabledSecurity.auth.verifyBlobSignature(msgId, expires, signature)
+      ) {
+        return c.json({ error: 'invalid or expired blob capability' }, 401);
+      }
+    }
+    const transport = ctx.getTransport();
+    if (!transport) return c.json({ error: 'not configured' }, 401);
+    if (!Number.isInteger(msgId) || msgId <= 0) return c.notFound();
+    const msg = await transport.message(msgId);
+    if (!msg) return c.notFound();
+    const response = await serveFile(await transport.blobPath(msgId), c);
+    response.headers.set('Cache-Control', 'private, no-store');
+    return response;
+  });
 
   // --- Notifications --------------------------------------------------------
 
@@ -2255,3 +2694,9 @@ export const createApp = (
 
   return app;
 };
+
+export type UnsafeTestServerOptions = Omit<ServerOptions, 'security'>;
+
+/** Explicit auth bypass for focused protocol/transport tests. Never use in production. */
+export const createUnsafeTestApp = (ctx: AppContext, options: UnsafeTestServerOptions) =>
+  createApp(ctx, { ...options, security: { unsafeTestOnly: true } });

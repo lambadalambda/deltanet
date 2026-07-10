@@ -1,9 +1,11 @@
-import type { PendingPleromaOAuth, PleromaAuthState, PleromaSession } from './types';
+import { normalizeInstanceUrl } from './http';
+import type { PendingPleromaOAuth, PleromaAuthState, PleromaOAuthClientRegistration, PleromaScope, PleromaSession } from './types';
 
 export type PleromaStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 
 export const PLEROMA_SESSION_KEY = 'deltanet.session';
 export const PLEROMA_PENDING_OAUTH_KEY = 'deltanet.oauth.pending';
+export const PLEROMA_OAUTH_CLIENT_KEY_PREFIX = 'deltanet.oauth.client.';
 export const PENDING_OAUTH_TTL_MS = 10 * 60 * 1000;
 
 export const createMemoryPleromaStorage = (): PleromaStorage => {
@@ -26,6 +28,42 @@ const parseStoredValue = <Value>(storage: PleromaStorage, key: string) => {
 		storage.removeItem(key);
 		return null;
 	}
+};
+
+export const pleromaOAuthClientStorageKey = (instanceUrl: string) =>
+	`${PLEROMA_OAUTH_CLIENT_KEY_PREFIX}${encodeURIComponent(normalizeInstanceUrl(instanceUrl))}`;
+
+export const storePleromaOAuthClient = (
+	storage: PleromaStorage,
+	client: PleromaOAuthClientRegistration
+) => {
+	const normalized = { ...client, instanceUrl: normalizeInstanceUrl(client.instanceUrl) };
+	storage.setItem(pleromaOAuthClientStorageKey(normalized.instanceUrl), JSON.stringify(normalized));
+};
+
+export const readPleromaOAuthClient = (
+	storage: PleromaStorage,
+	input: { instanceUrl: string; redirectUri: string; scopes: readonly PleromaScope[] }
+) => {
+	const instanceUrl = normalizeInstanceUrl(input.instanceUrl);
+	const key = pleromaOAuthClientStorageKey(instanceUrl);
+	const client = parseStoredValue<PleromaOAuthClientRegistration>(storage, key);
+	const valid = client &&
+		client.instanceUrl === instanceUrl &&
+		typeof client.clientId === 'string' && client.clientId.length > 0 &&
+		typeof client.clientSecret === 'string' && client.clientSecret.length > 0 &&
+		client.redirectUri === input.redirectUri &&
+		Array.isArray(client.scopes) &&
+		client.scopes.length === input.scopes.length &&
+		client.scopes.every((scope, index) => scope === input.scopes[index]) &&
+		typeof client.createdAt === 'number';
+	if (valid) return client;
+	if (client) storage.removeItem(key);
+	return null;
+};
+
+export const removePleromaOAuthClient = (storage: PleromaStorage, instanceUrl: string) => {
+	storage.removeItem(pleromaOAuthClientStorageKey(instanceUrl));
 };
 
 export const storePendingOAuth = (storage: PleromaStorage, pending: PendingPleromaOAuth) => {

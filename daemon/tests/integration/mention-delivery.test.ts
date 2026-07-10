@@ -6,7 +6,7 @@ import { type DeltaChatTransport, type IngestPhase } from '../../src/transport/d
 import { openRelayTransport, register } from './relay.js';
 import type { Transport } from '../../src/transport/types.js';
 import { createStore, type Store } from '../../src/store.js';
-import { createApp, type AppContext } from '../../src/server.js';
+import { createUnsafeTestApp, type AppContext } from '../../src/server.js';
 import { deriveOnIngest } from '../../src/ingest.js';
 import { parseWire } from '../../src/wire.js';
 
@@ -61,7 +61,7 @@ describe('mention addressing over the relay', () => {
     refs.b = b;
     transports.push(a, b);
 
-    const aApp = createApp(
+    const aApp = createUnsafeTestApp(
       { getTransport: () => a, signup: async () => { throw new Error('configured'); } },
       { baseUrl: 'http://localhost:4030', store: aStore, dataDir: A_DATA },
     );

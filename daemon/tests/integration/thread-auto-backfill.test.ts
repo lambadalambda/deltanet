@@ -6,7 +6,7 @@ import { type DeltaChatTransport, type IngestPhase } from '../../src/transport/d
 import { openRelayTransport, register } from './relay.js';
 import type { Transport } from '../../src/transport/types.js';
 import { createStore, type Store } from '../../src/store.js';
-import { createApp, type AppContext } from '../../src/server.js';
+import { createUnsafeTestApp, type AppContext } from '../../src/server.js';
 import { deriveOnIngest } from '../../src/ingest.js';
 import { createBackfiller, type Backfiller, type SendRequest } from '../../src/backfill.js';
 import { buildEnvelopeRequest, type EnvelopeRef } from '../../src/envelope.js';
@@ -159,9 +159,9 @@ describe('thread auto-backfill: C heals A\'s half by asking B (no boost)', () =>
     bfRefs.b = createBackfiller({ store: bStore, send: sendFor(() => refs.b), ...noTimer });
     bfRefs.c = createBackfiller({ store: cStore, send: sendFor(() => refs.c), ...noTimer });
 
-    const aApp = createApp(ctxFor(a), { baseUrl: 'http://localhost:4030', store: aStore });
-    const bApp = createApp(ctxFor(b), { baseUrl: 'http://localhost:4031', store: bStore });
-    const cApp = createApp(ctxFor(c), { baseUrl: 'http://localhost:4032', store: cStore });
+    const aApp = createUnsafeTestApp(ctxFor(a), { baseUrl: 'http://localhost:4030', store: aStore });
+    const bApp = createUnsafeTestApp(ctxFor(b), { baseUrl: 'http://localhost:4031', store: bStore });
+    const cApp = createUnsafeTestApp(ctxFor(c), { baseUrl: 'http://localhost:4032', store: cStore });
 
     // --- A and B mutual-follow (invite links both ways) ---
     const aInvite = await a.feedInvite();
@@ -181,7 +181,7 @@ describe('thread auto-backfill: C heals A\'s half by asking B (no boost)', () =>
     await cJoinsB;
 
     // --- Build an alternating thread A <- B <- A <- B (>=4 messages) ---
-    const post = async (app: ReturnType<typeof createApp>, status: string, inReplyToId?: string): Promise<string> => {
+    const post = async (app: ReturnType<typeof createUnsafeTestApp>, status: string, inReplyToId?: string): Promise<string> => {
       const res = await app.request('/api/v1/statuses', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

@@ -6,7 +6,7 @@ const createPendingOAuth = () => ({
 	clientId: 'client-id',
 	clientSecret: 'client-secret',
 	redirectUri: 'http://localhost:4173/auth/callback',
-	scopes: ['read', 'write', 'follow'],
+	scopes: ['read', 'write', 'follow', 'push'],
 	state: 'oauth-state',
 	createdAt: Date.now()
 });
@@ -30,7 +30,7 @@ test('OAuth callback exchanges code and stores token without passwords', async (
 			body: JSON.stringify({
 				access_token: 'access-token',
 				token_type: 'Bearer',
-				scope: 'read write follow',
+				scope: 'read write follow push',
 				created_at: 1700000001
 			})
 		});
@@ -48,6 +48,7 @@ test('OAuth callback exchanges code and stores token without passwords', async (
 	await page.goto('/auth/callback?code=oauth-code&state=oauth-state');
 
 	await expect(page.getByRole('heading', { name: 'Signed in to pleroma.example' })).toBeVisible();
+	await expect(page).toHaveURL('/auth/callback');
 	await expect(page.getByText('DeltaNet stored an OAuth token from your server.')).toBeVisible();
 	await expect(page.getByRole('link', { name: 'Open DeltaNet' })).toHaveAttribute('href', '/app/home');
 	await expect(page.locator('input[type="password"]')).toHaveCount(0);
@@ -67,7 +68,7 @@ test('OAuth callback keeps the token when account enrichment fails', async ({ pa
 			body: JSON.stringify({
 				access_token: 'access-token',
 				token_type: 'Bearer',
-				scope: 'read write follow',
+				scope: 'read write follow push',
 				created_at: 1700000001
 			})
 		});
@@ -96,6 +97,7 @@ test('OAuth callback surfaces cancelled and missing pending states', async ({ pa
 	await page.goto('/auth/callback?error=access_denied&error_description=The+server+declined&state=oauth-state');
 
 	await expect(page.getByRole('heading', { name: 'Authorization was cancelled' })).toBeVisible();
+	await expect(page).toHaveURL('/auth/callback');
 	await expect(page.getByText('The server declined')).toBeVisible();
 	await expect(page.getByRole('link', { name: 'Return to sign in' })).toHaveAttribute('href', '/#oauth');
 	await expect(page.evaluate(() => window.sessionStorage.getItem('deltanet.oauth.pending'))).resolves.toBeNull();

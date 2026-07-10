@@ -6,7 +6,7 @@ import { type DeltaChatTransport, type IngestPhase } from '../../src/transport/d
 import { openRelayTransport, register } from './relay.js';
 import type { Transport } from '../../src/transport/types.js';
 import { createStore, type Store } from '../../src/store.js';
-import { createApp, type AppContext } from '../../src/server.js';
+import { createUnsafeTestApp, type AppContext } from '../../src/server.js';
 import { deriveOnIngest } from '../../src/ingest.js';
 import { parseWire, parseWireUuid } from '../../src/wire.js';
 import { parseEnvelope, envelopeRefKeyString, envelopeRefAddr } from '../../src/envelope.js';
@@ -126,9 +126,9 @@ describe('thread-root ref + cold root DM copy over chatmail', () => {
     refs.c = c;
     transports.push(a, b, c);
 
-    const aApp = createApp(ctxFor(a), { baseUrl: BASE, store: aStore });
-    const bApp = createApp(ctxFor(b), { baseUrl: BASE, store: bStore });
-    const cApp = createApp(ctxFor(c), { baseUrl: BASE, store: cStore });
+    const aApp = createUnsafeTestApp(ctxFor(a), { baseUrl: BASE, store: aStore });
+    const bApp = createUnsafeTestApp(ctxFor(b), { baseUrl: BASE, store: bStore });
+    const cApp = createUnsafeTestApp(ctxFor(c), { baseUrl: BASE, store: cStore });
 
     await a.feedInvite();
     await b.feedInvite();

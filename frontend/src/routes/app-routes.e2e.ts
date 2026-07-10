@@ -343,10 +343,50 @@ test('real app user menu disables profile navigation until token-only sessions h
 	await expect(viewProfile).toBeEnabled();
 });
 
-test('real app user menu opens profile, settings, and signs out', async ({ page }) => {
+test('real app user menu opens profile, settings, and signs out by forgetting this browser', async ({ page }) => {
 	await authenticate(page);
+	await page.addInitScript(() => {
+		const key = `deltanet.oauth.client.${encodeURIComponent('https://pleroma.example')}`;
+		window.localStorage.setItem(key, JSON.stringify({
+			instanceUrl: 'https://pleroma.example',
+			clientId: 'persisted-client',
+			clientSecret: 'persisted-secret',
+			redirectUri: `${window.location.origin}/auth/callback`,
+			scopes: ['read', 'write', 'follow', 'push'],
+			createdAt: Date.now()
+		}));
+	});
 	await mockHomeTimeline(page);
 	await mockProfileRoute(page);
+	await page.route('https://pleroma.example/api/deltanet/streaming/token', async (route) => {
+		await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ticket: 'signout-ticket', expires_at: Date.now() + 30_000 }) });
+	});
+	await page.addInitScript(() => {
+		const testWindow = window as typeof window & { __signoutSockets?: Array<{ closeCalled: boolean }> };
+		testWindow.__signoutSockets = [];
+		const MockWebSocket = function () {
+			const socket = {
+				closeCalled: false,
+				onopen: null,
+				onmessage: null,
+				onerror: null,
+				onclose: null,
+				close() { this.closeCalled = true; }
+			};
+			testWindow.__signoutSockets?.push(socket);
+			return socket;
+		};
+		Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockWebSocket });
+	});
+	let revokedToken = '';
+	let releaseRevoke = () => {};
+	const revokeReleased = new Promise<void>((resolve) => { releaseRevoke = resolve; });
+	await page.route('https://pleroma.example/oauth/revoke', async (route) => {
+		revokedToken = new URLSearchParams(route.request().postData() ?? '').get('token') ?? '';
+		expect(route.request().headers().authorization).toBe('Bearer access-token');
+		await revokeReleased;
+		await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+	});
 	await setViewport(page, 'desktop');
 	await page.goto('/app/home');
 
@@ -359,9 +399,17 @@ test('real app user menu opens profile, settings, and signs out', async ({ page 
 	await expect(page).toHaveURL('/app/settings');
 
 	await page.getByRole('button', { name: 'quiet admin account menu' }).click();
-	await page.getByTestId('user-menu').getByRole('button', { name: 'Sign out' }).click();
+	await expect(page.getByTestId('user-menu')).toContainText('Next sign-in needs a fresh terminal enrollment code.');
+	await page.getByTestId('user-menu').getByRole('button', { name: 'Sign out & forget this browser' }).click();
 	await expect(page).toHaveURL('/');
 	expect(await page.evaluate(() => window.localStorage.getItem('deltanet.session'))).toBeNull();
+	expect(await page.evaluate(() => window.localStorage.getItem(`deltanet.oauth.client.${encodeURIComponent('https://pleroma.example')}`))).toBeNull();
+	await expect.poll(() => revokedToken).toBe('access-token');
+	expect(await page.evaluate(() => {
+		const testWindow = window as typeof window & { __signoutSockets?: Array<{ closeCalled: boolean }> };
+		return testWindow.__signoutSockets?.every((socket) => socket.closeCalled) ?? false;
+	})).toBe(true);
+	releaseRevoke();
 });
 
 test('mobile real app shell opens drawer and details sheet', async ({ page }) => {

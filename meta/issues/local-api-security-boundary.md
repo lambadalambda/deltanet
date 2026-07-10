@@ -25,6 +25,15 @@ streaming routes) and `daemon/src/main.ts` (HTTP server startup).
   compatibility shim with an equivalently protected local sign-in flow.
 - Document token storage, rotation/revocation, and the expected reauthentication
   behavior for existing browser sessions.
+- Persist rebuildable positive feed-message provenance and require it for every
+  locally resolved node in anonymous public status/boost trees.
+- Treat explicit browser signout as client unpairing: revoke the authenticated
+  OAuth client and all of its sessions, codes, and stream tickets, then forget
+  the browser's persisted client registration.
+- Bound authorization-code state to one outstanding code per client and a
+  finite global maximum, and prevent caching of OAuth credentials/codes/tokens.
+- Remove callback credentials from browser history after parsing and document
+  the short residual lifetime of already-issued signed blob capabilities.
 
 ## Acceptance Criteria
 
@@ -38,6 +47,13 @@ streaming routes) and `daemon/src/main.ts` (HTTP server startup).
 - OAuth redirects and token exchanges reject unregistered or invalid values.
 - Daemon unit tests cover public-route exceptions and the private-route auth
   matrix; frontend authentication tests cover the resulting sign-in flow.
+- Anonymous timelines and profiles never project a DM-only local message through
+  a feed boost, while a fully feed-backed public boost remains visible.
+- Successful signout makes retained client credentials unable to authorize or
+  exchange, closes every socket for that client, and requires fresh terminal
+  enrollment on the next browser sign-in.
+- OAuth app/token/code responses are non-cacheable, callback URLs are scrubbed,
+  and authorization-code storage remains bounded under repeated issuance.
 
 ## Notes
 

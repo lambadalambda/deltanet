@@ -6,7 +6,7 @@ import { type DeltaChatTransport, type IngestPhase } from '../../src/transport/d
 import { openRelayTransport, register } from './relay.js';
 import type { Transport } from '../../src/transport/types.js';
 import { createStore, type Store } from '../../src/store.js';
-import { createApp, type AppContext } from '../../src/server.js';
+import { createUnsafeTestApp, type AppContext } from '../../src/server.js';
 import { deriveOnIngest, runFollowbackOnIngest } from '../../src/ingest.js';
 import { createBackfiller, type Backfiller, type SendRequest } from '../../src/backfill.js';
 import { buildEnvelopeRequest, parseEnvelope, type EnvelopeRef } from '../../src/envelope.js';
@@ -110,9 +110,9 @@ describe('key confirmation over the relay', () => {
         throw new Error('already configured');
       },
     });
-    const aApp = createApp(ctxFor(a), { baseUrl: 'http://localhost:4030', store: aStore, dataDir: A_DATA });
-    const bApp = createApp(ctxFor(b), { baseUrl: 'http://localhost:4031', store: bStore, dataDir: B_DATA });
-    const cApp = createApp(ctxFor(c), { baseUrl: 'http://localhost:4032', store: cStore, dataDir: C_DATA });
+    const aApp = createUnsafeTestApp(ctxFor(a), { baseUrl: 'http://localhost:4030', store: aStore, dataDir: A_DATA });
+    const bApp = createUnsafeTestApp(ctxFor(b), { baseUrl: 'http://localhost:4031', store: bStore, dataDir: B_DATA });
+    const cApp = createUnsafeTestApp(ctxFor(c), { baseUrl: 'http://localhost:4032', store: cStore, dataDir: C_DATA });
 
     // A<->B mutual; C follows B only — C NEVER meets A.
     const bJoinsA = a.waitForEvent('SecurejoinInviterProgress', 120_000, (e) => e.progress === 1000);
@@ -125,7 +125,7 @@ describe('key confirmation over the relay', () => {
     await c.follow(await b.feedInvite());
     await cJoinsB;
 
-    const post = async (app: ReturnType<typeof createApp>, status: string, inReplyToId?: string): Promise<string> => {
+    const post = async (app: ReturnType<typeof createUnsafeTestApp>, status: string, inReplyToId?: string): Promise<string> => {
       const res = await app.request('/api/v1/statuses', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

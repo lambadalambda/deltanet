@@ -1,3 +1,20 @@
+## 2026-07-10 - local daemon enrollment and stream tickets
+
+- The landing flow requires the daemon's one-use enrollment code only when this
+  browser has no reusable client registration. OAuth client credentials are
+  persisted per normalized daemon instance and exact callback/full-scope tuple;
+  signup and restore discard stale client state and request the fresh code the
+  daemon prints after account binding.
+- User streams obtain a one-use short-lived ticket over bearer-authenticated REST
+  before constructing the WebSocket URL. Long-lived access tokens are never put
+  in WebSocket query strings, and closing during ticket acquisition aborts the
+  request without opening a late socket.
+- Explicit sign-out closes both stream lifecycles and immediately removes the
+  local session plus the persisted per-instance OAuth client before starting a
+  best-effort client-wide server revoke bounded to two seconds. The menu states
+  that this forgets the browser and the next sign-in needs the daemon's fresh
+  terminal enrollment code. OAuth callback parameters are removed from the
+  address bar/history immediately after parsing.
 
 ## 2026-07-07 — Honest timeline labels: remove Local/Federated tabs (issue 66)
 

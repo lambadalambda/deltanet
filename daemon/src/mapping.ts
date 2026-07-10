@@ -60,7 +60,11 @@ export type StatusMapper = {
  * (per mapper instance) exactly as `server.ts`'s previous inline
  * `ownAddrCache` was.
  */
-export const createStatusMapper = (store: Store, baseUrl: string): StatusMapper => {
+export const createStatusMapper = (
+  store: Store,
+  baseUrl: string,
+  options: { blobUrl?: (msgId: number) => string } = {},
+): StatusMapper => {
   let ownAddrCache: string | null = null;
   // Per-msgId boost-embed verification cache (mapping runs per render, and
   // verification hashes a media file + does ed25519 verify — memoize per boost
@@ -89,6 +93,19 @@ export const createStatusMapper = (store: Store, baseUrl: string): StatusMapper 
   const ownAddr = async (transport: Transport): Promise<string> => {
     if (ownAddrCache === null) ownAddrCache = (await transport.self()).address;
     return ownAddrCache;
+  };
+
+  const withBlobUrls = (status: MastodonStatus): MastodonStatus => {
+    if (!options.blobUrl) return status;
+    return {
+      ...status,
+      media_attachments: status.media_attachments.map((attachment) => ({
+        ...attachment,
+        url: options.blobUrl!(Number(attachment.id)),
+        preview_url: options.blobUrl!(Number(attachment.id)),
+      })),
+      reblog: status.reblog ? withBlobUrls(status.reblog) : null,
+    };
   };
 
   /**
@@ -229,7 +246,7 @@ export const createStatusMapper = (store: Store, baseUrl: string): StatusMapper 
     if (boostEmbed?.kind === 'verified' && mapped.reblog && String(mapped.reblog.id).startsWith('orig-')) {
       mapped.reblog = withUuidTallies(mapped.reblog as MastodonStatus, String(mapped.reblog.id).slice('orig-'.length));
     }
-    return mapped;
+    return withBlobUrls(mapped);
   };
 
   /**
@@ -293,7 +310,7 @@ export const createStatusMapper = (store: Store, baseUrl: string): StatusMapper 
     const threadSubscribed = store.isSubscribedToThread(uuid);
     // Key confirmation: no pin for the author → marked unconfirmed.
     const authorUnconfirmed = store.pinnedKey(held.authorAddr) === null;
-    return withUuidTallies(
+    return withBlobUrls(withUuidTallies(
       heldEnvelopeToStatus(
         held.env,
         held.authorAddr,
@@ -304,7 +321,7 @@ export const createStatusMapper = (store: Store, baseUrl: string): StatusMapper 
         authorUnconfirmed,
       ),
       uuid,
-    );
+    ));
   };
 
   return { resolver, ownAddr, toStatus, heldStatus };

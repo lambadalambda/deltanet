@@ -30,10 +30,72 @@ pnpm run build     # build the frontend
 pnpm start         # daemon on http://localhost:4030, serving the UI
 ```
 
-Open http://localhost:4030, pick a display name on the **Create account**
-tab, and you're federated: you get a fresh address on a chatmail relay and
-your feed's invite link. Share the invite so people can follow you; paste
-someone else's invite into the search box to follow them.
+Open http://localhost:4030 and keep the daemon terminal visible. For an existing
+account, enter the one-time enrollment code printed at startup the first time a
+browser signs in; later sign-ins reuse that browser's persisted OAuth client
+until explicit signout forgets and unpairs it.
+For a new account, pick a display name on the **Create account** tab, then enter
+the fresh enrollment code printed after signup. You get a new chatmail address
+and feed invite. Share the invite so people can follow you; paste someone else's
+invite into the search box to follow them.
+
+## Local API security
+
+The daemon listens on `127.0.0.1` by default and treats localhost as a network
+location, not as authorization. The browser signs in through the local OAuth
+flow and sends an unguessable Bearer session on every private REST request.
+Before opening a WebSocket it exchanges that bearer for a one-use, 30-second
+stream ticket, so the long-lived token never appears in a WebSocket URL. The
+served SPA, onboarding while no account is configured, instance metadata, and
+sanitized public timeline/profile projections are the only anonymous surfaces.
+
+- Initial OAuth client registration requires the single-use enrollment code
+  printed by the daemon (valid for 10 minutes). The SPA persists that client per
+  daemon instance and reuses it; entering a fresh code replaces the registration
+  after an account/auth reset. The local flow accepts only the complete
+  `read write follow push` scope.
+- OAuth client secrets, enrollment codes, authorization codes, access tokens,
+  and stream tickets are generated with 256 bits of randomness. Only hashes of
+  secret values are stored by the daemon.
+- At most one authorization code exists per client, the global code set is
+  bounded, and each code expires after five minutes and is consumed by one exact
+  client/redirect exchange. OAuth app, code, and token responses are explicitly
+  non-cacheable. Sessions expire after 30 days and survive ordinary restarts.
+- **Sign out & forget this browser** closes local streams and immediately removes
+  both the browser session and its persisted OAuth client, then requests
+  client-wide server revocation for at most two seconds. Successful revocation
+  invalidates the client plus all its sessions, codes, and stream tickets, closes
+  every associated live socket, and prints a fresh one-use enrollment code in
+  the daemon terminal. The next sign-in cannot reuse retained client credentials
+  and requires that fresh terminal code.
+- Auth state defaults to `${DELTANET_DATA}.auth.json`. It is atomically replaced
+  and forced to mode `0600`. Deleting it while the daemon is stopped rotates the
+  blob-signing secret and invalidates every browser session and OAuth client.
+- Existing browser storage containing the former fixed `deltanet-token` is not
+  accepted. Those browsers naturally return to sign-in and receive a random
+  session.
+- Every message blob requires either the Bearer header or a short-lived signed
+  URL capability, including public-looking, malformed, and control-message
+  attachments. Signed URLs let normal `<img>` loading work without exposing the
+  bearer. An already-issued capability can remain usable for at most 60 seconds
+  after session/client revocation; blob responses are always `private, no-store`.
+  Sanitized public avatars and headers remain anonymous projections.
+
+CORS echoes only `DELTANET_BASE_URL`'s origin and the comma-separated origins in
+`DELTANET_ALLOWED_ORIGINS`; it never emits `*`. The production SPA needs no
+extra origin because the daemon serves it same-origin. For a separate Vite dev
+server, start the daemon with an explicit origin, for example:
+
+```sh
+env DELTANET_ALLOWED_ORIGINS=http://localhost:5173 pnpm start
+```
+
+Useful environment settings are documented in `daemon/.env.example`. A
+non-loopback `DELTANET_HOSTNAME` is rejected unless
+`DELTANET_ALLOW_NON_LOOPBACK=1` is also set. That opt-in does not add TLS or
+make Bearer tokens safe on an untrusted LAN; use an HTTPS-authenticated reverse
+proxy, set `DELTANET_BASE_URL` to its real origin, and restrict
+`DELTANET_ALLOWED_ORIGINS` when intentionally exposing the listener.
 
 ## Running two nodes locally (testing federation)
 
@@ -66,11 +128,19 @@ Then, in the browser:
 The same works over curl if you prefer scripts:
 
 ```sh
-curl -s localhost:4030/api/deltanet/invite            # get A's invite
+curl -s localhost:4030/api/deltanet/invite \
+     -H "Authorization: Bearer $DELTANET_TOKEN"       # get A's invite
 curl -s -X POST localhost:4031/api/deltanet/follow \
+     -H "Authorization: Bearer $DELTANET_TOKEN" \
      -H 'Content-Type: application/json' \
      -d '{"invite": "<paste it here>"}'               # B follows A
 ```
+
+Private API calls require a session issued by the OAuth sign-in flow; the
+example assumes its raw value is available as `DELTANET_TOKEN`. Tokens are
+shown only once by `/oauth/token` and are otherwise held in that browser
+origin's local storage. Each node port has a separate browser origin, client,
+session, and default auth file, so two local nodes do not collide.
 
 Notes:
 

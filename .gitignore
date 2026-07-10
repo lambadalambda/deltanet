@@ -4,6 +4,9 @@ dist/
 data/
 # chatmail credentials — never commit
 accounts.local.json
+# local OAuth clients, sessions, and signing secret — never commit
+*.auth.json
 .env
 .env.*
+!**/.env.example
 test-results/
