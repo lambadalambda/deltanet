@@ -4,7 +4,6 @@
 - [ ] [Verifiable reaction receipts](issues/reaction-receipts.md)
 - [ ] [Expanding the new-follower backfill (10 → N)](issues/join-backfill-expansion.md)
 - [ ] [Second-device pairing (backup-transfer QR)](issues/second-device-pairing.md)
-- [ ] [Protect persisted account credentials](issues/account-credentials-file-security.md)
 - [ ] [Validate and constrain signup relay requests](issues/signup-relay-validation.md)
 - [ ] [Align pnpm versions across the workspace and CI](issues/pnpm-version-alignment.md)
 - [ ] [Implement persisted bookmarks](issues/bookmarks.md)

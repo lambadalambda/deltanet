@@ -9,6 +9,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateKeyPairSync } from 'node:crypto';
+import { inspect } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { readAccounts, writeAccount } from '../src/config.js';
 import {
@@ -65,6 +66,20 @@ const setup = () => {
 };
 
 describe('sidecar restore journal', () => {
+  it('does not retain credential-bearing malformed JSON in its error or cause graph', () => {
+    writeFileSync(journalPath, '{"previous":{"account":{"password":"journal-secret"}', { mode: 0o600 });
+    let thrown: unknown;
+    try {
+      recoverInterruptedSidecarRestore(journalPath);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect(inspect(thrown, { depth: 10 })).not.toContain('journal-secret');
+    expect((thrown as Error & { cause?: unknown }).cause).toBeUndefined();
+    expect((thrown as Error).stack).not.toContain('journal-secret');
+  });
+
   it('prepares a fresh restore without creating the core data directory', () => {
     const freshStore = createStore(storePath);
     const journal = beginSidecarRestore({

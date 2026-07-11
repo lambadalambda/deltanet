@@ -1,5 +1,33 @@
 # deltanet devlog
 
+## 2026-07-11 - protected account credential persistence
+
+`accounts.local.json` now has credential-specific filesystem defenses in
+addition to the earlier generation/locking work
+(`meta/issues/account-credentials-file-security.md`):
+
+- Missing credential directory components are created and corrected to mode
+  0700 even under a hostile umask. Existing parents may be read-only/shared but
+  must not be group/world-writable; unsafe parents fail closed with a stable,
+  sanitized diagnostic.
+- Existing credential files are opened once with `O_NOFOLLOW` on POSIX. File
+  type, mode correction to 0600, ownership capture, and reading use that same
+  descriptor (`fstat`/`fchmod`), rejecting live and dangling symlinks without a
+  pathname-following chmod/read race.
+- Atomic replacement applies preserved UID/GID and exact 0600 mode to the
+  exclusive temporary descriptor before writing, fsyncing, closing, and
+  renaming. There is no post-rename pathname chmod. Unrelated account entries
+  remain protected by the immutable-ticket interprocess lock and read-modify-
+  write transaction.
+- Account parse/read/write failures expose only path, operation, and stable
+  reason codes. Raw JSON parser causes are discarded, including for restore
+  journals that contain credential snapshots, so recursive error inspection and
+  stacks cannot retain passwords.
+- Tests cover restrictive creation, hostile umask, broad-mode correction,
+  ownership forwarding/preservation, writable-parent rejection, live/dangling
+  symlinks, non-files, pre-rename failure cleanup, complete-old-file retention,
+  and account/journal error-graph redaction.
+
 ## 2026-07-11 - honest frontend-daemon capability contract
 
 The bundled UI now derives mutable feature availability from

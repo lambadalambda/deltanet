@@ -80,8 +80,8 @@ const readJournal = (path: string): RestoreJournal => {
   let parsed: unknown;
   try {
     parsed = JSON.parse(readOptionalText(path) ?? 'null');
-  } catch (cause) {
-    throw new Error(`malformed restore journal: ${path}`, { cause });
+  } catch {
+    throw new Error(`malformed restore journal: ${path}`);
   }
   const value = parsed as Partial<RestoreJournal> | null;
   if (

@@ -48,3 +48,4 @@
 - [x] [Make persistent store writes atomic and corruption-safe](issues/atomic-store-persistence.md)
 - [x] [Enforce media and backup resource limits](issues/media-backup-resource-limits.md)
 - [x] [Align exposed frontend controls with daemon capabilities](issues/frontend-daemon-capability-contract.md)
+- [x] [Protect persisted account credentials](issues/account-credentials-file-security.md)

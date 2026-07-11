@@ -2,7 +2,9 @@ import { randomUUID } from 'node:crypto';
 import {
   chmodSync,
   closeSync,
+  fchmodSync,
   fsyncSync,
+  fchownSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -47,7 +49,14 @@ export const syncDirectory = (path: string): void => {
   if (failure) throw failure;
 };
 
-export const atomicWriteText = (path: string, contents: string, mode = 0o600): void => {
+export type FileOwner = { uid: number; gid: number };
+
+export const atomicWriteText = (
+  path: string,
+  contents: string,
+  mode = 0o600,
+  owner?: FileOwner,
+): void => {
   const parent = dirname(path);
   const existed = pathExists(parent);
   if (!existed) {
@@ -59,20 +68,30 @@ export const atomicWriteText = (path: string, contents: string, mode = 0o600): v
       if (next === cursor) break;
       cursor = next;
     }
-    mkdirSync(parent, { recursive: true, mode: 0o700 });
-    for (const created of missing.reverse()) syncDirectory(dirname(created));
+    for (const created of missing.reverse()) {
+      try {
+        mkdirSync(created, { mode: 0o700 });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      }
+      if (process.platform !== 'win32') chmodSync(created, 0o700);
+      syncDirectory(dirname(created));
+    }
   }
   const temporary = join(parent, `.${basename(path)}.tmp-${process.pid}-${randomUUID()}`);
   let fd: number | null = null;
   const failures: unknown[] = [];
   try {
     fd = openSync(temporary, 'wx', mode);
+    if (owner) fchownSync(fd, owner.uid, owner.gid);
+    // Normal umasks do not remove owner read/write bits. Correct explicitly
+    // when ownership changed or a hostile umask narrowed the requested mode.
+    if (owner || (process.umask() & mode) !== 0) fchmodSync(fd, mode);
     writeFileSync(fd, contents, 'utf8');
     fsyncSync(fd);
     closeSync(fd);
     fd = null;
     renameSync(temporary, path);
-    chmodSync(path, mode);
     syncDirectory(parent);
   } catch (error) {
     failures.push(error);
