@@ -22,13 +22,24 @@ any email / chatmail relay
 
 ## Quick start
 
-Requirements: [mise](https://mise.jdx.dev) (or node 24+ and pnpm yourself).
+Requirements: [mise](https://mise.jdx.dev), which pins Node 24 and pnpm 11.5.2.
+If managing tools yourself, use Node `>=24 <25` and exactly pnpm `11.5.2` to
+match package metadata and CI.
 
 ```sh
-pnpm run setup     # install daemon + frontend deps
-pnpm run build     # build the frontend
-pnpm start         # daemon on http://localhost:4030, serving the UI
+mise install
+mise run setup     # install daemon + frontend deps
+mise run build     # build the frontend
+mise exec -- pnpm start  # daemon on http://localhost:4030, serving the UI
 ```
+
+The daemon and frontend intentionally keep separate dependency lockfiles because
+they are installed and released as separate packages. The empty root importer
+lockfile is also intentional: pnpm's root script lifecycle maintains it even
+though dependencies are installed only in the two packages. Root scripts invoke
+each package with the same pinned pnpm version; run them through
+`mise exec -- pnpm`, or use the equivalent root tasks (`mise run setup`,
+`check`, `test`, and `build`).
 
 Open http://localhost:4030 and keep the daemon terminal visible. For an existing
 account, enter the one-time enrollment code printed at startup the first time a
@@ -87,7 +98,7 @@ extra origin because the daemon serves it same-origin. For a separate Vite dev
 server, start the daemon with an explicit origin, for example:
 
 ```sh
-env DELTANET_ALLOWED_ORIGINS=http://localhost:5173 pnpm start
+env DELTANET_ALLOWED_ORIGINS=http://localhost:5173 mise exec -- pnpm start
 ```
 
 Useful environment settings are documented in `daemon/.env.example`. A
@@ -114,10 +125,10 @@ name + a data directory. From `daemon/`:
 
 ```sh
 # node A on :4030 (also serves the web UI)
-pnpm start
+mise exec -- pnpm start
 
 # node B on :4031, in a second terminal
-env PORT=4031 DELTANET_ACCOUNT=second DELTANET_DATA=data/second pnpm start
+env PORT=4031 DELTANET_ACCOUNT=second DELTANET_DATA=data/second mise exec -- pnpm start
 ```
 
 Then, in the browser:
@@ -158,7 +169,7 @@ Notes:
   federation still goes through real SMTP/IMAP, so this is a genuine
   end-to-end test, not a loopback shortcut. Use different relays per node
   to test cross-relay federation.
-- `daemon/pnpm test:integration` does an automated version of this
+- `mise exec -- pnpm -C daemon test:integration` does an automated version of this
   (register two throwaway accounts, follow, post, assert delivery,
   unfollow/refollow) — a good smoke test after changes. Integration tests
   always use their own `data/int-*` dirs and fresh accounts; never point
@@ -190,7 +201,7 @@ is authenticated) without touching the node.
 
 ## Testing against a local relay
 
-By default `pnpm -C daemon test:integration` provisions its own **ephemeral
+By default `mise exec -- pnpm -C daemon test:integration` provisions its own **ephemeral
 chatmail relay in a podman container** and runs the whole suite against it —
 no accounts are created on the public `nine.testrun.org`, and the run needs
 no external network once the image is built.
@@ -240,7 +251,7 @@ set of checks, in three jobs:
 
 - `daemon/` — TypeScript daemon: Mastodon client API in front,
   `deltachat-rpc-server` behind. Unit tests (vitest) + a real-network
-  federation integration test (`pnpm test:integration`).
+  federation integration test (`mise exec -- pnpm test:integration` from `daemon/`).
 - `frontend/` — DeltaNet web UI, a fork of
   PleromaNet (a SvelteKit Pleroma frontend) reworked for invite-based
   federation and daemon sign-up. Playwright tests.

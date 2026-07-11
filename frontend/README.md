@@ -21,7 +21,7 @@ This repository contains a SvelteKit TypeScript SPA/static frontend without SSR,
 ## Development Principles
 
 - TDD first: red, green, refactor.
-- `pnpm` is the package manager, with tool versions managed by mise.
+- pnpm 11.5.2 is the package manager, with Node 24 and tool versions managed by mise.
 - TypeScript is the application language.
 - SvelteKit is the application framework, configured as an SPA/static frontend without SSR.
 - Svelte 5 only, using current patterns and no legacy usage.
@@ -34,16 +34,16 @@ This repository contains a SvelteKit TypeScript SPA/static frontend without SSR,
 Install dependencies:
 
 ```sh
-pnpm install
+mise exec -- pnpm install
 ```
 
 Start a development server:
 
 ```sh
-pnpm dev
+mise exec -- pnpm dev
 
 # or start the server and open the app in a new browser tab
-pnpm dev -- --open
+mise exec -- pnpm dev -- --open
 ```
 
 ## Testing
@@ -51,13 +51,13 @@ pnpm dev -- --open
 Default tests are Playwright headless browser tests with mocked/local data only. They do not require Docker or a live Pleroma instance.
 
 ```sh
-pnpm test
+mise exec -- pnpm test
 ```
 
 Run type checks:
 
 ```sh
-pnpm check
+mise exec -- pnpm check
 ```
 
 Equivalent mise tasks are available:
@@ -81,13 +81,13 @@ See `docs/integration.md` for backend version, debugging, and cleanup details.
 To create a production version of your app:
 
 ```sh
-pnpm build
+mise exec -- pnpm build
 ```
 
 Preview the production build:
 
 ```sh
-pnpm preview
+mise exec -- pnpm preview
 ```
 
 ## API Reference

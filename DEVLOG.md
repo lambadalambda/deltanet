@@ -1,5 +1,27 @@
 # deltanet devlog
 
+## 2026-07-11 - unified Node and pnpm toolchain
+
+Root orchestration, both packages, local mise, and all CI jobs now select Node
+24 and exact pnpm 11.5.2 (`meta/issues/pnpm-version-alignment.md`):
+
+- Root, daemon, and frontend package metadata agree on the runtime and package
+  manager policy. Root scripts use `pnpm --dir` so one pinned executable drives
+  both package-local installs and commands.
+- The root and frontend mise configurations agree exactly. The root adds setup,
+  check, test, and build tasks, and user-facing documentation uses mise tasks or
+  `mise exec -- pnpm` rather than assuming an ambient executable.
+- Three lockfiles are intentional: the daemon and frontend own independent
+  dependency graphs, while pnpm's root script lifecycle maintains an empty root
+  importer. Frozen installation succeeds for all three without lockfile drift.
+- Daemon Node typings now target Node 24 too. A pnpm 11 workspace-level override
+  keeps transitive `@types/ws` on the same major; no Node 26 types remain in the
+  daemon lockfile.
+- All three GitHub Actions jobs install pnpm 11.5.2 and Node 24. Local
+  verification under Node 24.18.0/pnpm 11.5.2 passed root `setup`, `check`,
+  `build`, and `test` (1,501 daemon tests and 350 frontend Playwright tests).
+  Two independent reviews approved the final policy with no findings.
+
 ## 2026-07-11 - constrained signup relay registration
 
 Signup no longer turns its caller-provided relay field into an arbitrary

@@ -3,13 +3,18 @@
   "version": "0.0.1",
   "description": "Single-user social network federating over encrypted email (chatmail) — daemon + web frontend",
   "private": true,
+  "packageManager": "pnpm@11.5.2",
+  "engines": {
+    "node": ">=24 <25",
+    "pnpm": "11.5.2"
+  },
   "scripts": {
-    "setup": "cd daemon && pnpm install && cd ../frontend && mise exec -- pnpm install",
-    "build": "cd frontend && mise exec -- pnpm build",
-    "start": "cd daemon && pnpm start",
-    "dev:daemon": "cd daemon && pnpm dev",
-    "dev:frontend": "cd frontend && mise exec -- pnpm dev",
-    "test": "cd daemon && pnpm test && cd ../frontend && mise exec -- pnpm test",
-    "check": "cd daemon && pnpm check && cd ../frontend && mise exec -- pnpm check"
+    "setup": "pnpm --dir daemon install && pnpm --dir frontend install",
+    "build": "pnpm --dir frontend build",
+    "start": "pnpm --dir daemon start",
+    "dev:daemon": "pnpm --dir daemon dev",
+    "dev:frontend": "pnpm --dir frontend dev",
+    "test": "pnpm --dir daemon test && pnpm --dir frontend test",
+    "check": "pnpm --dir daemon check && pnpm --dir frontend check"
   }
 }

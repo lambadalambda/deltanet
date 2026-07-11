@@ -1,0 +1,19 @@
+[tools]
+node = "24"
+pnpm = "11.5.2"
+
+[tasks.setup]
+description = "Install daemon and frontend dependencies"
+run = "pnpm setup"
+
+[tasks.check]
+description = "Run daemon and frontend type checks"
+run = "pnpm check"
+
+[tasks.test]
+description = "Run daemon and frontend tests"
+run = "pnpm test"
+
+[tasks.build]
+description = "Build the frontend"
+run = "pnpm build"

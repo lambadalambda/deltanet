@@ -4,6 +4,10 @@
   "description": "A single-user Pleroma-style backend that federates over chatmail (Delta Chat transport) instead of ActivityPub",
   "type": "module",
   "private": true,
+  "engines": {
+    "node": ">=24 <25",
+    "pnpm": "11.5.2"
+  },
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "start": "tsx src/main.ts",
@@ -25,7 +29,7 @@
     "ws": "^8.21.0"
   },
   "devDependencies": {
-    "@types/node": "^26.1.0",
+    "@types/node": "^24.12.4",
     "@types/ws": "^8.18.1",
     "tsx": "^4.23.0",
     "typescript": "^6.0.3",

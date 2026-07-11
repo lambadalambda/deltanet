@@ -50,3 +50,4 @@
 - [x] [Align exposed frontend controls with daemon capabilities](issues/frontend-daemon-capability-contract.md)
 - [x] [Protect persisted account credentials](issues/account-credentials-file-security.md)
 - [x] [Validate and constrain signup relay requests](issues/signup-relay-validation.md)
+- [x] [Align pnpm versions across the workspace and CI](issues/pnpm-version-alignment.md)

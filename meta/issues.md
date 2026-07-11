@@ -4,7 +4,6 @@
 - [ ] [Verifiable reaction receipts](issues/reaction-receipts.md)
 - [ ] [Expanding the new-follower backfill (10 → N)](issues/join-backfill-expansion.md)
 - [ ] [Second-device pairing (backup-transfer QR)](issues/second-device-pairing.md)
-- [ ] [Align pnpm versions across the workspace and CI](issues/pnpm-version-alignment.md)
 - [ ] [Implement persisted bookmarks](issues/bookmarks.md)
 - [ ] [Implement federated status deletion](issues/status-deletion.md)
 - [ ] [Implement account mute and block](issues/account-moderation.md)
