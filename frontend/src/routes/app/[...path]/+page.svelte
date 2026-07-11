@@ -366,8 +366,23 @@
 		}
 	};
 	const accountStat = (value: number | null | undefined) => accountStatFormatter.format(Math.max(0, value ?? 0));
-	const clearInlineReply = (route?: StatusActionOrigin) => {
+	const discardUploadedMedia = (upload: ComposerUpload | undefined) => {
+		const session = currentSession;
+		if (!session || upload?.status !== 'uploaded' || !upload.media.id) return;
+		const client = createPleromaClient({ instanceUrl: session.instanceUrl, accessToken: session.accessToken, fetch: window.fetch.bind(window) });
+		void client.deleteMedia(String(upload.media.id)).catch(() => undefined);
+	};
+	const discardUploads = (uploads: ComposerUpload[]) => {
+		for (const upload of uploads) discardUploadedMedia(upload);
+	};
+	const markUploadsConsumed = (uploads: ComposerUpload[]): ComposerUpload[] => uploads.map((upload) =>
+		upload.status === 'uploaded'
+			? { localId: upload.localId, name: upload.name, kind: upload.kind, progress: 0, status: 'error', error: 'Upload was consumed by the failed post. Attach it again.' }
+			: upload
+	);
+	const clearInlineReply = (route?: StatusActionOrigin, discardMedia = true) => {
 		if (route && inlineReplyTarget?.route !== route) return;
+		if (discardMedia) discardUploads(untrack(() => inlineReplyUploads));
 		inlineReplyRequestId += 1;
 		inlineReplyTarget = null;
 		inlineReplyDraft = '';
@@ -408,6 +423,7 @@
 		homePostSubmitState = 'idle';
 		homePostSubmitError = null;
 		clearInlineReply('home');
+		discardUploads(untrack(() => composerUploads));
 		composerUploads = [];
 		composerDragActive = false;
 		composerDragDepth = 0;
@@ -1611,7 +1627,7 @@
 		for (const file of incoming) {
 			if (!isComposerUploadType(file)) rejected.push(composerUploadError(file, `Could not attach ${file.name} · only photos, audio, and video.`));
 			else if (file.size > COMPOSER_MAX_UPLOAD_BYTES) rejected.push(composerUploadError(file, `Could not attach ${file.name} · 40 MB limit per file.`));
-			else if (accepted.length >= slots) rejected.push(composerUploadError(file, `Could not attach ${file.name} · 8 file limit.`));
+			else if (accepted.length >= slots) rejected.push(composerUploadError(file, `Could not attach ${file.name} · ${COMPOSER_MAX_UPLOADS} file limit.`));
 			else accepted.push(file);
 		}
 		if (rejected.length > 0) updateUploads((current) => [...current, ...rejected]);
@@ -1631,8 +1647,17 @@
 				try {
 					const client = createPleromaClient({ instanceUrl: session.instanceUrl, accessToken: session.accessToken, fetch: window.fetch.bind(window) });
 					const media = await client.uploadMedia(file);
-					if (!isCurrentSessionRequest(requestSessionKey) || !isStillCurrent()) return;
-					updateUploads((current) => current.map((upload) => upload.localId === localId ? { localId: upload.localId, name: upload.name, kind: upload.kind, progress: 100, status: 'uploaded', media } : upload));
+					if (!isCurrentSessionRequest(requestSessionKey) || !isStillCurrent()) {
+						await client.deleteMedia(String(media.id)).catch(() => undefined);
+						return;
+					}
+					let retained = false;
+					updateUploads((current) => current.map((upload) => {
+						if (upload.localId !== localId) return upload;
+						retained = true;
+						return { localId: upload.localId, name: upload.name, kind: upload.kind, progress: 100, status: 'uploaded', media };
+					}));
+					if (!retained) await client.deleteMedia(String(media.id)).catch(() => undefined);
 				} catch (error) {
 					if (!isCurrentSessionRequest(requestSessionKey) || !isStillCurrent()) return;
 					const normalized = normalizePleromaRequestError(error);
@@ -1655,9 +1680,11 @@
 		queueUploadFiles(files, inlineReplyUploads, updateInlineReplyUploads, () => inlineReplyRequestId === targetRequestId && inlineReplyTarget?.targetId === target.targetId && inlineReplyTarget?.route === target.route);
 	};
 	const removeComposerUpload = (localId: string) => {
+		discardUploadedMedia(composerUploads.find((upload) => upload.localId === localId));
 		composerUploads = composerUploads.filter((upload) => upload.localId !== localId);
 	};
 	const removeInlineReplyUpload = (localId: string) => {
+		discardUploadedMedia(inlineReplyUploads.find((upload) => upload.localId === localId));
 		inlineReplyUploads = inlineReplyUploads.filter((upload) => upload.localId !== localId);
 	};
 	const saveUploadAltText = (getUploads: () => ComposerUpload[], updateUploads: (updater: (uploads: ComposerUpload[]) => ComposerUpload[]) => void, localId: string, description: string) => {
@@ -1798,6 +1825,8 @@
 				return;
 			}
 
+			discardUploads(composerUploads);
+			composerUploads = markUploadsConsumed(composerUploads);
 			homePostSubmitError = normalized;
 			homePostSubmitState = 'idle';
 		}
@@ -1899,6 +1928,7 @@
 		}
 
 		inlineReplyRequestId += 1;
+		discardUploads(inlineReplyUploads);
 		inlineReplyTarget = nextTarget;
 		inlineReplySubmitState = 'idle';
 		inlineReplySubmitError = null;
@@ -1956,7 +1986,7 @@
 			upsertAccountCache(accountsFromPleromaStatus(status));
 			applyReplyCountUpdate(target.targetId);
 			if (target.route === 'thread') insertThreadReply(target.targetId, status);
-			clearInlineReply();
+			clearInlineReply(undefined, false);
 		} catch (error) {
 			if (requestId !== inlineReplyRequestId || !isCurrentSessionRequest(requestSessionKey)) return;
 
@@ -1967,6 +1997,8 @@
 				return;
 			}
 
+			discardUploads(inlineReplyUploads);
+			inlineReplyUploads = markUploadsConsumed(inlineReplyUploads);
 			inlineReplySubmitError = normalized;
 			inlineReplySubmitState = 'idle';
 		}
@@ -4467,7 +4499,7 @@
 										<Icon name="upload" width={22} height={22} />
 										<div class="composer-dropzone-h">Drop to attach</div>
 										<div class="composer-dropzone-s">photos · audio · video</div>
-										<div class="composer-dropzone-meta">Max 8 files · 40 MB each</div>
+										<div class="composer-dropzone-meta">Max {COMPOSER_MAX_UPLOADS} file · 40 MB</div>
 									</div>
 								</div>
 							{/if}

@@ -168,6 +168,17 @@ test('Pleroma client sends media ids on status creation', async () => {
 	expect(requests[0].body).toContain('media_ids%5B%5D=media-2');
 });
 
+test('Pleroma client explicitly discards staged media', async () => {
+	const { fetchImpl, requests } = createJsonFetch(() => ({ body: null }));
+	const client = createPleromaClient({ instanceUrl: 'https://pleroma.example', accessToken: 'access-token', fetch: fetchImpl });
+
+	await client.deleteMedia('media staged/1');
+
+	expect(requests).toHaveLength(1);
+	expect(requests[0].method).toBe('DELETE');
+	expectPath(requests[0], '/api/v1/media/media%20staged%2F1');
+});
+
 test('Pleroma client converts timeline Link headers into cursor data', async () => {
 	const cursors = parseTimelinePaginationLinkHeader(
 		'<https://pleroma.example/api/v1/timelines/home?max_id=status-2>; rel="next", <https://pleroma.example/api/v1/timelines/home?min_id=status-9>; rel="prev"'

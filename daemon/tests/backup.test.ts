@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   BACKUP_MAGIC,
   BackupDecodeError,
+  BackupSizeError,
   backupFilename,
   decodeBackupContainer,
   encodeBackupContainer,
@@ -82,6 +83,26 @@ describe('backup container', () => {
       'pw',
     );
     expect(decodeBackupContainer(container, 'pw').coreTar.length).toBe(0);
+  });
+
+  it('rejects oversized containers, sidecars, and core sections before use', () => {
+    const container = encodeBackupContainer({ sidecar: SIDECAR, coreTar: CORE_TAR }, 'pw');
+    const blockLength = container.readUInt32BE(BACKUP_MAGIC.length);
+
+    expect(() => decodeBackupContainer(container, 'pw', {
+      maxContainerBytes: container.length - 1,
+    })).toThrow(BackupSizeError);
+    expect(() => decodeBackupContainer(container, 'pw', {
+      maxSidecarBytes: blockLength - 1,
+    })).toThrow(BackupSizeError);
+    expect(() => decodeBackupContainer(container, 'pw', {
+      maxCoreBytes: CORE_TAR.length - 1,
+    })).toThrow(BackupSizeError);
+  });
+
+  it('rejects authenticated sidecars with an invalid runtime shape', () => {
+    const container = encodeBackupContainer({ sidecar: null as unknown as BackupSidecar, coreTar: CORE_TAR }, 'pw');
+    expect(() => decodeBackupContainer(container, 'pw')).toThrow(/malformed backup sidecar/);
   });
 });
 

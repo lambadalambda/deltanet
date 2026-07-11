@@ -1,8 +1,10 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { createReadStream, createWriteStream, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { chmod, mkdir, rename, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { Hono, type Context, type Next } from 'hono';
 import { serveStatic } from '@hono/node-server/serve-static';
 import type { UpgradeWebSocket, WSEvents } from 'hono/ws';
@@ -17,7 +19,14 @@ import {
   type MastodonStatus,
 } from './mastodon/entities.js';
 import type { OwnChannel, Transport } from './transport/types.js';
-import { createMediaStore, isSupportedImageMime } from './media.js';
+import {
+  createMediaStore,
+  isSupportedImageMime,
+  MediaCapacityError,
+  MediaDescriptionTooLargeError,
+  MediaTooLargeError,
+  type MediaRecord,
+} from './media.js';
 import { parseCanonicalMid, type RefToken } from './protocol.js';
 import {
   buildBoostObject,
@@ -44,9 +53,12 @@ import { openAttestor, sha256File } from './attest.js';
 import { parseBodyMentions, rankedContactMatches, rankedContactSearch } from './mentions.js';
 import {
   BackupDecodeError,
+  BackupSizeError,
+  BACKUP_MAGIC,
+  backupPrefixLength,
   backupFilename,
-  decodeBackupContainer,
-  encodeBackupContainer,
+  decodeBackupPrefix,
+  encodeBackupPrefix,
   type BackupSidecar,
 } from './backup.js';
 import {
@@ -70,6 +82,13 @@ import {
 } from './attest.js';
 import { readOptionalText } from './durable-file.js';
 import type { PreparedRestore } from './restore-lifecycle.js';
+import {
+  formatByteLimit,
+  requestBodyLimitFor,
+  resolveResourceLimits,
+  type ResourceLimits,
+} from './resource-limits.js';
+import { createResourceBudget } from './resource-budget.js';
 
 const DC_CONTACT_ID_SELF = 1;
 const FAVOURITE_EMOJI = '❤';
@@ -118,6 +137,10 @@ export type ServerOptions = {
   dataDir?: string;
   /** Production restore journal location and optional credential file transaction participant. */
   restoreJournal?: { path: string; accountsPath?: string; accountName?: string };
+  /** Resource caps are injectable at small values for deterministic boundary tests. */
+  resourceLimits?: Partial<ResourceLimits>;
+  /** Staged-upload directory override for tests and managed deployments. */
+  mediaUploadDir?: string;
 };
 
 /**
@@ -187,6 +210,22 @@ const contentTypeForPath = (path: string): string => {
   return IMAGE_MIME_BY_EXT[ext] ?? 'application/octet-stream';
 };
 
+const prefixedFileStream = (
+  prefix: Buffer,
+  path: string,
+  cleanup: () => void,
+): ReadableStream<Uint8Array> => {
+  const source = Readable.from((async function* () {
+    try {
+      yield prefix;
+      for await (const chunk of createReadStream(path)) yield chunk;
+    } finally {
+      cleanup();
+    }
+  })());
+  return Readable.toWeb(source) as ReadableStream<Uint8Array>;
+};
+
 export const createApp = (
   ctx: AppContext,
   {
@@ -197,12 +236,24 @@ export const createApp = (
     hub,
     dataDir,
     restoreJournal,
+    resourceLimits,
+    mediaUploadDir,
     security,
   }: ServerOptions,
 ) => {
   const enabledSecurity = 'auth' in security ? security : null;
   const app = new Hono<AppEnv>();
-  const mediaStore = createMediaStore();
+  const limits = resolveResourceLimits(resourceLimits);
+  const requestBudget = createResourceBudget(limits.maxInFlightRequestBytes);
+  let readingRestoreBody = false;
+  const mediaStore = createMediaStore({
+    uploadDir: mediaUploadDir,
+    maxFileBytes: limits.maxMediaBytes,
+    maxRecords: limits.maxStagedMedia,
+    maxMessageDescriptions: limits.maxMessageDescriptions,
+    maxDescriptionBytes: limits.maxMediaDescriptionBytes,
+    ttlMs: limits.mediaTtlMs,
+  });
   const store: Store = injectedStore ?? createStore(ephemeralStorePath());
   // Where profile-editing persists the uploaded avatar + SELF header banner.
   // Falls back to a per-process scratch dir so tests need no real data dir.
@@ -457,11 +508,19 @@ export const createApp = (
    * enough for DC to import it, and — since we keep it — remains a stable
    * on-disk artifact independent of DC's blob store.
    */
-  const persistProfileImage = async (file: File, name: 'avatar'): Promise<string> => {
-    await mkdir(profileDir, { recursive: true });
-    const path = join(profileDir, `${name}${imageExt(file.type)}`);
-    await writeFile(path, new Uint8Array(await file.arrayBuffer()));
-    return path;
+  const stageProfileImage = async (file: File, targetPath: string): Promise<string> => {
+    await mkdir(profileDir, { recursive: true, mode: 0o700 });
+    const temporary = `${targetPath}.tmp-${randomUUID()}`;
+    try {
+      await pipeline(
+        Readable.fromWeb(file.stream() as globalThis.ReadableStream<Uint8Array>),
+        createWriteStream(temporary, { flags: 'wx', mode: 0o600 }),
+      );
+    } catch (error) {
+      await rm(temporary, { force: true });
+      throw error;
+    }
+    return temporary;
   };
 
   // Shared status/notification JSON mapping (see ./mapping.ts) — the same
@@ -876,6 +935,60 @@ export const createApp = (
     setCorsHeaders();
   });
 
+  app.use('*', async (c, next) => {
+    if (!['POST', 'PUT', 'PATCH'].includes(c.req.method)) return next();
+    const isRestore = c.req.path === '/api/deltanet/restore';
+    if (isRestore && readingRestoreBody) {
+      return c.json({ error: 'configuration already in progress', code: 'resource_busy' }, 409);
+    }
+    const maxSize = requestBodyLimitFor(c.req.path, limits);
+    // The limiter and form parser each retain at most one body-sized copy.
+    const release = requestBudget.tryAcquire(maxSize * 2);
+    if (!release) {
+      return c.json({ error: 'Server request-memory budget is busy; retry shortly', code: 'resource_busy' }, 429);
+    }
+    if (isRestore) readingRestoreBody = true;
+    try {
+      const declaredLength = Number(c.req.header('content-length'));
+      if (Number.isFinite(declaredLength) && declaredLength > maxSize) {
+        return c.json({
+          error: `Request body exceeds the ${formatByteLimit(maxSize)} limit`,
+          code: 'request_too_large',
+        }, 413);
+      }
+      const reader = c.req.raw.body?.getReader();
+      if (!reader) return next();
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > maxSize) {
+          await reader.cancel();
+          return c.json({
+            error: `Request body exceeds the ${formatByteLimit(maxSize)} limit`,
+            code: 'request_too_large',
+          }, 413);
+        }
+        chunks.push(value);
+      }
+      c.req.raw = new Request(c.req.raw, {
+        body: new ReadableStream({
+          start(controller) {
+            for (const chunk of chunks) controller.enqueue(chunk);
+            controller.close();
+          },
+        }),
+        duplex: 'half',
+      });
+      return await next();
+    } finally {
+      if (isRestore) readingRestoreBody = false;
+      release();
+    }
+  });
+
   // --- transport gate: attach the live transport, or 401 if unconfigured ---
 
   const requireTransport = async (c: Context<AppEnv>, next: Next) => {
@@ -919,6 +1032,8 @@ export const createApp = (
 
   // --- deltanet: backup & restore (see ../meta/issues/backup-second-device.md)
 
+  let exportingBackup = false;
+
   app.get('/api/deltanet/backup', requireTransport, async (c) =>
     c.json({ last_backup_at: await c.get('transport').lastBackupAt() }),
   );
@@ -930,16 +1045,24 @@ export const createApp = (
     if (!passphrase) {
       return c.json({ error: "Validation failed: passphrase can't be blank" }, 422);
     }
-    if (store.mutationBarrierSnapshot().active > 0) {
-      return c.json({ error: 'store changed during backup export; retry' }, 409);
+    if (exportingBackup) {
+      return c.json({ error: 'A backup export is already in progress', code: 'resource_busy' }, 429);
     }
-    const self = await transport.self();
-    // Core writes its tar into a directory of our choosing; a scratch dir keeps
-    // the (large, sensitive) intermediate out of the data dir and lets cleanup
-    // be one recursive rm. v0 assembles the container in memory — a single-user
-    // dc.db is tens of MB; revisit with streaming if media makes this a problem.
+    exportingBackup = true;
     const scratch = mkdtempSync(join(tmpdir(), 'deltanet-export-'));
+    let handedOff = false;
+    let cleaned = false;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      rmSync(scratch, { recursive: true, force: true });
+      exportingBackup = false;
+    };
     try {
+      if (store.mutationBarrierSnapshot().active > 0) {
+        return c.json({ error: 'store changed during backup export; retry' }, 409);
+      }
+      const self = await transport.self();
       let tarPath: string | null = null;
       let storeSnapshot: ReturnType<Store['readSnapshot']> = null;
       for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -951,6 +1074,12 @@ export const createApp = (
         }
         const before = store.readSnapshot();
         const candidateTar = await transport.exportBackup(attemptDir, passphrase);
+        if (statSync(candidateTar).size > limits.maxBackupCoreBytes) {
+          return c.json({
+            error: `Generated backup core exceeds the ${formatByteLimit(limits.maxBackupCoreBytes)} limit`,
+            code: 'backup_too_large',
+          }, 413);
+        }
         const after = store.readSnapshot();
         const barrierAfter = store.mutationBarrierSnapshot();
         if (
@@ -963,10 +1092,12 @@ export const createApp = (
           storeSnapshot = after;
           break;
         }
+        rmSync(attemptDir, { recursive: true, force: true });
       }
       if (tarPath === null) {
         return c.json({ error: 'store changed during backup export; retry' }, 409);
       }
+      const tarSize = statSync(tarPath).size;
       const exportedAt = Date.now();
       const signingKey = readOptionalText(attestorKeyPath);
       if (signingKey !== null) validateSigningKeySnapshot(signingKey);
@@ -978,20 +1109,31 @@ export const createApp = (
         ...(signingKey !== null ? { signingKey } : {}),
         ...(storeSnapshot !== null ? { store: storeSnapshot.contents } : {}),
       };
-      const container = encodeBackupContainer(
-        { sidecar, coreTar: readFileSync(tarPath) },
-        passphrase,
-      );
+      if (Buffer.byteLength(JSON.stringify(sidecar), 'utf8') + 128 > limits.maxBackupSidecarBytes) {
+        return c.json({
+          error: `Backup sidecar exceeds the ${formatByteLimit(limits.maxBackupSidecarBytes)} limit`,
+          code: 'backup_too_large',
+        }, 413);
+      }
+      const prefix = encodeBackupPrefix({ sidecar, coreTarSha256: await sha256File(tarPath) }, passphrase);
+      const containerSize = prefix.length + tarSize;
+      if (containerSize > limits.maxBackupExportBytes) {
+        return c.json({
+          error: `Generated backup exceeds the ${formatByteLimit(limits.maxBackupExportBytes)} limit`,
+          code: 'backup_too_large',
+        }, 413);
+      }
+      await transport.markBackupExported(exportedAt);
       c.header('Content-Type', 'application/octet-stream');
+      c.header('Content-Length', String(containerSize));
       c.header(
         'Content-Disposition',
         `attachment; filename="${backupFilename(self.address, exportedAt)}"`,
       );
-      // Copy into a plain Uint8Array: Buffer's ArrayBufferLike generic doesn't
-      // satisfy the web-typed body data union.
-      return c.body(new Uint8Array(container));
+      handedOff = true;
+      return c.body(prefixedFileStream(prefix, tarPath, cleanup));
     } finally {
-      rmSync(scratch, { recursive: true, force: true });
+      if (!handedOff) cleanup();
     }
   });
 
@@ -1007,16 +1149,34 @@ export const createApp = (
     if (!(file instanceof File) || !passphrase) {
       return c.json({ error: 'Validation failed: file and passphrase are required' }, 422);
     }
+    if (file.size > limits.maxRestoreBytes) {
+      return c.json({
+        error: `Backup file exceeds the ${formatByteLimit(limits.maxRestoreBytes)} limit`,
+        code: 'backup_too_large',
+      }, 413);
+    }
     let sidecar: BackupSidecar;
-    let coreTar: Buffer;
+    let expectedCoreHash: string | undefined;
+    let prefixLength: number;
     try {
       // The GCM tag rejects a wrong passphrase / corrupted file HERE, before
       // any state is touched (core import included).
-      ({ sidecar, coreTar } = decodeBackupContainer(
-        Buffer.from(await file.arrayBuffer()),
-        passphrase,
-      ));
+      const headerLength = BACKUP_MAGIC.length + 4;
+      const header = Buffer.from(await file.slice(0, headerLength).arrayBuffer());
+      prefixLength = backupPrefixLength(header, { maxSidecarBytes: limits.maxBackupSidecarBytes });
+      const prefix = Buffer.from(await file.slice(0, prefixLength).arrayBuffer());
+      const decoded = decodeBackupPrefix(prefix, passphrase, { maxSidecarBytes: limits.maxBackupSidecarBytes });
+      sidecar = decoded.sidecar;
+      expectedCoreHash = decoded.coreTarSha256;
+      const coreBytes = file.size - prefixLength;
+      if (coreBytes < 0) throw new BackupDecodeError('truncated backup file');
+      if (coreBytes > limits.maxBackupCoreBytes) {
+        throw new BackupSizeError('backup core exceeds the configured size limit');
+      }
     } catch (err) {
+      if (err instanceof BackupSizeError) {
+        return c.json({ error: err.message, code: 'backup_too_large' }, 413);
+      }
       if (err instanceof BackupDecodeError) return c.json({ error: err.message }, 422);
       throw err;
     }
@@ -1030,40 +1190,36 @@ export const createApp = (
       throw err;
     }
 
-    const journal = beginSidecarRestore({
-      journalPath: restoreJournal?.path ?? restoreJournalPathFor(profileDir),
-      store,
-      signingKeyPath: attestorKeyPath,
-      accountsPath: restoreJournal?.accountsPath,
-      accountName: restoreJournal?.accountName,
-      donorStore: sidecar.store,
-      donorSigningKey: sidecar.signingKey,
-    });
-
-    // The sidecar files (store + signing key) are written by the `beforeOpen`
-    // hook — i.e. INSIDE the restore, after the core import created the
-    // account structure (core refuses to initialize in a non-empty data dir,
-    // so they can't land earlier) but before IO/ingestion starts (so the
-    // startup re-index sweep runs against the restored non-derivable state:
-    // held envelopes, pins, thread chatIds). The in-memory caches reload in
-    // the same synchronous hook, so the running app serves the restored state
-    // with no restart and no ingest race. Previous contents are snapshotted
-    // so a failure after the hook rolls the node back to untouched.
-    const writeSidecarFiles = () => {
-      journal.install();
-      store.reload();
-      attestor.reload();
-    };
-    const rollbackSidecarFiles = () => {
-      journal.rollback();
-      store.reload();
-      attestor.reload();
-    };
-
     const scratch = mkdtempSync(join(tmpdir(), 'deltanet-restore-'));
     try {
       const tarPath = join(scratch, 'core-backup.tar');
-      writeFileSync(tarPath, coreTar);
+      await pipeline(
+        Readable.fromWeb(file.slice(prefixLength).stream() as globalThis.ReadableStream<Uint8Array>),
+        createWriteStream(tarPath, { flags: 'wx', mode: 0o600 }),
+      );
+      if (expectedCoreHash !== undefined && await sha256File(tarPath) !== expectedCoreHash) {
+        return c.json({ error: 'core tar hash mismatch' }, 422);
+      }
+      const journal = beginSidecarRestore({
+        journalPath: restoreJournal?.path ?? restoreJournalPathFor(profileDir),
+        store,
+        signingKeyPath: attestorKeyPath,
+        accountsPath: restoreJournal?.accountsPath,
+        accountName: restoreJournal?.accountName,
+        donorStore: sidecar.store,
+        donorSigningKey: sidecar.signingKey,
+      });
+
+      const writeSidecarFiles = () => {
+        journal.install();
+        store.reload();
+        attestor.reload();
+      };
+      const rollbackSidecarFiles = () => {
+        journal.rollback();
+        store.reload();
+        attestor.reload();
+      };
       let prepared: PreparedRestore | null = null;
       let committed = false;
       try {
@@ -1412,7 +1568,9 @@ export const createApp = (
       if (!isSupportedImageMime(avatar.type)) {
         return c.json({ error: 'Validation failed: avatar must be an image' }, 422);
       }
-      updates.avatarPath = await persistProfileImage(avatar, 'avatar');
+      if (avatar.size > limits.maxMediaBytes) {
+        return c.json({ error: `Avatar exceeds the ${formatByteLimit(limits.maxMediaBytes)} limit`, code: 'media_too_large' }, 413);
+      }
     }
 
     const header = body['header'];
@@ -1420,13 +1578,48 @@ export const createApp = (
       if (!isSupportedImageMime(header.type)) {
         return c.json({ error: 'Validation failed: header must be an image' }, 422);
       }
-      // Headers don't federate (no DC equivalent) — stored at a fixed path so
-      // the per-contact header route can serve it back for SELF.
-      await mkdir(profileDir, { recursive: true });
-      await writeFile(headerPath, new Uint8Array(await header.arrayBuffer()));
+      if (header.size > limits.maxMediaBytes) {
+        return c.json({ error: `Header exceeds the ${formatByteLimit(limits.maxMediaBytes)} limit`, code: 'media_too_large' }, 413);
+      }
     }
-
-    await transport.updateProfile(updates);
+    const avatarPath = avatar instanceof File
+      ? join(profileDir, `avatar${imageExt(avatar.type)}`)
+      : null;
+    const staged: { temporary: string; target: string; backup: string | null; installed: boolean }[] = [];
+    let profileUpdated = false;
+    try {
+      if (avatar instanceof File && avatarPath) {
+        staged.push({ temporary: await stageProfileImage(avatar, avatarPath), target: avatarPath, backup: null, installed: false });
+        updates.avatarPath = avatarPath;
+      }
+      if (header instanceof File) {
+        staged.push({ temporary: await stageProfileImage(header, headerPath), target: headerPath, backup: null, installed: false });
+      }
+      for (const item of staged) {
+        const backup = `${item.target}.previous-${randomUUID()}`;
+        try {
+          await rename(item.target, backup);
+          item.backup = backup;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
+        await rename(item.temporary, item.target);
+        item.installed = true;
+        await chmod(item.target, 0o600);
+      }
+      await transport.updateProfile(updates);
+      profileUpdated = true;
+    } finally {
+      for (const item of [...staged].reverse()) {
+        if (!profileUpdated) {
+          if (item.installed) await rm(item.target, { force: true });
+          if (item.backup) await rename(item.backup, item.target);
+        } else if (profileUpdated && item.backup) {
+          await rm(item.backup, { force: true });
+        }
+        await rm(item.temporary, { force: true });
+      }
+    }
     return c.json(await selfAccountJson(transport));
   });
 
@@ -1828,10 +2021,10 @@ export const createApp = (
 
   // --- Statuses -----------------------------------------------------------
 
-  const firstMediaId = (body: Record<string, unknown>): string | undefined => {
+  const mediaIds = (body: Record<string, unknown>): string[] => {
     const raw = body['media_ids[]'] ?? body['media_ids'];
-    if (Array.isArray(raw)) return raw.length > 0 ? String(raw[0]) : undefined;
-    return raw === undefined ? undefined : String(raw);
+    if (Array.isArray(raw)) return raw.map(String).filter(Boolean);
+    return raw === undefined ? [] : [String(raw)].filter(Boolean);
   };
 
   app.post('/api/v1/statuses', requireTransport, async (c) => {
@@ -1841,11 +2034,21 @@ export const createApp = (
       ? await c.req.json()
       : await c.req.parseBody({ all: true });
     const text = String(body['status'] ?? '').trim();
-    const mediaId = firstMediaId(body as Record<string, unknown>);
-    const media = mediaId ? mediaStore.get(mediaId) : undefined;
+    const submittedMediaIds = mediaIds(body as Record<string, unknown>);
+    if (submittedMediaIds.length > 1) {
+      return c.json({ error: 'Validation failed: only one media attachment is supported' }, 422);
+    }
+    const mediaId = submittedMediaIds[0];
+    const mediaLease = mediaId ? mediaStore.acquire(mediaId) : undefined;
+    const media = mediaLease?.record;
+    if (mediaId && !media) {
+      return c.json({ error: 'Validation failed: media is expired, consumed, or unknown' }, 422);
+    }
     if (!text && !media) {
       return c.json({ error: 'Validation failed: text cannot be blank' }, 422);
     }
+
+    try {
 
     const inReplyToId = body['in_reply_to_id'] != null ? String(body['in_reply_to_id']) : undefined;
     // Visibility delivery: direct bypasses owned broadcasts entirely and uses
@@ -2122,6 +2325,9 @@ export const createApp = (
       (await mapper.ownAddr(transport)).toLowerCase(),
     ]);
     return c.json(await toStatus(transport, msg, media?.description ?? null));
+    } finally {
+      await mediaLease?.finish();
+    }
   });
 
   // --- Media uploads --------------------------------------------------------
@@ -2135,8 +2341,28 @@ export const createApp = (
     if (!isSupportedImageMime(file.type)) {
       return c.json({ error: 'Validation failed: unsupported media type' }, 422);
     }
+    if (file.size > limits.maxMediaBytes) {
+      return c.json({
+        error: `Media file exceeds the ${formatByteLimit(limits.maxMediaBytes)} limit`,
+        code: 'media_too_large',
+      }, 413);
+    }
     const description = body['description'] != null ? String(body['description']) : null;
-    const { id } = await mediaStore.save(file, description);
+    let id: string;
+    try {
+      ({ id } = await mediaStore.save(file, description));
+    } catch (error) {
+      if (error instanceof MediaTooLargeError) {
+        return c.json({ error: error.message, code: 'media_too_large' }, 413);
+      }
+      if (error instanceof MediaCapacityError) {
+        return c.json({ error: 'Too many staged media uploads; remove or post one and retry', code: 'media_capacity' }, 429);
+      }
+      if (error instanceof MediaDescriptionTooLargeError) {
+        return c.json({ error: `Media description exceeds the ${formatByteLimit(error.maxBytes)} limit`, code: 'description_too_large' }, 422);
+      }
+      throw error;
+    }
     return c.json({
       id,
       type: 'image',
@@ -2144,6 +2370,33 @@ export const createApp = (
       preview_url: '',
       description,
     });
+  });
+
+  app.put('/api/v1/media/:id', requireTransport, async (c) => {
+    const body: { description?: unknown } = await c.req.json<{ description?: unknown }>().catch(() => ({}));
+    const description = body.description == null ? null : String(body.description);
+    let record: MediaRecord | undefined;
+    try {
+      record = mediaStore.updateDescription(c.req.param('id') ?? '', description);
+    } catch (error) {
+      if (error instanceof MediaDescriptionTooLargeError) {
+        return c.json({ error: `Media description exceeds the ${formatByteLimit(error.maxBytes)} limit`, code: 'description_too_large' }, 422);
+      }
+      throw error;
+    }
+    if (!record) return c.json({ error: 'Record not found' }, 404);
+    return c.json({
+      id: c.req.param('id'),
+      type: 'image',
+      url: '',
+      preview_url: '',
+      description: record.description,
+    });
+  });
+
+  app.delete('/api/v1/media/:id', requireTransport, async (c) => {
+    await mediaStore.discard(c.req.param('id') ?? '');
+    return c.body(null, 204);
   });
 
   // --- Reblog / unreblog ---------------------------------------------------

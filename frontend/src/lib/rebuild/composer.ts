@@ -46,7 +46,7 @@ export type ComposerPollPayload = {
 	hideTotals: boolean;
 };
 
-export const COMPOSER_MAX_UPLOADS = 8;
+export const COMPOSER_MAX_UPLOADS = 1;
 export const COMPOSER_MAX_UPLOAD_BYTES = 40 * 1024 * 1024;
 
 // Pleroma tags packs as `pack:<name>` in tags/category on the custom emoji

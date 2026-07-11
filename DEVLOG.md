@@ -1,5 +1,46 @@
 # deltanet devlog
 
+## 2026-07-11 - bounded media and backup resources
+
+Upload and backup paths now have daemon-enforced, process-wide bounds
+(`meta/issues/media-backup-resource-limits.md`):
+
+- Request bodies default to 1 MiB. Media files are limited to 40 MiB, restore
+  containers to 256 MiB, encrypted backup sidecars to 2 MiB, core backups to
+  253 MiB, and final exports to 256 MiB. The body limiter counts the stream even
+  when `Content-Length` is absent or false, and rejects declared oversize bodies
+  before reading. Because Hono multipart parsing materializes a `File`, the
+  daemon conservatively reserves two route-sized body copies from a 600 MiB
+  process budget before reading; restore adds at most one bounded 2 MiB prefix
+  decode plus ordinary runtime overhead. Busy work fails with a stable 409/429
+  instead of multiplying heap use.
+- Backup generation is serialized. Delta Chat's export API writes one scratch
+  tar before exposing its size and has no quota/cancel hook; the daemon checks
+  it immediately on return, removes stale retry attempts before retrying, and
+  recursively cleans all rejected scratch state. Accepted exports hash the tar,
+  build only the bounded encrypted prefix in memory, and stream prefix + tar to
+  the response. Restore buffers the bounded multipart request (the Hono API
+  constraint), decrypts only the prefix, streams the core slice to a mode-0600
+  scratch file, verifies its authenticated hash, and cleans it in `finally`.
+  The browser download remains a Blob bounded by the same 256 MiB response cap.
+- Backup timestamps are finalized only after the complete container passes all
+  limits. Core, sidecar, final-container, malformed-sidecar, wrong-passphrase,
+  and store-snapshot failures do not claim a successful backup.
+- Staged media streams to mode-0600 files in a mode-0700 shared scratch
+  directory. At most eight 40 MiB records exist (320 MiB disk bound); each lives
+  for one hour. Startup sweep removes crash orphans. Explicit cancellation,
+  posting success, posting failure, and expiry discard registry state and files;
+  reference-counted leases defer unlink until every concurrent post finishes.
+- Only one attachment is advertised and accepted because the transport can send
+  one file. The frontend now enforces that capability and explicitly deletes
+  removed or stale upload results. A failed status marks its consumed upload as
+  requiring reattachment rather than retaining a dead media id.
+- Alt text is capped at 4 KiB, editable through `PUT /api/v1/media/:id`, included
+  in the signed durable envelope, and cached transiently at no more than 1,024
+  entries (4 MiB derived maximum). Profile avatar/header uploads share the 40 MiB
+  per-file cap, accept two files in one bounded request, stream through temporary
+  files, and restore prior files if transport persistence fails.
+
 ## 2026-07-10 - atomic, corruption-safe store persistence
 
 `deltanet-store.json` now treats pins, held envelopes, pending requests,

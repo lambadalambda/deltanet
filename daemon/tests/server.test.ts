@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import type { Context } from 'hono';
 import type { UpgradeWebSocket, WSEvents } from 'hono/ws';
 import type { T } from '@deltachat/jsonrpc-client';
@@ -16,7 +16,7 @@ const midTok = (mid: string): RefToken => ({ kind: 'mid', mid });
 const midRef = (mid: string, addr: string) => refFromToken({ kind: 'mid', mid }, addr);
 import { createStreamingHub, type StreamingSocket } from '../src/streaming.js';
 import { makeContact, makeMessage } from './entities.test.js';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -116,14 +116,13 @@ const makeFakeTransport = () => {
       return msg;
     },
     feedInvite: async (channel) => (channel === 'locked' ? 'OPENPGP4FPR:FAKEINVITE-LOCKED' : 'OPENPGP4FPR:FAKEINVITE'),
-    // Fake core backup: writes a recognizable "tar" into destDir like core's
-    // exportBackup does, and stamps the last-backup timestamp.
+    // Fake core backup: writes a recognizable "tar" into destDir like core's exportBackup.
     exportBackup: async (destDir, _passphrase) => {
       const path = join(destDir, 'delta-chat-backup-fake.tar');
       writeFileSync(path, FAKE_CORE_TAR);
-      lastBackupStamp = Date.now();
       return path;
     },
+    markBackupExported: async (exportedAt) => { lastBackupStamp = exportedAt; },
     lastBackupAt: async () => lastBackupStamp,
     setContactName: async (contactId, name) => {
       setNames.push({ contactId, name });
@@ -674,6 +673,63 @@ describe('deltanet: per-contact header route', () => {
 });
 
 describe('media uploads', () => {
+  it('enforces exact media boundaries and leaves no oversized residue', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'deltanet-media-route-'));
+    const app = createUnsafeTestApp(makeConfiguredCtx(makeFakeTransport().transport), {
+      baseUrl: BASE,
+      mediaUploadDir: dir,
+      resourceLimits: { maxMediaBytes: 4 },
+    });
+    try {
+      const exact = new FormData();
+      exact.append('file', new File([new Uint8Array(4)], 'exact.png', { type: 'image/png' }));
+      expect((await app.request('/api/v1/media', { method: 'POST', body: exact })).status).toBe(200);
+
+      const oversized = new FormData();
+      oversized.append('file', new File([new Uint8Array(5)], 'large.png', { type: 'image/png' }));
+      const response = await app.request('/api/v1/media', { method: 'POST', body: oversized });
+      expect(response.status).toBe(413);
+      expect(await response.json()).toEqual({
+        error: 'Media file exceeds the 4 bytes limit',
+        code: 'media_too_large',
+      });
+      expect(readdirSync(dir)).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects an oversized request body before parsing it', async () => {
+    const app = createUnsafeTestApp(makeConfiguredCtx(makeFakeTransport().transport), {
+      baseUrl: BASE,
+      resourceLimits: { maxRequestBodyBytes: 4 },
+    });
+    const response = await app.request('/api/v1/statuses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: '12345',
+    });
+    expect(response.status).toBe(413);
+    expect(await response.json()).toEqual({
+      error: 'Request body exceeds the 4 bytes limit',
+      code: 'request_too_large',
+    });
+  });
+
+  it('rejects work before reading when the process request-memory budget is exhausted', async () => {
+    const app = createUnsafeTestApp(makeConfiguredCtx(makeFakeTransport().transport), {
+      baseUrl: BASE,
+      resourceLimits: { maxRequestBodyBytes: 4, maxInFlightRequestBytes: 7 },
+    });
+    const response = await app.request('/api/v1/statuses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: '1',
+    });
+    expect(response.status).toBe(429);
+    expect((await response.json() as any).code).toBe('resource_busy');
+  });
+
   it('uploads an image and returns a media attachment id', async () => {
     const app = makeApp();
     const form = new FormData();
@@ -695,6 +751,47 @@ describe('media uploads', () => {
     expect(res.status).toBe(422);
   });
 
+  it('accepts exact-limit avatar and header files in one bounded request', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'deltanet-profile-limits-'));
+    const app = createUnsafeTestApp(makeConfiguredCtx(makeFakeTransport().transport), {
+      baseUrl: BASE,
+      dataDir: dir,
+      resourceLimits: { maxMediaBytes: 4, multipartOverheadBytes: 1024 },
+    });
+    try {
+      const form = new FormData();
+      form.append('avatar', new File([new Uint8Array(4)], 'avatar.png', { type: 'image/png' }));
+      form.append('header', new File([new Uint8Array(4)], 'header.png', { type: 'image/png' }));
+      const response = await app.request('/api/v1/accounts/update_credentials', { method: 'PATCH', body: form });
+      expect(response.status).toBe(200);
+      expect(readFileSync(join(dir, 'avatar.png'))).toHaveLength(4);
+      expect(readFileSync(join(dir, 'header.png'))).toHaveLength(4);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('restores previous profile files when transport persistence fails', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'deltanet-profile-rollback-'));
+    writeFileSync(join(dir, 'avatar.png'), 'old-avatar');
+    writeFileSync(join(dir, 'header.png'), 'old-header');
+    const { transport } = makeFakeTransport();
+    transport.updateProfile = async () => { throw new Error('profile update failed'); };
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, dataDir: dir });
+    try {
+      const form = new FormData();
+      form.append('avatar', new File(['new-avatar'], 'avatar.png', { type: 'image/png' }));
+      form.append('header', new File(['new-header'], 'header.png', { type: 'image/png' }));
+      const response = await app.request('/api/v1/accounts/update_credentials', { method: 'PATCH', body: form });
+      expect(response.status).toBe(500);
+      expect(readFileSync(join(dir, 'avatar.png'), 'utf8')).toBe('old-avatar');
+      expect(readFileSync(join(dir, 'header.png'), 'utf8')).toBe('old-header');
+      expect(readdirSync(dir).some((name) => name.includes('.tmp-') || name.includes('.previous-'))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('attaches an uploaded media id to a new status', async () => {
     const { transport, posts } = makeFakeTransport();
     const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
@@ -710,6 +807,18 @@ describe('media uploads', () => {
     const res = await app.request('/api/v1/statuses', { method: 'POST', body: statusForm });
     expect(res.status).toBe(200);
     expect(posts[posts.length - 1]?.file).toBeTypeOf('string');
+  });
+
+  it('rejects multiple media ids instead of silently leaking unconsumed uploads', async () => {
+    const app = makeApp();
+    const status = new URLSearchParams({ status: 'too many' });
+    status.append('media_ids[]', 'first');
+    status.append('media_ids[]', 'second');
+
+    const response = await app.request('/api/v1/statuses', { method: 'POST', body: status });
+
+    expect(response.status).toBe(422);
+    expect(await response.json()).toEqual({ error: 'Validation failed: only one media attachment is supported' });
   });
 
   it('round-trips the alt text description into the posted status attachment', async () => {
@@ -730,6 +839,35 @@ describe('media uploads', () => {
     expect(status.media_attachments[0]?.description).toBe('a lovely photo');
   });
 
+  it('updates bounded staged alt text and carries it into the durable post envelope', async () => {
+    const { transport, posts } = makeFakeTransport();
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), {
+      baseUrl: BASE,
+      resourceLimits: { maxMediaDescriptionBytes: 8 },
+    });
+    const form = new FormData();
+    form.append('file', new File(['fakepngbytes'], 'photo.png', { type: 'image/png' }));
+    const media = await (await app.request('/api/v1/media', { method: 'POST', body: form })).json() as any;
+
+    const tooLarge = await app.request(`/api/v1/media/${media.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description: 'ninebytes' }),
+    });
+    expect(tooLarge.status).toBe(422);
+    const updated = await app.request(`/api/v1/media/${media.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description: 'new alt' }),
+    });
+    expect(updated.status).toBe(200);
+
+    const status = new URLSearchParams({ status: 'updated alt' });
+    status.append('media_ids[]', media.id);
+    expect((await app.request('/api/v1/statuses', { method: 'POST', body: status })).status).toBe(200);
+    expect(parseEnvelope(posts.at(-1)!.text)?.media?.description).toBe('new alt');
+  });
+
   it('allows an image-only post with no text', async () => {
     const { transport } = makeFakeTransport();
     const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
@@ -744,6 +882,94 @@ describe('media uploads', () => {
     statusForm.append('media_ids[]', media.id);
     const res = await app.request('/api/v1/statuses', { method: 'POST', body: statusForm });
     expect(res.status).toBe(200);
+  });
+
+  it('deletes consumed staged files after a successful post', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'deltanet-media-consume-'));
+    const app = createUnsafeTestApp(makeConfiguredCtx(makeFakeTransport().transport), {
+      baseUrl: BASE,
+      mediaUploadDir: dir,
+    });
+    try {
+      const upload = new FormData();
+      upload.append('file', new File(['image'], 'photo.png', { type: 'image/png' }));
+      const media = await (await app.request('/api/v1/media', { method: 'POST', body: upload })).json() as any;
+      expect(readdirSync(dir)).toHaveLength(1);
+
+      const status = new URLSearchParams({ status: 'posted' });
+      status.append('media_ids[]', media.id);
+      expect((await app.request('/api/v1/statuses', { method: 'POST', body: status })).status).toBe(200);
+      expect(readdirSync(dir)).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('deletes staged files after a posting failure', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'deltanet-media-failure-'));
+    const { transport } = makeFakeTransport();
+    transport.post = async () => { throw new Error('injected post failure'); };
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, mediaUploadDir: dir });
+    try {
+      const upload = new FormData();
+      upload.append('file', new File(['image'], 'photo.png', { type: 'image/png' }));
+      const media = await (await app.request('/api/v1/media', { method: 'POST', body: upload })).json() as any;
+      const status = new URLSearchParams({ status: 'fails' });
+      status.append('media_ids[]', media.id);
+
+      expect((await app.request('/api/v1/statuses', { method: 'POST', body: status })).status).toBe(500);
+      expect(readdirSync(dir)).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a shared staged file until concurrent posts finish', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'deltanet-media-concurrent-'));
+    const { transport } = makeFakeTransport();
+    const post = transport.post.bind(transport);
+    let entered = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    transport.post = async (...args) => { entered += 1; await gate; return post(...args); };
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, mediaUploadDir: dir });
+    try {
+      const upload = new FormData();
+      upload.append('file', new File(['image'], 'photo.png', { type: 'image/png' }));
+      const media = await (await app.request('/api/v1/media', { method: 'POST', body: upload })).json() as any;
+      const request = () => {
+        const status = new URLSearchParams({ status: 'concurrent' });
+        status.append('media_ids[]', media.id);
+        return app.request('/api/v1/statuses', { method: 'POST', body: status });
+      };
+      const first = request();
+      const second = request();
+      await vi.waitFor(() => expect(entered).toBe(2));
+      expect(readdirSync(dir)).toHaveLength(1);
+      release();
+      expect((await first).status).toBe(200);
+      expect((await second).status).toBe(200);
+      expect(readdirSync(dir)).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('cancels an uploaded media id explicitly', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'deltanet-media-cancel-'));
+    const app = createUnsafeTestApp(makeConfiguredCtx(makeFakeTransport().transport), {
+      baseUrl: BASE,
+      mediaUploadDir: dir,
+    });
+    try {
+      const upload = new FormData();
+      upload.append('file', new File(['image'], 'photo.png', { type: 'image/png' }));
+      const media = await (await app.request('/api/v1/media', { method: 'POST', body: upload })).json() as any;
+      expect((await app.request(`/api/v1/media/${media.id}`, { method: 'DELETE' })).status).toBe(204);
+      expect(readdirSync(dir)).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -2436,6 +2662,65 @@ describe('backup endpoints', () => {
     expect(res.status).toBe(422);
   });
 
+  it('rejects a generated core or final container that exceeds its cap', async () => {
+    const coreTransport = makeFakeTransport().transport;
+    const coreLimited = createUnsafeTestApp(makeConfiguredCtx(coreTransport), {
+      baseUrl: BASE,
+      resourceLimits: { maxBackupCoreBytes: 1 },
+    });
+    const coreResponse = await coreLimited.request('/api/deltanet/backup/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ passphrase: 'pw' }),
+    });
+    expect(coreResponse.status).toBe(413);
+    expect((await coreResponse.json() as any).code).toBe('backup_too_large');
+    expect((await (await coreLimited.request('/api/deltanet/backup')).json() as any).last_backup_at).toBeNull();
+
+    const containerTransport = makeFakeTransport().transport;
+    const containerLimited = createUnsafeTestApp(makeConfiguredCtx(containerTransport), {
+      baseUrl: BASE,
+      resourceLimits: { maxBackupExportBytes: 1 },
+    });
+    const containerResponse = await containerLimited.request('/api/deltanet/backup/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ passphrase: 'pw' }),
+    });
+    expect(containerResponse.status).toBe(413);
+    expect((await containerResponse.json() as any).code).toBe('backup_too_large');
+    expect((await (await containerLimited.request('/api/deltanet/backup')).json() as any).last_backup_at).toBeNull();
+  });
+
+  it('serializes backup generation and streaming under one export lease', async () => {
+    const { transport } = makeFakeTransport();
+    const exportBackup = transport.exportBackup.bind(transport);
+    let entered = false;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    transport.exportBackup = async (...args) => {
+      entered = true;
+      await gate;
+      return exportBackup(...args);
+    };
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
+    const request = () => app.request('/api/deltanet/backup/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ passphrase: 'pw' }),
+    });
+
+    const firstPromise = request();
+    await vi.waitFor(() => expect(entered).toBe(true));
+    const second = await request();
+    expect(second.status).toBe(429);
+    expect((await second.json() as any).code).toBe('resource_busy');
+    release();
+    const first = await firstPromise;
+    expect(first.status).toBe(200);
+    await first.arrayBuffer();
+  });
+
   it('exports a decodable .dnbk carrying core tar + sidecar, and stamps last_backup_at', async () => {
     const dir = scratchDir();
     const store = createStore(join(dir, 'deltanet-store.json'));
@@ -2601,6 +2886,66 @@ describe('backup endpoints', () => {
     fd.append('passphrase', 'pw');
     const res = await app.request('/api/deltanet/restore', { method: 'POST', body: fd });
     expect(res.status).toBe(501);
+  });
+
+  it('rejects an oversized restore before decoding or importing it', async () => {
+    let restoreCalled = false;
+    const app = createUnsafeTestApp({
+      getTransport: () => null,
+      signup: async () => { throw new Error('unused'); },
+      restore: async () => {
+        restoreCalled = true;
+        throw new Error('must not import');
+      },
+    }, {
+      baseUrl: BASE,
+      resourceLimits: { maxRestoreBytes: 4, multipartOverheadBytes: 1024 },
+    });
+    const body = new FormData();
+    body.append('file', new File([new Uint8Array(5)], 'large.dnbk'));
+    body.append('passphrase', 'pw');
+
+    const response = await app.request('/api/deltanet/restore', { method: 'POST', body });
+
+    expect(response.status).toBe(413);
+    expect(await response.json()).toEqual({
+      error: 'Backup file exceeds the 4 bytes limit',
+      code: 'backup_too_large',
+    });
+    expect(restoreCalled).toBe(false);
+  });
+
+  it('returns stable restore errors for bounded sections and malformed authenticated sidecars', async () => {
+    const request = async (container: Buffer, resourceLimits: Parameters<typeof createUnsafeTestApp>[1]['resourceLimits'] = {}) => {
+      const app = createUnsafeTestApp({
+        getTransport: () => null,
+        signup: async () => { throw new Error('unused'); },
+        restore: async () => { throw new Error('must not import'); },
+      }, { baseUrl: BASE, resourceLimits });
+      const body = new FormData();
+      body.append('file', new File([new Uint8Array(container)], 'backup.dnbk'));
+      body.append('passphrase', 'pw');
+      return app.request('/api/deltanet/restore', { method: 'POST', body });
+    };
+    const valid = encodeBackupContainer({
+      sidecar: { addr: 'alice@example.test', exportedAt: 1 },
+      coreTar: Buffer.from('core'),
+    }, 'pw');
+
+    const sidecarLimited = await request(valid, { maxBackupSidecarBytes: 1 });
+    expect(sidecarLimited.status).toBe(413);
+    expect((await sidecarLimited.json() as any).code).toBe('backup_too_large');
+    const coreLimited = await request(valid, { maxBackupCoreBytes: 1 });
+    expect(coreLimited.status).toBe(413);
+    expect((await coreLimited.json() as any).code).toBe('backup_too_large');
+
+    const malformed = encodeBackupContainer({
+      sidecar: null as unknown as { addr: string; exportedAt: number },
+      coreTar: Buffer.from('core'),
+    }, 'pw');
+    const malformedResponse = await request(malformed);
+    expect(malformedResponse.status).toBe(422);
+    expect(await malformedResponse.json()).toEqual({ error: 'malformed backup sidecar' });
   });
 
   it('422s a garbage container / wrong passphrase without touching state', async () => {

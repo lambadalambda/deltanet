@@ -787,7 +787,7 @@ test('real thread route nested inline reply composer autocompletes mentions and 
 	expect(params.get('in_reply_to_id')).toBe('reply-1-child');
 });
 
-test('real thread route inline reply composer attaches pasted and dropped media', async ({ page }) => {
+test('real thread route inline reply composer attaches one pasted file and rejects an additional drop', async ({ page }) => {
 	await authenticate(page);
 	await mockThread(page);
 	let uploadCount = 0;
@@ -835,15 +835,16 @@ test('real thread route inline reply composer attaches pasted and dropped media'
 		node.dispatchEvent(new DragEvent('dragover', { dataTransfer, bubbles: true, cancelable: true }));
 		node.dispatchEvent(new DragEvent('drop', { dataTransfer, bubbles: true, cancelable: true }));
 	});
-	await expect(replyForm.getByText('reply-dropped.png')).toBeVisible();
+	await expect(replyForm.getByText('reply-dropped.png', { exact: true })).toBeVisible();
+	await expect(replyForm.getByText('Could not attach reply-dropped.png · 1 file limit.')).toBeVisible();
 	await replyForm.getByRole('button', { name: 'Reply', exact: true }).click();
 
 	await expect(page.getByRole('form', { name: /Inline reply/ })).toHaveCount(0);
 	const params = new URLSearchParams(createBody);
 	expect(params.get('status')).toBe('with uploads');
 	expect(params.get('in_reply_to_id')).toBe('status-1');
-	expect(params.getAll('media_ids[]')).toEqual(['reply-interaction-1', 'reply-interaction-2']);
-	expect(uploadCount).toBe(2);
+	expect(params.getAll('media_ids[]')).toEqual(['reply-interaction-1']);
+	expect(uploadCount).toBe(1);
 });
 
 test('real thread route action failures rollback and show scoped errors', async ({ page }) => {

@@ -413,6 +413,95 @@ test('home timeline composer uploads media and submits media ids', async ({ page
 	await expect(page.getByText('cat.png')).toHaveCount(0);
 });
 
+test('home timeline composer shows daemon media-limit errors inline', async ({ page }) => {
+	await authenticate(page);
+	await mockInstance(page);
+	await mockHomeTimeline(page, async (route) => { await fulfillHome(route, []); });
+	await page.route('https://pleroma.example/api/v1/media', async (route) => {
+		await fulfillHome(route, { error: 'Media file exceeds the 40 MiB limit', code: 'media_too_large' }, 413);
+	});
+
+	await page.goto('/app/home');
+	await page.getByLabel('Attach media').setInputFiles({ name: 'server-large.png', mimeType: 'image/png', buffer: Buffer.from('small fixture') });
+
+	await expect(page.getByText('server-large.png', { exact: true })).toBeVisible();
+	await expect(page.getByText('Media file exceeds the 40 MiB limit')).toBeVisible();
+});
+
+test('removing an uploaded composer attachment cancels its daemon staging record', async ({ page }) => {
+	await authenticate(page);
+	await mockInstance(page);
+	await mockHomeTimeline(page, async (route) => { await fulfillHome(route, []); });
+	await page.route('https://pleroma.example/api/v1/media', async (route) => {
+		await fulfillHome(route, {
+			id: 'cancel-media-1',
+			type: 'image',
+			url: '',
+			preview_url: '',
+			description: null
+		});
+	});
+	let cancelled = false;
+	await page.route('https://pleroma.example/api/v1/media/cancel-media-1', async (route) => {
+		cancelled = route.request().method() === 'DELETE';
+		await route.fulfill({ status: 204 });
+	});
+
+	await page.goto('/app/home');
+	await page.getByLabel('Attach media').setInputFiles({ name: 'cancel.png', mimeType: 'image/png', buffer: Buffer.from('image') });
+	await expect(page.getByText('100%')).toBeVisible();
+	await page.getByRole('button', { name: 'Remove cancel.png' }).click();
+	await expect.poll(() => cancelled).toBe(true);
+});
+
+test('removing an in-flight upload discards the daemon record when the response arrives', async ({ page }) => {
+	await authenticate(page);
+	await mockInstance(page);
+	await mockHomeTimeline(page, async (route) => { await fulfillHome(route, []); });
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => { release = resolve; });
+	await page.route('https://pleroma.example/api/v1/media', async (route) => {
+		await gate;
+		await fulfillHome(route, { id: 'late-media', type: 'image', url: '', preview_url: '', description: null });
+	});
+	let cancelled = false;
+	await page.route('https://pleroma.example/api/v1/media/late-media', async (route) => {
+		cancelled = route.request().method() === 'DELETE';
+		await route.fulfill({ status: 204 });
+	});
+
+	await page.goto('/app/home');
+	await page.getByLabel('Attach media').setInputFiles({ name: 'late.png', mimeType: 'image/png', buffer: Buffer.from('image') });
+	await expect(page.getByText('late.png', { exact: true })).toBeVisible();
+	await page.getByRole('button', { name: 'Remove late.png' }).click();
+	release();
+	await expect.poll(() => cancelled).toBe(true);
+});
+
+test('failed posting marks daemon-consumed media as requiring reattachment', async ({ page }) => {
+	await authenticate(page);
+	await mockInstance(page);
+	await mockHomeTimeline(page, async (route) => { await fulfillHome(route, []); });
+	await page.route('https://pleroma.example/api/v1/media', async (route) => {
+		await fulfillHome(route, { id: 'failed-media', type: 'image', url: '', preview_url: '', description: null });
+	});
+	await page.route('https://pleroma.example/api/v1/media/failed-media', async (route) => {
+		await route.fulfill({ status: 204 });
+	});
+	await page.route('https://pleroma.example/api/v1/statuses', async (route) => {
+		await fulfillHome(route, { error: 'post failed' }, 500);
+	});
+
+	await page.goto('/app/home');
+	await page.getByRole('textbox', { name: 'Post text' }).fill('keep this draft');
+	await page.getByLabel('Attach media').setInputFiles({ name: 'failed.png', mimeType: 'image/png', buffer: Buffer.from('image') });
+	await expect(page.getByText('100%')).toBeVisible();
+	await page.getByRole('button', { name: 'Post', exact: true }).click();
+
+	await expect(page.getByRole('textbox', { name: 'Post text' })).toContainText('keep this draft');
+	await expect(page.getByText('Upload was consumed by the failed post. Attach it again.')).toBeVisible();
+});
+
 test('home timeline composer can post attachments without text', async ({ page }) => {
 	await authenticate(page);
 	await mockInstance(page);
@@ -473,7 +562,7 @@ test('home timeline composer only shows the drop zone while dragging files over 
 	await expect(composer).toHaveClass(/is-drag-over/);
 	await expect(page.getByTestId('composer-dropzone')).toBeVisible();
 	await expect(page.getByTestId('composer-dropzone')).toContainText('Drop to attach');
-	await expect(page.getByTestId('composer-dropzone')).toContainText('Max 8 files · 40 MB each');
+	await expect(page.getByTestId('composer-dropzone')).toContainText('Max 1 file · 40 MB');
 
 	await composer.evaluate((node) => {
 		node.dispatchEvent(new DragEvent('dragleave', { bubbles: true, cancelable: true }));
@@ -537,7 +626,7 @@ test('home timeline composer blocks submit while uploads are pending and shows r
 	expect(params.getAll('media_ids[]')).toEqual(['media-delayed']);
 });
 
-test('home timeline composer rejects oversize and over-limit uploads', async ({ page }) => {
+test('home timeline composer rejects oversize and additional uploads', async ({ page }) => {
 	await authenticate(page);
 	await mockInstance(page);
 	await mockHomeTimeline(page, async (route) => {
@@ -557,22 +646,21 @@ test('home timeline composer rejects oversize and over-limit uploads', async ({ 
 
 	await setViewport(page, 'desktop');
 	await page.goto('/app/home');
-	const validFiles = Array.from({ length: 8 }, (_, index) => ({ name: `ok-${index + 1}.png`, mimeType: 'image/png', buffer: Buffer.from('ok') }));
 	await page.getByLabel('Attach media').setInputFiles([
-		...validFiles,
+		{ name: 'ok-1.png', mimeType: 'image/png', buffer: Buffer.from('ok') },
 		{ name: 'too-big.png', mimeType: 'image/png', buffer: Buffer.alloc(40 * 1024 * 1024 + 1) },
-		{ name: 'ninth.png', mimeType: 'image/png', buffer: Buffer.from('extra') }
+		{ name: 'second.png', mimeType: 'image/png', buffer: Buffer.from('extra') }
 	]);
 
 	await expect(page.getByText('ok-1.png')).toBeVisible();
 	await expect(page.getByText('too-big.png', { exact: true })).toBeVisible();
-	await expect(page.getByText('ninth.png', { exact: true })).toBeVisible();
+	await expect(page.getByText('second.png', { exact: true })).toBeVisible();
 	await expect(page.getByText('Could not attach too-big.png · 40 MB limit per file.')).toBeVisible();
-	await expect(page.getByText('Could not attach ninth.png · 8 file limit.')).toBeVisible();
-	expect(uploadCount).toBe(8);
+	await expect(page.getByText('Could not attach second.png · 1 file limit.')).toBeVisible();
+	expect(uploadCount).toBe(1);
 });
 
-test('home timeline composer attaches pasted and dropped files without editing text', async ({ page }) => {
+test('home timeline composer accepts pasted media and rejects an additional drop without editing text', async ({ page }) => {
 	await authenticate(page);
 	await mockInstance(page);
 	await mockHomeTimeline(page, async (route) => {
@@ -614,10 +702,11 @@ test('home timeline composer attaches pasted and dropped files without editing t
 		node.dispatchEvent(new DragEvent('drop', { dataTransfer, bubbles: true, cancelable: true }));
 	});
 
-	await expect(page.getByText('dropped.png')).toBeVisible();
+	await expect(page.getByText('dropped.png', { exact: true })).toBeVisible();
+	await expect(page.getByText('Could not attach dropped.png · 1 file limit.')).toBeVisible();
 	// Poll: the filename row renders before the upload POST necessarily lands;
 	// a sync assertion raced it on slow CI runners (flaked once, 2026-07-09).
-	await expect.poll(() => uploadCount).toBe(2);
+	await expect.poll(() => uploadCount).toBe(1);
 });
 
 test('home timeline composer autocompletes mentions and custom emoji before posting', async ({ page }) => {

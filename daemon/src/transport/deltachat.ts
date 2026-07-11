@@ -248,7 +248,7 @@ export const openTransport = async (
   return buildTransport(dc, accountId, creds, options);
 };
 
-/** Config key stamped (ms-epoch) after every successful `exportBackup` — travels inside future backups. */
+/** Config key stamped after the API validates a complete downloadable backup. */
 export const LAST_BACKUP_AT_KEY = 'ui.deltanet.last_backup_at';
 
 /**
@@ -323,7 +323,7 @@ export const restoreTransport = async (
     // A freshly restored node IS fully backed up (its state equals the backup
     // it came from), so stamp the restore moment as the last backup. Without
     // this the settings nag would claim "never backed up" right after a
-    // restore: `exportBackup` stamps AFTER exporting, so the stamp inside the
+    // restore: complete export finalization stamps AFTER exporting, so the stamp inside the
     // tar always points at the previous export (null for a first backup).
     await rpc.setConfig(accountId, LAST_BACKUP_AT_KEY, String(Date.now()));
     beforeOpen?.();
@@ -759,12 +759,11 @@ const buildTransport = (
         .map((path) => ({ path, mtime: statSync(path).mtimeMs }))
         .sort((x, y) => y.mtime - x.mtime)[0];
       if (!newest) throw new Error('backup export produced no file');
-      // Stamped only AFTER a successful export, so the nag never reads a
-      // failed attempt as a backup. Lives in config (not the store) so the
-      // value travels inside future backups: a restored node knows when its
-      // dc.db was last exported.
-      await rpc.setConfig(accountId, LAST_BACKUP_AT_KEY, String(Date.now()));
       return newest.path;
+    },
+
+    markBackupExported: async (exportedAt) => {
+      await rpc.setConfig(accountId, LAST_BACKUP_AT_KEY, String(exportedAt));
     },
 
     lastBackupAt: async () => {

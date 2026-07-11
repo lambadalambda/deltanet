@@ -49,6 +49,13 @@ type EncodedBackupSidecar = BackupSidecar & { coreTarSha256?: string };
 
 /** Anything wrong with a container a user handed us: bad magic, truncation, wrong passphrase. */
 export class BackupDecodeError extends Error {}
+export class BackupSizeError extends BackupDecodeError {}
+
+export type BackupDecodeLimits = {
+  maxContainerBytes?: number;
+  maxSidecarBytes?: number;
+  maxCoreBytes?: number;
+};
 
 const deriveKey = (passphrase: string, salt: Buffer): Buffer =>
   scryptSync(passphrase, salt, KEY_LEN);
@@ -57,12 +64,24 @@ export const encodeBackupContainer = (
   { sidecar, coreTar }: { sidecar: BackupSidecar; coreTar: Buffer },
   passphrase: string,
 ): Buffer => {
+  const prefix = encodeBackupPrefix({
+    sidecar,
+    coreTarSha256: createHash('sha256').update(coreTar).digest('hex'),
+  }, passphrase);
+  return Buffer.concat([prefix, coreTar]);
+};
+
+/** Encodes the bounded encrypted prefix so the large core tar can stream separately. */
+export const encodeBackupPrefix = (
+  { sidecar, coreTarSha256 }: { sidecar: BackupSidecar; coreTarSha256: string },
+  passphrase: string,
+): Buffer => {
   const salt = randomBytes(SALT_LEN);
   const iv = randomBytes(IV_LEN);
   const cipher = createCipheriv('aes-256-gcm', deriveKey(passphrase, salt), iv);
   const encodedSidecar: EncodedBackupSidecar = {
     ...sidecar,
-    coreTarSha256: createHash('sha256').update(coreTar).digest('hex'),
+    coreTarSha256,
   };
   const ciphertext = Buffer.concat([
     cipher.update(Buffer.from(JSON.stringify(encodedSidecar), 'utf8')),
@@ -71,26 +90,36 @@ export const encodeBackupContainer = (
   const block = Buffer.concat([salt, iv, cipher.getAuthTag(), ciphertext]);
   const len = Buffer.alloc(4);
   len.writeUInt32BE(block.length);
-  return Buffer.concat([Buffer.from(BACKUP_MAGIC, 'utf8'), len, block, coreTar]);
+  return Buffer.concat([Buffer.from(BACKUP_MAGIC, 'utf8'), len, block]);
 };
 
-export const decodeBackupContainer = (
-  container: Buffer,
-  passphrase: string,
-): { sidecar: BackupSidecar; coreTar: Buffer } => {
+export const backupPrefixLength = (header: Buffer, limits: BackupDecodeLimits = {}): number => {
   const headerLen = BACKUP_MAGIC.length + 4;
   if (
-    container.length < headerLen ||
-    container.subarray(0, BACKUP_MAGIC.length).toString('utf8') !== BACKUP_MAGIC
+    header.length < headerLen ||
+    header.subarray(0, BACKUP_MAGIC.length).toString('utf8') !== BACKUP_MAGIC
   ) {
     throw new BackupDecodeError('not a deltanet backup file');
   }
-  const blockLen = container.readUInt32BE(BACKUP_MAGIC.length);
-  const blockEnd = headerLen + blockLen;
-  if (blockLen < SALT_LEN + IV_LEN + TAG_LEN || container.length < blockEnd) {
+  const blockLen = header.readUInt32BE(BACKUP_MAGIC.length);
+  if (limits.maxSidecarBytes !== undefined && blockLen > limits.maxSidecarBytes) {
+    throw new BackupSizeError('backup sidecar exceeds the configured size limit');
+  }
+  return headerLen + blockLen;
+};
+
+export const decodeBackupPrefix = (
+  prefix: Buffer,
+  passphrase: string,
+  limits: BackupDecodeLimits = {},
+): { sidecar: BackupSidecar; coreTarSha256?: string; prefixLength: number } => {
+  const headerLen = BACKUP_MAGIC.length + 4;
+  const blockEnd = backupPrefixLength(prefix, limits);
+  const blockLen = blockEnd - headerLen;
+  if (blockLen < SALT_LEN + IV_LEN + TAG_LEN || prefix.length < blockEnd) {
     throw new BackupDecodeError('truncated backup file');
   }
-  const block = container.subarray(headerLen, blockEnd);
+  const block = prefix.subarray(headerLen, blockEnd);
   const salt = block.subarray(0, SALT_LEN);
   const iv = block.subarray(SALT_LEN, SALT_LEN + IV_LEN);
   const tag = block.subarray(SALT_LEN + IV_LEN, SALT_LEN + IV_LEN + TAG_LEN);
@@ -104,16 +133,49 @@ export const decodeBackupContainer = (
     // GCM auth failure — wrong passphrase or corrupted sidecar; indistinguishable by design.
     throw new BackupDecodeError('wrong passphrase or corrupted backup file');
   }
-  const encodedSidecar = JSON.parse(plaintext.toString('utf8')) as EncodedBackupSidecar;
-  const coreTar = container.subarray(blockEnd);
+  let encodedSidecar: EncodedBackupSidecar;
+  try {
+    encodedSidecar = JSON.parse(plaintext.toString('utf8')) as EncodedBackupSidecar;
+  } catch (cause) {
+    throw new BackupDecodeError('malformed backup sidecar', { cause });
+  }
   if (
-    encodedSidecar.coreTarSha256 !== undefined &&
-    encodedSidecar.coreTarSha256 !== createHash('sha256').update(coreTar).digest('hex')
+    typeof encodedSidecar !== 'object' ||
+    encodedSidecar === null ||
+    typeof encodedSidecar.addr !== 'string' ||
+    !encodedSidecar.addr ||
+    typeof encodedSidecar.exportedAt !== 'number' ||
+    !Number.isFinite(encodedSidecar.exportedAt) ||
+    (encodedSidecar.signingKey !== undefined && typeof encodedSidecar.signingKey !== 'string') ||
+    (encodedSidecar.store !== undefined && typeof encodedSidecar.store !== 'string') ||
+    (encodedSidecar.coreTarSha256 !== undefined && !/^[0-9a-f]{64}$/.test(encodedSidecar.coreTarSha256))
+  ) {
+    throw new BackupDecodeError('malformed backup sidecar');
+  }
+  const { coreTarSha256, ...sidecar } = encodedSidecar;
+  return { sidecar, ...(coreTarSha256 ? { coreTarSha256 } : {}), prefixLength: blockEnd };
+};
+
+export const decodeBackupContainer = (
+  container: Buffer,
+  passphrase: string,
+  limits: BackupDecodeLimits = {},
+): { sidecar: BackupSidecar; coreTar: Buffer } => {
+  if (limits.maxContainerBytes !== undefined && container.length > limits.maxContainerBytes) {
+    throw new BackupSizeError('backup file exceeds the configured size limit');
+  }
+  const decoded = decodeBackupPrefix(container, passphrase, limits);
+  const coreTar = container.subarray(decoded.prefixLength);
+  if (limits.maxCoreBytes !== undefined && coreTar.length > limits.maxCoreBytes) {
+    throw new BackupSizeError('backup core exceeds the configured size limit');
+  }
+  if (
+    decoded.coreTarSha256 !== undefined &&
+    decoded.coreTarSha256 !== createHash('sha256').update(coreTar).digest('hex')
   ) {
     throw new BackupDecodeError('core tar hash mismatch');
   }
-  const { coreTarSha256: _coreTarSha256, ...sidecar } = encodedSidecar;
-  return { sidecar, coreTar };
+  return { sidecar: decoded.sidecar, coreTar };
 };
 
 /** `deltanet-backup-<addr, filename-safe>-<utc date>.dnbk` for the download header. */

@@ -259,6 +259,13 @@ export const createPleromaClient = (config: ClientConfig) => {
 				auth: 'required'
 			}),
 
+		deleteMedia: (id: string) =>
+			http.request<void>({
+				method: 'DELETE',
+				path: `/api/v1/media/${encodePathSegment(id)}`,
+				auth: 'required'
+			}),
+
 		getAccount: (id: string) =>
 			http.request<PleromaAccount>({
 				path: `/api/v1/accounts/${encodePathSegment(id)}`,
