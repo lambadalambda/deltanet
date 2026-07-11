@@ -57,4 +57,6 @@ must be explicit rather than hard-coding only the default relay.
   was addressed.
 - All 1,501 daemon unit tests pass serially.
 - All 350 frontend Playwright tests pass with one worker.
+- All 18 tests in the 16-file local podman relay integration suite pass,
+  including registration through the self-signed development relay.
 - Daemon TypeScript, frontend Svelte/TypeScript, and `git diff --check` pass.

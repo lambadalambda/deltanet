@@ -48,7 +48,8 @@ server-side request (`meta/issues/signup-relay-validation.md`):
   podman relay.
 - Two independent security review passes were completed. Final verification
   passed all 1,501 daemon unit tests, all 350 frontend Playwright tests, both
-  TypeScript/Svelte checks, and `git diff --check`.
+  TypeScript/Svelte checks, `git diff --check`, and all 18 tests in the real
+  ephemeral podman relay integration suite.
 
 ## 2026-07-11 - protected account credential persistence
 
