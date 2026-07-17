@@ -16,20 +16,22 @@ by default). Everything below is a consequence of that inversion.
 
 ## 2. Where the models match (better than expected)
 
-- **Follow/post/reply/boost/like semantics map cleanly.** We implemented
-  the full Mastodon interaction vocabulary; a stock Pleroma frontend can't
-  tell the difference. Follows-as-securejoin even improves on AP follows:
-  they're mutual key verifications, so every follow edge doubles as an
-  authenticated channel (which our reply-DMs and reaction-DMs then reuse).
+- **Core follow/post/reply/boost/like semantics map cleanly.** The bundled
+  frontend uses a Mastodon/Pleroma-shaped API for these implemented operations,
+  while capability metadata disables unsupported mutations such as deletion,
+  moderation, polls, and chats. Follows-as-securejoin even improves on AP
+  follows: they are mutual key verifications, so every follow edge doubles as
+  an authenticated channel (which reply and reaction control DMs then reuse).
 - **Store-and-forward beats inbox-POST-with-retries.** An AP server must be
-  up to receive; a deltanet node can be a laptop. The relay holds 20 days of
-  undelivered mail. Push via IMAP IDLE gives ~seconds end-to-end latency —
-  our streaming UI measures ~6s post-to-render across nodes.
-- **Deletion and edits are *stronger* than fediverse practice.**
-  `Chat-Delete`/`Chat-Edit` propagate to all recipients and compliant
-  clients honor them (we verified cross-node unboost deletion live). AP
-  `Delete` activities are famously best-effort against caches and forks of
-  the data; here there are no server caches to go stale.
+  up to receive; a deltanet node can be a laptop. The relay holds undelivered
+  mail for up to 20 days (7 days over 200 KiB, also subject to quota eviction).
+  Push via IMAP IDLE gives ~seconds end-to-end latency — our streaming UI
+  measures ~6s post-to-render across nodes.
+- **The substrate has strong deletion/edit primitives.** `Chat-Delete` and
+  `Chat-Edit` propagate to recipients and compliant clients honor them; we use
+  deletion narrowly for operations such as cross-node unboost. DeltaNet status
+  editing and federated status retraction/tombstones are not implemented yet,
+  and must account for embeds, backfill, and recipients retaining prior bytes.
 - **Fan-out economics are fine at human scale.** One post = one body
   encryption (symmetric channel secret) + envelope chunks of ≤999
   recipients, under a 60/min send budget. A 10k-follower feed costs ~11
@@ -46,19 +48,21 @@ by default). Everything below is a consequence of that inversion.
 ### 3.1 There is no public
 
 The deepest clash. Outbound cleartext is **impossible** on chatmail relays
-(hard 523) — so there is no publicly-fetchable post, no anonymous web view,
-no crawlers, no link-preview embeds, no "look at this thread" URL you can
-hand a non-user. "Public" in deltanet means *anyone may subscribe without
-approval* — subscription-scoped visibility, not world-readable documents.
+(hard 523), so there is no canonical network-wide publicly-fetchable post, no
+crawler or link-preview target, and no portable "look at this thread" URL for
+a non-user. A running node can expose sanitized anonymous projections of the
+content it locally holds, but that is the node's view rather than a global
+object. "Public" in DeltaNet means *anyone may subscribe without approval* —
+subscription-scoped visibility, not world-readable documents.
 Our early idea of a plaintext mailing-list + public-inbox web archive
 cannot run on chatmail infrastructure; it would need a classic mail host
 (where core caps recipients at 50/transaction) or a dedicated
 archive-subscriber node that republishes to the web — a design worth its
 own document if we ever want web presence.
 
-**UX consequences:** the "Federated" tab is a fiction (we render it as
-home); logged-out timelines can only show your own node's view; "share
-post" can only mean share-into-the-network, never share-to-the-web.
+**UX consequences:** the authenticated app exposes Home rather than a fictional
+federated timeline; logged-out timelines can only show one node's projection;
+"share post" can only mean share into the network, never a canonical web URL.
 
 ### 3.2 Discovery doesn't exist
 
@@ -90,17 +94,19 @@ trading a little feed noise for eventually-consistent counts.
 
 ### 3.4 The relay is a bus, not an archive
 
-20-day retention, 500 MB quota, oldest-first eviction. All durable state is
-client-side (the DC SQLite db is the source of truth — and it holds your
-private key, so the data dir *is* the identity). Fediverse instances are
-archives; a deltanet node that loses its disk without a backup is gone
-*as an identity*, not just as data. And a node that merely sleeps 90 days
-loses its relay account entirely.
+Up to 20-day retention (7 days over 200 KiB), 500 MB quota, oldest-first
+eviction. Durable state is client-side: the Delta Chat database holds mail
+history and the OpenPGP identity; `deltanet-store.json` holds non-derivable
+protocol state; and `deltanet-signing-key.json` holds the attestation identity.
+Fediverse instances are archives; a DeltaNet node that loses its disk without a
+backup is gone as an identity, not just as data. A node that merely sleeps 90
+days loses its relay account entirely.
 
-**UX consequences we should eventually own:** first-class backup (core has
-encrypted export + device-to-device transfer — we expose none of it);
-"your account expires if unused for 90 days" belongs in onboarding; a
-second device is also a live backup (self-sync messages exist in core).
+**Current UX:** encrypted `.dnbk` export/restore preserves core identity,
+history, the DeltaNet store, and the attestation key, and onboarding warns
+about 90-day expiry. Live device-to-device transfer remains open because
+core's transfer does not carry DeltaNet's signing-key/store sidecar; see
+`meta/issues/second-device-pairing.md`.
 
 ### 3.5 Identity is a key, and keys are sharp
 
@@ -125,18 +131,16 @@ collective moderation here.
 
 ### 3.7 Our conventions vs their spec
 
-Chatmail has a real spec (spec.md) with header-based conventions —
-reactions are RFC 9078, edits/deletes are Chat-* headers, all inside
-protected headers. Our wire convention (text markers: `↳re`, `♻`, `⚑`
-uuids, reaction DMs) is body-level and deltanet-private, chosen because
-read-only channels block members' native reactions and JSON-RPC doesn't
-let us set custom headers. If deltanet's convention should ever be a spec
-others implement, the idiomatic move is Chat-*-style protected headers —
-which needs core cooperation (an RPC for custom headers), worth an
-upstream conversation. Also worth adopting where possible today:
-formatting our reaction DMs per RFC 9078 so vanilla clients render them
-as reactions, and setting In-Reply-To on replies so vanilla DC threads
-them.
+Chatmail has a real spec (spec.md) with header-based conventions: reactions
+are RFC 9078, edits/deletes are Chat-* headers, all inside protected headers.
+DeltaNet now emits signed structured JSON bodies (wire v2); the original
+`↳re`/`♻`/`⚑` text grammar remains read-side only for historical data.
+Reaction control DMs remain a parallel DeltaNet convention because read-only
+channels block members' native reactions and JSON-RPC cannot set custom
+headers. If DeltaNet's convention becomes a spec others implement, the
+idiomatic end state is Chat-*-style protected headers, which requires an
+upstream core RPC. Vanilla-client rendering is not a current product goal,
+but protected headers would still improve protocol composition and integrity.
 
 ### 3.8 Version coupling
 
@@ -154,12 +158,12 @@ deliberately; expect migrations.
 - **Offline-first nodes.** Laptop-as-instance is a real deployment. Posts
   queue at the relay; the node catches up on wake (our backfill handles
   ingestion). No fediverse software survives its server sleeping.
-- **Messenger interop.** *(Retired as a goal by decision 0001 —
-  deltanet is its own system; transport-level interop remains.)* Every deltanet feed is *readable today* by ~any
-  Delta Chat user as a channel; replies land as chats. The social network
-  and the messenger are one substrate — the DM tab isn't a bolted-on
-  feature, it's literally the same transport as everything else. Nothing
-  in the fediverse bridges to a messenger this natively.
+- **Messenger substrate.** *(Vanilla-client rendering compatibility was retired
+  by decision 0001.)* DeltaNet and Delta Chat still share encrypted mail,
+  securejoin, channels, chats, and store-and-forward transport, but wire-v2
+  social content is DeltaNet-specific and is not promised to render usefully in
+  a vanilla client. Future human chats use the same transport rather than a
+  bolted-on messaging service.
 - **Posts that are programs (webxdc).** A sandboxed HTML app as a post,
   with synced state (100 KB updates, full replay for late joiners) and an
   optional sub-second P2P realtime channel (iroh, 128 KB msgs, no server).
@@ -184,24 +188,20 @@ deliberately; expect migrations.
   fingerprint verification. The fediverse has no notion of a verified
   follow at all.
 
-## 5. UX changes deltanet should make (someday list, in rough priority)
+## 5. Remaining UX changes (rough priority)
 
-1. **Backup & second-device onboarding** — the data-dir-is-identity fact
-   demands it (core support exists; we expose nothing). Include the
-   90-day-expiry warning.
+1. **Second-device onboarding** — encrypted file backup/restore and the
+   90-day-expiry warning are implemented; live transfer still needs a secure
+   sidecar path and explicit concurrent-device policy.
 2. **Reframe discovery UI** — invite-link-first sharing surfaces, a
    "resolve" box instead of search, and an opt-in directory story.
-3. **Honest timeline labels** — drop or repurpose "Federated"; consider
-   "Channels you follow" language over instance-speak.
-4. **Reaction gossip** — author-published tally digests so followers see
+3. **Reaction gossip** — author-published tally digests so followers see
    counts; also fixes the "reactions look broken to third parties"
    perception from QA.
-5. **Stable account ids** — fingerprint-keyed identities in the API.
-6. **Interop touches** — RFC 9078-formatted reaction DMs, In-Reply-To on
-   replies, so vanilla Delta Chat renders our interactions natively.
-7. **Locked-account mode** — deny-list/approve flow for invite-request
-   auto-grants (hook exists).
-8. **Web presence bridge (big, separate design)** — an archive-subscriber
+4. **Stable account ids** — fingerprint-keyed identities in the API.
+5. **Personal moderation and retraction** — followers-only approval exists, but
+   user-visible mute/block filtering and durable moderation state do not.
+6. **Web presence bridge (big, separate design)** — an archive-subscriber
    node republishing opted-in public feeds to the web, restoring
    link-shareability without touching the E2EE path.
 

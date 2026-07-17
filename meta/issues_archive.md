@@ -51,3 +51,4 @@
 - [x] [Protect persisted account credentials](issues/account-credentials-file-security.md)
 - [x] [Validate and constrain signup relay requests](issues/signup-relay-validation.md)
 - [x] [Align pnpm versions across the workspace and CI](issues/pnpm-version-alignment.md)
+- [x] [Refresh README and project status documentation](issues/readme-status-audit.md)

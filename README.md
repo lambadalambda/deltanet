@@ -2,22 +2,24 @@
 
 Your own single-user social network that federates over **encrypted email**.
 
-DeltaNet looks and feels like Pleroma/Mastodon, but there is no instance and
-no ActivityPub: you run a small daemon on your own machine, your identity is
-an email address on a [chatmail](https://chatmail.at) relay (registered for
-you at sign-up, no form to fill), and your feed is an end-to-end-encrypted
-broadcast channel on the Delta Chat network. Following someone means joining
-their feed via an invite link. The mail servers only ever see ciphertext,
-and store-and-forward delivery means your node doesn't need to be online
-24/7 to receive posts.
+DeltaNet looks and feels like Pleroma/Mastodon, but there is no multi-user
+instance and no ActivityPub: you run a small daemon on your own machine, your
+identity is an email address on a [chatmail](https://chatmail.at) relay
+(registered for you at sign-up, no form to fill), and your feed is an
+end-to-end-encrypted broadcast channel on the Delta Chat network. Following
+someone means joining their feed via an invite link. Relays temporarily store
+encrypted mail and cannot read message bodies or recover your identity keys;
+they still observe delivery metadata such as sender/recipient addresses,
+timing, and sizes. Store-and-forward delivery means your node can sleep and
+catch up later, within the relay's finite retention window.
 
 ```
 frontend (SvelteKit SPA, served by the daemon)
       │  Mastodon/Pleroma client API (localhost)
-daemon (this repo: Mastodon API ⇄ chat messages)
+daemon (Mastodon API ⇄ chat messages)
       │  JSON-RPC — deltachat-rpc-server (chatmail core)
       │  SMTP/IMAP + Autocrypt (OpenPGP)
-any email / chatmail relay
+chatmail relay
 ```
 
 ## Quick start
@@ -34,10 +36,10 @@ mise exec -- pnpm start  # daemon on http://localhost:4030, serving the UI
 ```
 
 The daemon and frontend intentionally keep separate dependency lockfiles because
-they are installed and released as separate packages. The empty root importer
-lockfile is also intentional: pnpm's root script lifecycle maintains it even
-though dependencies are installed only in the two packages. Root scripts invoke
-each package with the same pinned pnpm version; run them through
+they have independent dependency graphs and build contexts. The empty root
+importer lockfile is also intentional: pnpm's root script lifecycle maintains it
+even though dependencies are installed only in the two packages. Root scripts
+invoke each package with the same pinned pnpm version; run them through
 `mise exec -- pnpm`, or use the equivalent root tasks (`mise run setup`,
 `check`, `test`, and `build`).
 
@@ -57,8 +59,11 @@ location, not as authorization. The browser signs in through the local OAuth
 flow and sends an unguessable Bearer session on every private REST request.
 Before opening a WebSocket it exchanges that bearer for a one-use, 30-second
 stream ticket, so the long-lived token never appears in a WebSocket URL. The
-served SPA, onboarding while no account is configured, instance metadata, and
-sanitized public timeline/profile projections are the only anonymous surfaces.
+anonymous surface is deliberately bounded: the served SPA; status and
+enrollment-protected OAuth bootstrap; signup/restore while no account is
+configured; instance/discovery metadata; sanitized public timeline, profile,
+avatar, and header projections; and message blobs carrying a short-lived signed
+capability.
 
 - Initial OAuth client registration requires the single-use enrollment code
   printed by the daemon (valid for 10 minutes). The SPA persists that client per
@@ -114,9 +119,13 @@ operator-controlled capability: add exact HTTPS origins to the comma-separated
 credentials, paths, queries, or fragments are rejected, and an API caller
 cannot choose an origin outside that allowlist. Selecting any non-default relay
 also requires the current one-time enrollment code printed by the daemon.
-Private and loopback relays use the same explicit setting and must present a valid TLS certificate. The
-self-signed podman relay is enabled only inside the isolated integration-test
-worker, which relaxes certificate verification for that worker process.
+Private and loopback relays use the same explicit setting and must present a
+valid TLS certificate. The self-signed podman relay is enabled only inside the
+isolated integration-test worker, which relaxes certificate verification for
+that worker process.
+Allowlisting a custom `/new` origin does not configure its mail transport: the
+returned mailbox domain must still provide working Delta Chat DNS/`.well-known`
+autoconfiguration and valid production IMAP/SMTP TLS.
 
 ## Running two nodes locally (testing federation)
 
@@ -150,18 +159,19 @@ The same works over curl if you prefer scripts:
 
 ```sh
 curl -s localhost:4030/api/deltanet/invite \
-     -H "Authorization: Bearer $DELTANET_TOKEN"       # get A's invite
+     -H "Authorization: Bearer $DELTANET_TOKEN_A"     # get A's invite
 curl -s -X POST localhost:4031/api/deltanet/follow \
-     -H "Authorization: Bearer $DELTANET_TOKEN" \
+     -H "Authorization: Bearer $DELTANET_TOKEN_B" \
      -H 'Content-Type: application/json' \
      -d '{"invite": "<paste it here>"}'               # B follows A
 ```
 
 Private API calls require a session issued by the OAuth sign-in flow; the
-example assumes its raw value is available as `DELTANET_TOKEN`. Tokens are
-shown only once by `/oauth/token` and are otherwise held in that browser
-origin's local storage. Each node port has a separate browser origin, client,
-session, and default auth file, so two local nodes do not collide.
+example assumes each node's raw value is available as `DELTANET_TOKEN_A` or
+`DELTANET_TOKEN_B`. Tokens are shown only once by `/oauth/token` and are
+otherwise held in that browser origin's local storage. Each node port has a
+separate browser origin, client, session, and default auth file, so two local
+nodes do not collide and cannot share a bearer token.
 
 Notes:
 
@@ -169,27 +179,35 @@ Notes:
   federation still goes through real SMTP/IMAP, so this is a genuine
   end-to-end test, not a loopback shortcut. Use different relays per node
   to test cross-relay federation.
-- `mise exec -- pnpm -C daemon test:integration` does an automated version of this
-  (register two throwaway accounts, follow, post, assert delivery,
+- `mise exec -- pnpm -C daemon test:integration` does an automated version of
+  this (register two throwaway accounts, follow, post, assert delivery,
   unfollow/refollow) — a good smoke test after changes. Integration tests
   always use their own `data/int-*` dirs and fresh accounts; never point
   them at a data dir a running daemon owns.
-- Killing a daemon and restarting it is safe: the mail server holds
-  undelivered messages (store-and-forward), and the daemon's local index
-  rebuilds from its Delta Chat database on startup.
+- Killing a daemon and restarting it is safe: the relay holds undelivered mail
+  for up to 20 days (7 days for messages over 200 KiB, subject to quota), the
+  daemon re-derives message indices from its Delta Chat database, and durable
+  non-derivable state is recovered from `deltanet-store.json` plus its recovery
+  copy. A relay account is deleted after roughly 90 days without login.
 
 ## Backup & restore
 
-Your node's data directory **is** your identity: the OpenPGP key lives in the
-Delta Chat database, the relay stores nothing for you (and deletes addresses
-idle for ~90 days), and the post-attestation signing key that followers pin
-lives next to it. Losing the disk without a backup means losing the account.
+Your node's data directory holds the cryptographic identity: the OpenPGP key
+lives in the Delta Chat database, while the post-attestation signing key that
+followers pin lives beside it. The live node also needs credentials and local
+OAuth state, which default to files beside rather than inside the data
+directory. Relays temporarily hold encrypted mail but not these private keys,
+and delete accounts idle for roughly 90 days. Use a `.dnbk` export rather than
+assuming that copying only `${DELTANET_DATA}` captures every live-node file.
 
 - **Backup:** Settings → Backup — pick a passphrase and download a `.dnbk`
   file. It contains core's passphrase-encrypted backup tar plus an encrypted
-  sidecar (the attestation signing key and the daemon's index), so a restore
-  brings back *everything*: address, follows, history, and the signing key
-  (followers' key pins keep verifying).
+  sidecar containing the attestation signing key and durable daemon store. A
+  restore brings back the address, OpenPGP identity, follows, message history,
+  store state, and signing key, so followers' key pins keep verifying. Browser
+  OAuth clients/sessions are intentionally not restored and require fresh
+  enrollment. The custom daemon-local profile header (`header.png`) is not
+  currently included; the avatar is core-backed.
 - **Restore:** on a fresh node, choose **Restore from a backup** on the
   landing page's Create-account tab instead of signing up. Or over the API:
   `POST /api/deltanet/restore` (multipart `file` + `passphrase`);
@@ -201,10 +219,10 @@ is authenticated) without touching the node.
 
 ## Testing against a local relay
 
-By default `mise exec -- pnpm -C daemon test:integration` provisions its own **ephemeral
-chatmail relay in a podman container** and runs the whole suite against it —
-no accounts are created on the public `nine.testrun.org`, and the run needs
-no external network once the image is built.
+By default `mise exec -- pnpm -C daemon test:integration` provisions its own
+**ephemeral chatmail relay in a podman container** and runs the whole suite
+against it — no accounts are created on the public `nine.testrun.org`, and the
+run needs no external network once the image is built.
 
 Requirements: **podman** (rootless is fine). The relay image is a real
 [chatmail/relay](https://github.com/chatmail/relay) built via its own
@@ -235,34 +253,63 @@ accept-invalid-certificates login params (see
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs on every push and pull request as a second
-set of checks, in three jobs:
+`.github/workflows/ci.yml` runs for pull requests and pushes to `main`, in three
+jobs:
 
 - **daemon** — typecheck + unit suite (fast, hermetic).
 - **frontend** — typecheck + Playwright suite.
 - **integration** — the full federation suite against a real chatmail relay
   built and booted as a systemd **podman** container on the hosted runner
   (`ubuntu-latest` ships podman + cgroup v2). This job builds the relay image
-  each run, so it takes several minutes; a preflight step smoke-tests
-  systemd-in-container first so a substrate failure is distinguishable from a
-  relay-build or test failure.
+  each run, so it takes several minutes. A warning-only preflight confirms
+  Podman can launch an image containing `systemctl`; the integration job itself
+  is the test that the relay can boot under systemd.
 
 ## Repo layout
 
 - `daemon/` — TypeScript daemon: Mastodon client API in front,
-  `deltachat-rpc-server` behind. Unit tests (vitest) + a real-network
-  federation integration test (`mise exec -- pnpm test:integration` from `daemon/`).
+  `deltachat-rpc-server` behind. Vitest unit tests and a multi-scenario
+  federation suite against the disposable relay.
 - `frontend/` — DeltaNet web UI, a fork of
   PleromaNet (a SvelteKit Pleroma frontend) reworked for invite-based
-  federation and daemon sign-up. Playwright tests.
+  federation and daemon sign-up. Mocked Playwright tests plus an opt-in stock
+  Pleroma compatibility check.
+- `daemon/testenv/` — Podman chatmail relay image and lifecycle scripts used by
+  daemon integration tests.
+- `docs/` — architecture decisions, substrate audit, comparisons, and design
+  sketches.
+- `meta/` — repository-local issue tracker and the frontend/daemon capability
+  contract.
+- `mise.toml`, `package.json` — pinned toolchain and root orchestration.
+- `.github/workflows/` — CI for daemon, frontend, and relay integration.
 
-## Model (v0)
+## Current capabilities
 
-- **Post** → message in your broadcast channel, encrypted per follower.
-- **Follow** → securejoin handshake from an `https://i.delta.chat/#…`
-  invite link (capability-based: the link carries key fingerprint + secret).
-- **Home timeline** → all messages in all feeds you've joined.
-- **DMs, reactions, media** → native Delta Chat features, mapped onto the
-  Mastodon API (partially wired up so far).
+- **Posts and visibility:** signed wire-v2 envelopes in public or
+  followers-only broadcast channels. Direct statuses are delivered to explicit
+  mentions plus the parent author of a direct reply, and do not enter feed
+  timelines. A broadcast encrypts the body once with its per-channel symmetric
+  secret; SMTP recipient envelopes are then fanned out to members.
+- **Following:** securejoin handshake from an `https://i.delta.chat/#…` invite
+  link. Locked-channel invites grant followers-only access; follow requests use
+  DeltaNet control messages.
+- **Reading and discovery:** home/public/account timelines, profiles, known-user
+  and locally held post search, replies, verified boosts, thread auto-backfill,
+  and explicit thread subscriptions. There is no network-wide directory,
+  hashtag search, or anonymously fetchable global post URL.
+- **Interactions:** favourites, emoji reactions, mentions, notifications, and
+  authenticated real-time streaming. Reaction tallies are authoritative on the
+  original author's node; portable signed receipts remain planned.
+- **Media and profile:** one PNG/JPEG/WebP/GIF image per post with alt text,
+  plus display name, bio, avatar, custom local header, and petnames.
+- **Recovery:** encrypted `.dnbk` export/restore with identity, history, durable
+  store, and attestation-key continuity.
+- **Not yet available in the bundled daemon:** human chat/message threads,
+  bookmarks, federated status deletion, mute/block, polls, unlisted visibility,
+  content warnings, extended profile fields, and audio/video uploads. The UI
+  hides or labels these through the capability contract rather than pretending
+  they work.
 
-See `DEVLOG.md` for findings and design decisions.
+See `meta/frontend-daemon-capabilities.md` for the exact API contract,
+`docs/decisions.md` for standing decisions, and `DEVLOG.md` for implementation
+history.

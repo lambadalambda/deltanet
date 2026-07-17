@@ -1,18 +1,42 @@
 # DeltaNet
 
-DeltaNet is the frontend for the deltanet daemon, speaking the Pleroma/Mastodon client API, focused on a reduced, refined interface. The visual design source file is now represented by the implementation plan in `meta/issues.md`.
+DeltaNet is the SvelteKit frontend for the DeltaNet daemon. It speaks a
+Pleroma/Mastodon-shaped client API while presenting the invite-based encrypted
+social model directly. The canonical visual handoff and implementation issues
+live under `meta/`.
 
 ## Status
 
-This repository contains a SvelteKit TypeScript SPA/static frontend without SSR, backed by the real Pleroma API.
+This directory contains a SvelteKit TypeScript SPA/static frontend without SSR.
+It works with the bundled DeltaNet daemon and retains an opt-in compatibility
+check against stock Pleroma. The bundled daemon publishes capability metadata;
+mutable controls and routes are hidden or labeled when their persistence or
+federation semantics are not implemented. The current Explore page is static
+design/demo content, not real DeltaNet network discovery.
 
 ### Real App Surface
 
 - `/` is the signed-out landing with the OAuth sign-in and create-account flows.
-- `/app/...` is the authenticated app: home/local/federated timelines with streaming and pagination, thread detail with inline replies, profiles with follow/unfollow, search (header dropdown and full page), notifications with streaming and badge counts, and profile settings backed by `update_credentials`.
-- The composer supports media uploads (browse, drag-and-drop, paste), content warnings, polls, mention and custom emoji autocomplete, and the full emoji picker. Posts render emoji reaction rows with reaction toggling.
-- `/app/profiles/...` is also viewable signed out against `PUBLIC_PLEROMA_INSTANCE_URL`, with sign-in prompts on authenticated actions.
-- `/public` shows anonymous local/federated public timelines.
+- `/app/...` is the authenticated app: a streaming/paginated home timeline,
+  thread detail with inline replies and subscriptions, profiles with
+  follow/unfollow, known-content search, notifications, invite sharing, backup,
+  and profile settings.
+- The composer supports public, followers-only, and mentioned-recipient direct
+  statuses; one image upload through the bundled daemon; mention/custom-emoji
+  autocomplete; and the full emoji picker. Content-warning and poll controls
+  exist for compatible Pleroma servers but remain capability-disabled on
+  DeltaNet until their signed federation contracts are implemented.
+- Posts render replies, verified boosts, image media, favourites, and emoji
+  reactions. Human chat threads, bookmarks, deletion, moderation, polls,
+  unlisted visibility, content warnings, extended profiles, and audio/video are
+  explicitly unavailable when connected to the bundled daemon.
+- `/app/profiles/...` can also render signed-out public projections, with
+  sign-in prompts on authenticated actions.
+- `/public` is a stock-Pleroma compatibility/demo route backed by
+  `PUBLIC_PLEROMA_INSTANCE_URL`; it is not DeltaNet-wide discovery. A daemon's
+  anonymous public timeline is its own sanitized local projection.
+- `/app/explore` is also a static design specimen today; its hashtags,
+  communities, and Join toggles do not represent daemon-backed discovery.
 
 ### Design Reference Surfaces
 
@@ -92,4 +116,8 @@ mise exec -- pnpm preview
 
 ## API Reference
 
-DeltaNet targets the Pleroma-flavored client API directly and can rely on Pleroma-specific features being present. Pleroma API documentation is available at https://api.pleroma.social/.
+The frontend targets a Pleroma-flavored client API. Stock Pleroma-specific
+features are used only when the connected server supports them; bundled
+DeltaNet behavior follows the explicit contract in
+`../meta/frontend-daemon-capabilities.md`. Pleroma API documentation is
+available at https://api.pleroma.social/.

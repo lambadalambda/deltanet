@@ -1,10 +1,10 @@
-# Design sketches (not scheduled)
+# Design sketches and implementation status
 
 Ideas explored 2026-07-07, downstream of the
-[federation comparison](federation-comparison.md). None scheduled; captured
-so the reasoning isn't lost. Common pattern across all three: **the party
-that already has the data becomes a publisher** — the substrate's native
-substitute for the fediverse's global fetchability.
+[federation comparison](federation-comparison.md). Several have since shipped;
+status notes preserve which parts remain sketches. The common pattern is that
+**the party that already has the data becomes a publisher** — the substrate's
+native substitute for the fediverse's global fetchability.
 
 ## 1. Visibility tiers via multiple channels (not multiple accounts)
 
@@ -18,9 +18,10 @@ multi-use (with withdraw/revive support in core). So:
   invite-request convention), link published in bio/QR/directory.
 - **locked channel** — approval-gated grants (locked-mode hook).
 - Mastodon visibility dropdown maps natively: `public` → public channel,
-  `private` → locked channel. Today the selector is decorative; this makes
-  it real. Do NOT model this as two accounts: splits identity, doubles key
-  management, forces followers to manage two contacts.
+  `private` → locked channel. This mapping, leak prevention, and
+  mentioned-recipient `direct` delivery are implemented. Do NOT model this as
+  two accounts: it splits identity, doubles key management, and forces
+  followers to manage two contacts.
 
 Discovery ("announce the invite somewhere") = a **directory node**: a
 well-known deltanet account that auto-grants follows, accepts listing
@@ -30,6 +31,9 @@ HTTPS listing site (web presence without violating the relay's
 no-cleartext rule).
 
 ## 2. Verifiable reaction gossip: portable receipts
+
+> Issued as `meta/issues/reaction-receipts.md`; signing and portable tally
+> verification remain open.
 
 Reaction gossip (author publishes tally digests to followers) is trusted
 by default — the author could lie. Upgrade: make each reaction DM a
@@ -51,20 +55,22 @@ with real signatures. Different layer, not solvable here.
 > concrete case: A and B talk a long thread; C follows only B, so C holds
 > B's half (his feed) full of reply refs that dangle at A's posts. Issued:
 > meta/issues/{wire-thread-root-ref,thread-auto-backfill,thread-subscribe}.md.
+> Signed root refs, peer auto-backfill, and explicit subscriptions are now
+> implemented. The root-directed one-shot request remains a sketch.
 
-**Correction to the original premise**: the root author does NOT receive
-every reply today — reply DM copies go to the PARENT author, not the
-root. Two-party threads happen to be complete on both sides; a third
-party replying deep in the thread never reaches the root. Prerequisite
-wire extension: reply envelopes carry a signed `root` ref, and the reply
-convention DM-copies the root author as well as the parent author. Root
-becomes complete BY CONSTRUCTION (so it can host), and any single message
-identifies its thread's root + owner.
+**Historical correction to the original premise:** before signed root refs,
+reply DM copies went only to the parent author, so a third party replying deep
+in a thread never reached the root. The implemented extension carries a signed
+`root` ref and makes a best-effort DM copy to the root author as well as the
+parent. This lets the root host the content it successfully receives, without
+claiming guaranteed delivery, and lets any single message identify the thread
+root and owner.
 
 Attestations dissolve the trust half of "who owns the thread": every v2
 post/reply is an author-signed envelope, so a thread is a set of
-self-verifying documents — ANY holder can serve it (omission possible,
-alteration/fabrication not), and the 90-day account expiry makes
+self-verifying documents over their canonical signed fields, so any holder can
+serve them without changing authored text, refs, or media hash (omission is
+still possible). The 90-day account expiry makes
 any-holder serving a resilience property, not just a convenience. Three
 layers:
 
@@ -77,17 +83,16 @@ layers:
   dead peers), answer = bundle of signed envelopes, verified through the
   boost-embed ladder (never TOFU-pin from relayed content). In the A/B/C
   case this is transitively complete with NO thread request: every A
-  message is the parent of a B message C already holds. Needs the one
-  real architecture piece: a **held-envelope store class** (verified
-  foreign envelopes not backed by a local DC message; the orig-<uuid>
-  thread-view fix was the first step).
+  message is the parent of a B message C already holds. The implemented
+  **held-envelope store** retains verified foreign envelopes that are not
+  backed by a local Delta Chat message.
 - **Subscribe to thread (explicit, UI).** For "keep me updated even when
   no followee is active in it anymore": a thread-view button → scoped
   invite-request to the root author, who lazily creates a per-thread
   broadcast channel and republishes replies it receives as signed
   envelopes. New subscribers get a "thread so far" bundle (same format as
-  backfill responses). Keeps **reply control**: the root declining to
-  republish = thread moderation the fediverse can't cleanly do.
+  backfill responses). The current host republishes every valid eligible reply;
+  no per-reply host moderation policy is implemented.
 - **Root-directed thread request.** Opening a thread you only partially
   hold may still miss branches no peer of yours touched (stranger
   replying to stranger); a one-shot thread request to the root (same
@@ -99,15 +104,17 @@ probably webxdc's first natural use here.
 
 ## 4. Expanding the join backfill (10 → N)
 
+> Issued as `meta/issues/join-backfill-expansion.md`; not implemented.
+
 The 10-message backfill lives in CORE on the channel owner's device
 (`resend_last_msgs()`, `N_MSGS_TO_NEW_BROADCAST_MEMBER` in constants.rs),
 not on the relay — i.e. inside our own daemon process. Expansion paths,
 ranked: (1) upstream a config knob (feature is new, PR #8151-era, active
 area); (2) app-layer backfill bundles: on SecurejoinInviterProgress our
-daemon DMs older posts to the joiner — original text carries `⚑` uuids so
-the joiner's store unifies them; requires admitting author-verified
-DM-carried posts into timelines + bundling for rate limits; (3) patched
-core binary (fork maintenance — avoid). Long-term structural answer is
+daemon DMs older signed wire-v2 envelopes to the joiner, preserving their UUID
+refs so the held-envelope store unifies them; requires an explicit admission
+policy for author-served feed history plus rate-limit-aware bundling; (3)
+patched core binary (fork maintenance — avoid). Long-term structural answer is
 webxdc update-replay (full history for late joiners). Note: any expanded
 backfill is real re-transmission on the owner's node (bandwidth, 60/min
 budget), not a free outbox read like AP.
@@ -140,36 +147,40 @@ fit a line.
 
 ## 6. Post attestations (republication veracity)
 
-Direct deliveries are PGP-signed and verified by core; REPUBLISHED content
-(boost embeds, thread-channel republication per sketch 3) is only attested
-by the republisher — a thread host could fabricate or alter embedded
-posts. No RPC path exists to carry the original PGP signature along.
+> Implemented by `meta/issues/post-attestations.md`, including signed wire-v2
+> envelopes, verified embeds, pinning, and fail-closed placeholders.
 
-Fix at the deltanet layer, enabled by wire v2 (decision 0001): per-account
-ed25519 signing key (daemon-held); every post envelope carries
+Before this shipped, direct deliveries were PGP-signed and verified by core,
+but republished content (boost embeds and thread-channel republication) was
+only attested by the republisher, so a host could fabricate or alter an embed.
+No RPC path exists to carry the original PGP signature along.
+
+The implemented DeltaNet-layer fix, enabled by wire v2 (decision 0001), uses a
+daemon-held per-account ed25519 signing key. Every post envelope carries
 `{pubkey, sig}` over canonical fields (uuid, author addr, text, refs,
-timestamp). Republished posts become offline-verifiable by anyone holding
-the author's pubkey; hosts can only omit (reply control), never alter.
-Key distribution: followers receive the pubkey over the
-securejoin-verified channel (strong binding); strangers get
-TOFU-with-pinning + automated DM challenge ("did you write u:X?") — the
-same machinery as reaction-receipt verification (sketch 2); attestations
-generalize receipts from "I reacted" to "I said".
+timestamp and media hash). Republished posts become offline-verifiable by anyone
+holding the author's pubkey; hosts cannot alter those canonical signed fields.
+Unsigned projection metadata such as visibility and media description is not
+covered by this claim.
+Key distribution: followers receive the pubkey over the securejoin-verified
+channel (strong binding). Strangers use TOFU-with-pinning and render as
+unconfirmed; opening a thread/original can trigger the active DM challenge
+("did you write u:X?"). Timeline-only embeds are not automatically challenged.
+The machinery generalizes receipts from "I reacted" to "I said".
 
 Decision 0002 hardens this sketch: verification is not optional — 
 unverifiable republished content renders as a placeholder, never as an
 attributed status. Attestations are the ADMISSION rule for republished
 content, not an overlay.
 
-Boosts are the same case: today a boost carries a 500-char quotedText
-copy (synthesized for non-followers of the author — fabricatable,
-truncated, no media). In v2 a boost embeds the original COMPLETE signed
-envelope; recipients verify offline, boosters choose whether, never what.
-The attestation must also cover attachment CONTENT-HASHES so republishers
-can re-attach media bytes that recipients verify against the author-signed
-hash — verifiable images across boost/thread hops.
+Boosts use the same rule: wire v2 embeds the original complete signed envelope
+instead of the former fabricatable/truncated `quotedText` copy. Recipients
+verify offline; boosters choose whether to republish, never what the author
+said. Signed media hashes let recipients verify image bytes reattached to
+boosts. Thread bundles preserve the signed hash, but transferring/fetching the
+corresponding media bytes across thread-only hops remains deferred.
 
-Residual: proves keyholder authorship, not identity-behind-key — a host
-can invent fake strangers, not impersonate known/queryable contacts
-(sybil floor, not solvable here). Wire v2 envelope should reserve
-`pubkey`/`sig` field names even before signing lands.
+Residual: this proves keyholder authorship, not identity-behind-key. Before a
+key is pinned, a host can present an address/key claim that renders explicitly
+`author_unconfirmed`; active confirmation or an existing pin is what detects a
+conflicting key. Sybil identities remain possible and are a different layer.

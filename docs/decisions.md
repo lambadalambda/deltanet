@@ -41,18 +41,18 @@ republished signed envelope whose attestation verifies against X's key.
 **Consequences:**
 
 - The v0/v1 `synthesizeStatus`/`synthesizeAccount` paths (boost quotedText
-  → fake status with a synthetic id-"0" account) are scheduled for removal
-  with wire v2. Unresolvable/unverifiable republished content renders as an
+  → fake status with a synthetic id-"0" account) were removed with wire v2.
+  Unresolvable/unverifiable republished content renders as an
   honest placeholder ("boosted a post that cannot be displayed/verified"),
   never as attributed content.
-- Interim ordering: wire v2 may ship before attestations — during that
-  window, boosts of posts the recipient doesn't hold render placeholders
-  (no synthesis). Attestations (sketch #6) then upgrade placeholders to
-  verified embeds. Thread republication (sketch #3) launches only WITH
-  attestations — hosts never gain a synthesis privilege.
+- Shipped ordering: wire v2 landed before attestations, so boosts of posts the
+  recipient did not hold temporarily rendered placeholders. Attestations
+  (sketch #6) then upgraded eligible placeholders to verified embeds. Thread
+  republication (sketch #3) launched with attestations, so hosts never gained a
+  synthesis privilege.
 - Scope: this governs content attribution (statuses/accounts). Reaction
   TALLIES remain trust-by-default with verify-on-demand receipts (0001-era
   discussion) — numbers, not impersonation.
-- Legacy note: current shipped code still synthesizes for pre-v2 boosts;
-  documented here as behavior slated for removal, not a compatibility
-  promise.
+- Legacy pre-v2 or unresolved boosts now render an unattributed unavailable
+  placeholder; synthesized attributed statuses are not retained as a
+  compatibility behavior.

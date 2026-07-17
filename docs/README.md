@@ -12,10 +12,13 @@
   chatmail federation vs the fediverse — matches, clashes, UX
   consequences, and what deltanet can do that ActivityPub can't.
 
-- [design-sketches.md](design-sketches.md) — unscheduled design ideas: channel-based
-  visibility tiers + directory node, verifiable reaction receipts,
-  subscribable threads (root-author-as-host).
+- [design-sketches.md](design-sketches.md) — design rationale and current
+  status for channel-based visibility, directory ideas, verifiable reaction
+  receipts, thread backfill/subscriptions, expanded join history, wire-v2
+  payloads, and post attestations. Several sketches are implemented; each
+  section says what remains.
 
 Design history and day-by-day findings live in the repo-root DEVLOG.md;
-the wire convention itself is documented there (v0 markers → v1 post
-UUIDs).
+standing wire decisions live in `decisions.md`, while the current wire-v2/dn3
+implementation is defined by `daemon/src/envelope.ts`, `daemon/src/wire.ts`,
+and `daemon/src/attest.ts`.

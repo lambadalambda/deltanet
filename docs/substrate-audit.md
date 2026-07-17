@@ -27,8 +27,8 @@ underlying repos. This is the reference sheet — the interpretation is in
 - **Broadcast channels are encrypted with a per-channel symmetric secret**,
   not per-recipient PGP (the secret is handed to members on join). One body
   encryption per post regardless of follower count; fan-out cost is
-  envelope-only, chunked at 999 recipients per submission. Our README's
-  "encrypted per follower" phrasing was wrong in mechanism (right in effect).
+  envelope-only, chunked at 999 recipients per submission. The former README
+  wording "encrypted per follower" was wrong in mechanism (right in effect).
   Channels were promoted from experimental to official *recently* — the wire
   format changed within the last few releases (`BROADCAST_INCOMPATIBILITY_MSG`)
   and is **not yet in spec.md**. Our feed primitive rides the least-stable,
