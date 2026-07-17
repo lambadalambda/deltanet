@@ -1,7 +1,7 @@
 {
-  "name": "deltanet",
+  "name": "headwater",
   "version": "0.0.1",
-  "description": "A single-user Pleroma-style backend that federates over chatmail (Delta Chat transport) instead of ActivityPub",
+  "description": "Headwater, a single-user Pleroma-style backend federating over chatmail (Delta Chat transport)",
   "type": "module",
   "private": true,
   "engines": {

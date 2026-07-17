@@ -84,7 +84,7 @@ const EXTENSION_BY_MIME: Record<string, string> = {
 export const isSupportedImageMime = (mime: string): boolean => SUPPORTED_IMAGE_MIME.has(mime);
 
 export const createMediaStore = (options: MediaStoreOptions = {}): MediaStore => {
-  const uploadDir = options.uploadDir ?? join(tmpdir(), 'deltanet-uploads');
+  const uploadDir = options.uploadDir ?? join(tmpdir(), 'headwater-uploads');
   const maxFileBytes = options.maxFileBytes ?? MAX_MEDIA_BYTES;
   const maxRecords = options.maxRecords ?? MAX_STAGED_MEDIA;
   const maxMessageDescriptions = options.maxMessageDescriptions ?? MAX_MESSAGE_DESCRIPTIONS;

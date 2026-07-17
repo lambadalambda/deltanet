@@ -18,6 +18,7 @@ import {
 	readPendingOAuth,
 	readPleromaAuthState,
 	readPleromaOAuthClient,
+	readPleromaSession,
 	readSplitPleromaAuthState,
 	signOutPleroma,
 	storePleromaOAuthClient,
@@ -25,6 +26,7 @@ import {
 	storePleromaSession
 } from './session';
 import { buildPleromaStreamingUrl, openPleromaTimelineStream, parsePleromaStreamingMessage } from './streaming';
+import { notificationLastSeenStorageKey, readNotificationLastSeenAt } from './notifications';
 
 type RecordedRequest = {
 	method: string;
@@ -180,20 +182,27 @@ test('Pleroma client explicitly discards staged media', async () => {
 	expectPath(requests[0], '/api/v1/media/media%20staged%2F1');
 });
 
-test('instance capabilities are conservative until loaded and explicit for DeltaNet', () => {
+test('instance capabilities prefer Headwater metadata and fall back to legacy DeltaNet metadata', () => {
 	expect(capabilitiesForInstance(null)).toEqual(NO_MUTABLE_CAPABILITIES);
 	expect(capabilitiesForInstance(pleromaFixtures.instance)).toMatchObject({ bookmarks: true, chats: true, polls: true });
 	expect(capabilitiesForInstance({
 		...pleromaFixtures.instance,
 		configuration: {
 			...pleromaFixtures.instance.configuration,
-			deltanet: { capabilities: { bookmarks: false, status_deletion: false, account_moderation: false, media_description: true, chats: false, polls: false, unlisted_visibility: false, content_warnings: false, extended_profile: false } }
+			headwater: { capabilities: { bookmarks: false, status_deletion: false, account_moderation: false, media_description: true, chats: false, polls: false, unlisted_visibility: false, content_warnings: false, extended_profile: false } }
 		}
 	})).toEqual({ bookmarks: false, statusDeletion: false, accountModeration: false, mediaDescription: true, chats: false, polls: false, unlistedVisibility: false, contentWarnings: false, extendedProfile: false });
 	expect(capabilitiesForInstance({
 		...pleromaFixtures.instance,
 		configuration: { deltanet: { capabilities: { bookmarks: true } } }
 	})).toEqual({ bookmarks: true, statusDeletion: false, accountModeration: false, mediaDescription: false, chats: false, polls: false, unlistedVisibility: false, contentWarnings: false, extendedProfile: false });
+	expect(capabilitiesForInstance({
+		...pleromaFixtures.instance,
+		configuration: {
+			headwater: { capabilities: { bookmarks: false } },
+			deltanet: { capabilities: { bookmarks: true } }
+		}
+	})).toEqual({ bookmarks: false, statusDeletion: false, accountModeration: false, mediaDescription: false, chats: false, polls: false, unlistedVisibility: false, contentWarnings: false, extendedProfile: false });
 });
 
 test('Pleroma client converts timeline Link headers into cursor data', async () => {
@@ -358,7 +367,7 @@ test('Pleroma streaming lifecycle fetches a bearer-authenticated ticket before o
 		const socket = sockets[0];
 		expect(socket.url).toBe('wss://pleroma.example/api/v1/streaming/?stream=user&ticket=one-use-ticket');
 		expect(socket.url).not.toContain('access-token');
-		expectPath(ticketRequests.at(-1)!, '/api/deltanet/streaming/token');
+		expectPath(ticketRequests.at(-1)!, '/api/headwater/streaming/token');
 		expect(ticketRequests.at(-1)!.method).toBe('POST');
 		expect(ticketRequests.at(-1)!.authorization).toBe('Bearer access-token');
 		socket.onopen?.(new Event('open'));
@@ -535,18 +544,18 @@ test('OAuth boundary enrolls and persists a reusable full-scope client, builds r
 	const scopes = ['read', 'write', 'follow', 'push'] as const;
 	const app = await registerOAuthApp({
 		instanceUrl: 'https://pleroma.example',
-		clientName: 'DeltaNet',
+		clientName: 'Headwater',
 		redirectUri,
 		scopes,
 		enrollmentCode: 'terminal-enrollment-code',
-		website: 'https://deltanet.example',
+		website: 'https://headwater.example',
 		fetch: fetchImpl
 	});
 
 	expect(app.clientId).toBe('client-id');
 	expect(requests[0].method).toBe('POST');
 	expectPath(requests[0], '/api/v1/apps');
-	expect(requests[0].body).toContain('client_name=DeltaNet');
+	expect(requests[0].body).toContain('client_name=Headwater');
 	expect(requests[0].body).toContain('scopes=read+write+follow+push');
 	expect(requests[0].body).toContain('enrollment_code=terminal-enrollment-code');
 
@@ -638,7 +647,7 @@ test('OAuth boundary enrolls and persists a reusable full-scope client, builds r
 		createdAt: 1700000001000
 	});
 	expect(readPleromaAuthState(storage)).toMatchObject({ status: 'authenticated' });
-	expect(storage.getItem('deltanet.session')).not.toContain('password');
+	expect(storage.getItem('headwater.session')).not.toContain('password');
 	signOutPleroma(storage);
 	expect(readPleromaAuthState(storage)).toEqual({ status: 'unauthenticated' });
 
@@ -662,6 +671,74 @@ test('OAuth boundary enrolls and persists a reusable full-scope client, builds r
 		createdAt: 1700000001000
 	});
 	expect(readSplitPleromaAuthState({ sessionStorage, pendingStorage })).toMatchObject({ status: 'authenticated' });
+});
+
+test('auth storage migrates valid legacy session, pending OAuth, and client records', () => {
+	const storage = createMemoryPleromaStorage();
+	const instanceUrl = 'https://pleroma.example';
+	const redirectUri = 'http://localhost:4173/auth/callback';
+	const scopes = ['read', 'write', 'follow', 'push'] as const;
+	const session = {
+		instanceUrl,
+		accessToken: 'legacy-token',
+		tokenType: 'Bearer',
+		scope: scopes.join(' '),
+		createdAt: 1700000001000
+	};
+	const pending = {
+		instanceUrl,
+		clientId: 'legacy-client',
+		clientSecret: 'legacy-secret',
+		redirectUri,
+		scopes,
+		state: 'legacy-state',
+		createdAt: Date.now()
+	};
+	const client = { ...pending };
+	delete (client as Partial<typeof pending>).state;
+
+	storage.setItem('deltanet.session', JSON.stringify(session));
+	storage.setItem('deltanet.oauth.pending', JSON.stringify(pending));
+	storage.setItem(`deltanet.oauth.client.${encodeURIComponent(instanceUrl)}`, JSON.stringify(client));
+
+	expect(readPleromaSession(storage)).toEqual(session);
+	expect(readPendingOAuth(storage)).toEqual(pending);
+	expect(readPleromaOAuthClient(storage, { instanceUrl, redirectUri, scopes })).toEqual(client);
+	expect(storage.getItem('headwater.session')).toBe(JSON.stringify(session));
+	expect(storage.getItem('headwater.oauth.pending')).toBe(JSON.stringify(pending));
+	expect(storage.getItem(`headwater.oauth.client.${encodeURIComponent(instanceUrl)}`)).toBe(JSON.stringify(client));
+	expect(storage.getItem('deltanet.session')).toBe(JSON.stringify(session));
+	expect(storage.getItem('deltanet.oauth.pending')).toBe(JSON.stringify(pending));
+	expect(storage.getItem(`deltanet.oauth.client.${encodeURIComponent(instanceUrl)}`)).toBe(JSON.stringify(client));
+});
+
+test('notification read state migrates a valid legacy timestamp', () => {
+	const storage = createMemoryPleromaStorage();
+	const session = {
+		instanceUrl: 'https://pleroma.example',
+		account: pleromaFixtures.account
+	};
+	const legacyKey = `deltanet.notifications.lastSeenAt.${session.instanceUrl}.${session.account.id}`;
+	storage.setItem(legacyKey, '2026-07-17T12:00:00.000Z');
+
+	expect(readNotificationLastSeenAt(storage as Storage, session)).toBe('2026-07-17T12:00:00.000Z');
+	expect(storage.getItem(notificationLastSeenStorageKey(session))).toBe('2026-07-17T12:00:00.000Z');
+	expect(storage.getItem(legacyKey)).toBe('2026-07-17T12:00:00.000Z');
+});
+
+test('notification read state falls back when the preferred timestamp is invalid', () => {
+	const storage = createMemoryPleromaStorage();
+	const session = {
+		instanceUrl: 'https://pleroma.example',
+		account: pleromaFixtures.account
+	};
+	const preferredKey = notificationLastSeenStorageKey(session);
+	const legacyKey = `deltanet.notifications.lastSeenAt.${session.instanceUrl}.${session.account.id}`;
+	storage.setItem(preferredKey, 'not-a-date');
+	storage.setItem(legacyKey, '2026-07-17T12:00:00.000Z');
+
+	expect(readNotificationLastSeenAt(storage as Storage, session)).toBe('2026-07-17T12:00:00.000Z');
+	expect(storage.getItem(preferredKey)).toBe('2026-07-17T12:00:00.000Z');
 });
 
 test('auth helpers reject unsafe instances, expire stale pending OAuth, and generate strong state', () => {

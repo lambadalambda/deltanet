@@ -11,6 +11,7 @@
 	import ComposerPollPanel from '$lib/rebuild/ComposerPollPanel.svelte';
 	import FocusedPost from '$lib/rebuild/FocusedPost.svelte';
 	import Icon from '$lib/rebuild/Icon.svelte';
+	import HeadwaterLogo from '$lib/rebuild/HeadwaterLogo.svelte';
 	import InlineReplyComposer, { type InlineReplyComposerProps } from '$lib/rebuild/InlineReplyComposer.svelte';
 	import type { PostManagementCapabilities } from '$lib/rebuild/post-capabilities';
 	import ChatRow from '$lib/rebuild/ChatRow.svelte';
@@ -31,16 +32,16 @@
 	import { capabilitiesForInstance, mediaTypesForInstance, NO_MUTABLE_CAPABILITIES, supportsMediaType, type InstanceCapabilities } from '$lib/pleroma/capabilities';
 	import {
 		backupNagState,
-		exportDeltanetBackup,
-		fetchDeltanetBackupInfo,
-		fetchDeltanetInvite,
-		followDeltanetInvite,
+		exportHeadwaterBackup,
+		fetchHeadwaterBackupInfo,
+		fetchHeadwaterInvite,
+		followHeadwaterInvite,
 		isFeedInvite,
-		requestDeltanetLockedAccess,
-		setDeltanetPetname,
-		type DeltanetBackupInfo
-	} from '$lib/pleroma/deltanet';
-	import { NOTIFICATION_POLL_EVENT, NOTIFICATION_POLL_INTERVAL_MS, readNotificationLastSeenAt, writeNotificationLastSeenAt } from '$lib/pleroma/notifications';
+		requestHeadwaterLockedAccess,
+		setHeadwaterPetname,
+		type HeadwaterBackupInfo
+	} from '$lib/pleroma/headwater';
+	import { LEGACY_NOTIFICATION_POLL_EVENT, NOTIFICATION_POLL_EVENT, NOTIFICATION_POLL_INTERVAL_MS, readNotificationLastSeenAt, writeNotificationLastSeenAt } from '$lib/pleroma/notifications';
 	import { revokeOAuthToken } from '$lib/pleroma/oauth';
 	import { readPleromaSession, removePleromaOAuthClient, signOutPleroma, writePleromaSession } from '$lib/pleroma/session';
 	import { openPleromaTimelineStream } from '$lib/pleroma/streaming';
@@ -129,7 +130,7 @@
 		source?: string;
 		views?: string | null;
 		nestedReplies?: ThreadViewPost[];
-		/** deltanet thread-subscribe: true iff this (root) status is subscribed. */
+		/** Headwater thread-subscribe: true iff this (root) status is subscribed. */
 		threadSubscribed?: boolean;
 	};
 	type HomeTimelineSuccess = PaginatedTimelineSuccess<PleromaStatusView, PleromaRequestErrorView> & {
@@ -168,7 +169,8 @@
 	type SuggestionAccountView = { id: string; name: string; nameEmojis: CustomEmoji[]; handle: string; avatarUrl: string | null; followState: PleromaProfileFollowState };
 	type StatusActionErrorState = { targetId: string; key: string; route: StatusActionOrigin; error: PleromaRequestErrorView };
 	type NotificationPopoverStatus = 'ready' | 'loading' | 'empty' | 'error';
-	const HOME_TIMELINE_CHECK_EVENT = 'deltanet:check-home-timeline';
+	const HOME_TIMELINE_CHECK_EVENT = 'headwater:check-home-timeline';
+	const LEGACY_HOME_TIMELINE_CHECK_EVENT = 'deltanet:check-home-timeline';
 	const HOME_TIMELINE_FALLBACK_INTERVAL_MS = 60_000;
 	const HOME_TIMELINE_STREAM_RECONNECT_MS = HOME_TIMELINE_FALLBACK_INTERVAL_MS;
 	const APP_PUBLIC_TIMELINE_STREAM_RECONNECT_MS = HOME_TIMELINE_FALLBACK_INTERVAL_MS;
@@ -295,7 +297,7 @@
 	// Visibility channels: the LOCKED channel's invite, revealed on demand only
 	// (it grants followers-only access; sharing it IS the approval).
 	let lockedInviteState = $state<PleromaRequestState<string>>({ status: 'idle' });
-	let backupInfo = $state<DeltanetBackupInfo | null>(null);
+	let backupInfo = $state<HeadwaterBackupInfo | null>(null);
 	let loadedBackupInfoKey = '';
 	let backupPassphrase = $state('');
 	let backupBusy = $state(false);
@@ -371,11 +373,11 @@
 		if (nextCache !== accountCache) accountCache = nextCache;
 	};
 	const instanceHost = (instanceUrl: string | undefined) => {
-		if (!instanceUrl) return 'deltanet.example';
+		if (!instanceUrl) return 'headwater.example';
 		try {
 			return new URL(instanceUrl).hostname;
 		} catch {
-			return instanceUrl.replace(/^https?:\/\//, '').replace(/\/$/, '') || 'deltanet.example';
+			return instanceUrl.replace(/^https?:\/\//, '').replace(/\/$/, '') || 'headwater.example';
 		}
 	};
 	const accountStat = (value: number | null | undefined) => accountStatFormatter.format(Math.max(0, value ?? 0));
@@ -1312,7 +1314,7 @@
 			}
 		})();
 	};
-	// deltanet thread-subscribe: subscribe/unsubscribe to the thread rooted at the
+	// Headwater thread-subscribe: subscribe/unsubscribe to the thread rooted at the
 	// focused (root) status. Optimistically flips `threadSubscribed` on the focused
 	// post; on the unreachable-author 422 it reverts + shows a clean toast.
 	const mutateThreadSubscription = (targetId: string, subscribe: boolean) => {
@@ -1884,7 +1886,7 @@
 		const target = profileRouteState.data.profile;
 		profileLockedRequestState = 'pending';
 		try {
-			await requestDeltanetLockedAccess({
+			await requestHeadwaterLockedAccess({
 				instanceUrl: session.instanceUrl,
 				accessToken: session.accessToken,
 				contactId: target.id,
@@ -1902,15 +1904,15 @@
 		profilePetnamePending = true;
 		profilePetnameError = null;
 		try {
-			const account = (await setDeltanetPetname({
+			const account = (await setHeadwaterPetname({
 				instanceUrl: session.instanceUrl,
 				accessToken: session.accessToken,
 				contactId: target.id,
 				petname,
 				fetch: window.fetch.bind(window)
-			})) as { display_name?: unknown; pleroma?: { deltanet?: { auth_name?: unknown; petname?: unknown } } } | null;
+			})) as { display_name?: unknown; pleroma?: { headwater?: { auth_name?: unknown; petname?: unknown }; deltanet?: { auth_name?: unknown; petname?: unknown } } } | null;
 			if (profileRouteState.status !== 'success' || profileRouteState.data.profile.id !== target.id) return;
-			const deltanet = account?.pleroma?.deltanet ?? {};
+			const headwater = account?.pleroma?.headwater ?? account?.pleroma?.deltanet ?? {};
 			profileRouteState = {
 				...profileRouteState,
 				data: {
@@ -1918,8 +1920,8 @@
 					profile: {
 						...target,
 						displayName: typeof account?.display_name === 'string' && account.display_name.trim() ? account.display_name : target.displayName,
-						authName: typeof deltanet.auth_name === 'string' ? deltanet.auth_name : target.authName,
-						petname: typeof deltanet.petname === 'string' ? deltanet.petname : null
+						authName: typeof headwater.auth_name === 'string' ? headwater.auth_name : target.authName,
+						petname: typeof headwater.petname === 'string' ? headwater.petname : null
 					}
 				}
 			};
@@ -2366,7 +2368,7 @@
 		inviteState = { status: 'loading' };
 
 		try {
-			const invite = await fetchDeltanetInvite({
+			const invite = await fetchHeadwaterInvite({
 				instanceUrl: session.instanceUrl,
 				accessToken: session.accessToken,
 				fetch: window.fetch.bind(window)
@@ -2394,7 +2396,7 @@
 		loadedBackupInfoKey = requestSessionKey;
 		void (async () => {
 			try {
-				const info = await fetchDeltanetBackupInfo({
+				const info = await fetchHeadwaterBackupInfo({
 					instanceUrl: session.instanceUrl,
 					accessToken: session.accessToken,
 					fetch: window.fetch.bind(window)
@@ -2414,7 +2416,7 @@
 		backupError = '';
 		backupSavedAs = '';
 		try {
-			const { blob, filename } = await exportDeltanetBackup({
+			const { blob, filename } = await exportHeadwaterBackup({
 				instanceUrl: session.instanceUrl,
 				accessToken: session.accessToken,
 				passphrase: backupPassphrase,
@@ -2440,7 +2442,7 @@
 		if (!session || lockedInviteState.status === 'loading') return;
 		lockedInviteState = { status: 'loading' };
 		try {
-			const invite = await fetchDeltanetInvite({
+			const invite = await fetchHeadwaterInvite({
 				instanceUrl: session.instanceUrl,
 				accessToken: session.accessToken,
 				channel: 'locked',
@@ -2465,7 +2467,7 @@
 
 		followInvitePending = true;
 		try {
-			await followDeltanetInvite({
+			await followHeadwaterInvite({
 				instanceUrl: session.instanceUrl,
 				accessToken: session.accessToken,
 				invite,
@@ -3613,7 +3615,7 @@
 				error: {
 					kind: 'request',
 					title: 'Thread unavailable',
-					message: 'DeltaNet needs a status id to load a thread.',
+					message: 'Headwater needs a status id to load a thread.',
 					retryable: false,
 					reauthRequired: false
 				}
@@ -3774,7 +3776,7 @@
 				error: {
 					kind: 'request',
 					title: 'Profile unavailable',
-					message: 'DeltaNet needs an account handle to load a profile.',
+					message: 'Headwater needs an account handle to load a profile.',
 					retryable: false,
 					reauthRequired: false
 				}
@@ -4027,7 +4029,9 @@
 			if (route === 'home') void checkHomeTimelineForNewPosts();
 		};
 		window.addEventListener(HOME_TIMELINE_CHECK_EVENT, triggerHomeTimelineCheck);
+		window.addEventListener(LEGACY_HOME_TIMELINE_CHECK_EVENT, triggerHomeTimelineCheck);
 		window.addEventListener(NOTIFICATION_POLL_EVENT, pollNotifications);
+		window.addEventListener(LEGACY_NOTIFICATION_POLL_EVENT, pollNotifications);
 		const checkInterval = window.setInterval(triggerHomeTimelineCheck, HOME_TIMELINE_FALLBACK_INTERVAL_MS);
 		const notificationInterval = window.setInterval(pollNotifications, NOTIFICATION_POLL_INTERVAL_MS);
 
@@ -4040,7 +4044,9 @@
 			invalidateComposerAutocompleteRequests();
 			closeHomeTimelineStreaming();
 			window.removeEventListener(HOME_TIMELINE_CHECK_EVENT, triggerHomeTimelineCheck);
+			window.removeEventListener(LEGACY_HOME_TIMELINE_CHECK_EVENT, triggerHomeTimelineCheck);
 			window.removeEventListener(NOTIFICATION_POLL_EVENT, pollNotifications);
+			window.removeEventListener(LEGACY_NOTIFICATION_POLL_EVENT, pollNotifications);
 			window.clearInterval(checkInterval);
 			window.clearInterval(notificationInterval);
 		};
@@ -4119,7 +4125,7 @@
 </script>
 
 <svelte:head>
-	<title>DeltaNet · App</title>
+	<title>Headwater · App</title>
 </svelte:head>
 
 <svelte:window onkeydown={handleWindowKeydown} onpointerdown={handleWindowPointerdown} />
@@ -4253,8 +4259,8 @@
 							<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg>
 						</button>
 						<a href="/app/home" class="brand-core" onclick={closeMobilePanels}>
-							<span class="brand-mark"><Icon name="sparkBig" /></span>
-							<span class="brand-name">DeltaNet<sup>™</sup></span>
+							<span class="brand-mark"><HeadwaterLogo /></span>
+							<span class="brand-name">Headwater<sup>™</sup></span>
 						</a>
 						<div class="brand-tag" data-testid="brand-tag">A federated<br />social web</div>
 					</div>
@@ -4262,7 +4268,7 @@
 					<div class="app-header-right">
 						<form bind:this={headerSearchForm} class="app-search" role="search" onsubmit={submitHeaderSearch} onfocusin={focusHeaderSearch}>
 							<Icon name="search" width={14} height={14} />
-							<input bind:this={headerSearchInput} value={headerSearchDraft} type="search" role="combobox" aria-label="Search DeltaNet" placeholder="Search..." aria-autocomplete="list" aria-expanded={headerSearchOpen} aria-controls={headerSearchOpen ? 'header-search-dropdown' : undefined} aria-activedescendant={headerSearchActiveDescendant} oninput={(event) => updateHeaderSearch(event.currentTarget.value)} onkeydown={handleHeaderSearchKeydown} />
+							<input bind:this={headerSearchInput} value={headerSearchDraft} type="search" role="combobox" aria-label="Search Headwater" placeholder="Search..." aria-autocomplete="list" aria-expanded={headerSearchOpen} aria-controls={headerSearchOpen ? 'header-search-dropdown' : undefined} aria-activedescendant={headerSearchActiveDescendant} oninput={(event) => updateHeaderSearch(event.currentTarget.value)} onkeydown={handleHeaderSearchKeydown} />
 							<span class="search-kbd">⌘K</span>
 							{#if headerSearchOpen}
 								<div id="header-search-dropdown" class="se-dropdown" role="listbox" data-testid="header-search-dropdown">
@@ -4275,7 +4281,7 @@
 									{:else if !headerSearchDraft.trim()}
 										{#if searchRecents.length === 0}
 											<div class="se-dd-empty">
-												<div class="se-dd-empty-h">Search across DeltaNet</div>
+												<div class="se-dd-empty-h">Search across Headwater</div>
 												<div class="se-dd-empty-s">Find people and posts on this instance and across the federation. Hashtags are ignored.</div>
 											</div>
 										{:else}
@@ -4402,7 +4408,7 @@
 										<span>Sign out &amp; forget this browser</span>
 									</button>
 								</div>
-								<div class="user-menu-foot"><span>DeltaNet™</span><span class="user-menu-dot"></span><span>{headerInstanceDomain}</span></div>
+								<div class="user-menu-foot"><span>Headwater™</span><span class="user-menu-dot"></span><span>{headerInstanceDomain}</span></div>
 							</div>
 						{/if}
 					</div>
@@ -4654,7 +4660,7 @@
 						<div class="se-pageframe card" data-testid="search-pageframe">
 							<form class="se-bar" role="search" onsubmit={submitSearchPage}>
 								<Icon name="search" width={18} height={18} />
-								<input class="se-bar-input" value={searchPageDraft} type="search" aria-label="Search this instance and federation" placeholder="Search DeltaNet..." oninput={(event) => updateSearchPageDraft(event.currentTarget.value)} />
+								<input class="se-bar-input" value={searchPageDraft} type="search" aria-label="Search this instance and federation" placeholder="Search Headwater..." oninput={(event) => updateSearchPageDraft(event.currentTarget.value)} />
 								<span class="se-bar-count">{searchResultTotal} {searchResultTotal === 1 ? 'result' : 'results'}</span>
 							</form>
 							<div class="se-tabs" role="tablist" aria-label="Search result types">
@@ -4810,7 +4816,7 @@
 							<div class="request-state request-error"><h2>Could not check messaging support</h2><p>The node capability request failed. No chat API was called.</p><Button variant="secondary" onclick={retryInstanceCapabilities}>Retry request</Button></div>
 						{:else if !instanceCapabilities.chats}
 							<div class="request-state request-empty" data-testid="messages-unavailable">
-								<h2>Messages are not available on this DeltaNet node</h2>
+								<h2>Messages are not available on this Headwater node</h2>
 								<p>Direct posts work from the composer, but the daemon does not yet provide persistent chat threads.</p>
 							</div>
 						{:else if messagesChatId}
@@ -4880,7 +4886,7 @@
 							<div class="request-state request-error"><h2>Could not check bookmark support</h2><p>The node capability request failed. No bookmark API was called.</p><Button variant="secondary" onclick={retryInstanceCapabilities}>Retry request</Button></div>
 						{:else if !instanceCapabilities.bookmarks}
 							<div class="request-state request-empty" data-testid="bookmarks-unavailable">
-								<h2>Bookmarks are not available on this DeltaNet node</h2>
+								<h2>Bookmarks are not available on this Headwater node</h2>
 								<p>The daemon cannot persist saved posts yet, so bookmark controls are hidden.</p>
 							</div>
 						{:else}
@@ -5010,7 +5016,7 @@
 							<button type="button" role="switch" aria-label="Show follower count" aria-checked={profile.showFollowers ? 'true' : 'false'} onclick={() => updateProfile('showFollowers', !profile.showFollowers)}>Show follower count</button>
 						</div>
 						{:else}
-							<div class="field-help" data-testid="extended-profile-unavailable">Website, location, discoverability, and follower-count settings are not supported by this DeltaNet node.</div>
+							<div class="field-help" data-testid="extended-profile-unavailable">Website, location, discoverability, and follower-count settings are not supported by this Headwater node.</div>
 						{/if}
 						<div class="settings-actions">
 							<button type="button" class="btn-primary" onclick={saveProfile} disabled={settingsSaveState === 'Saving…'}>Save profile settings</button>
@@ -5126,7 +5132,7 @@
 			<button type="button" class="mobile-drawer-bg open" aria-label="Close navigation menu" onclick={() => (mobileDrawerOpen = false)}></button>
 			<aside class="mobile-drawer open" data-testid="mobile-drawer">
 				<div class="drawer-head">
-					<div class="drawer-brand"><span class="brand-mark"><Icon name="sparkBig" /></span><span class="brand-name">DeltaNet<sup>™</sup></span></div>
+					<div class="drawer-brand"><span class="brand-mark"><HeadwaterLogo /></span><span class="brand-name">Headwater<sup>™</sup></span></div>
 					<button type="button" class="drawer-close" aria-label="Close navigation menu" onclick={() => (mobileDrawerOpen = false)}>×</button>
 				</div>
 				<nav class="side-nav" aria-label="Mobile sections">

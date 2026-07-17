@@ -363,7 +363,8 @@ describe('instance metadata', () => {
 
   it('advertises the bundled frontend capability contract explicitly', async () => {
     const instance = await (await makeApp().request('/api/v2/instance')).json() as any;
-    expect(instance.configuration.deltanet.capabilities).toEqual({
+    expect(instance.title).toBe('Headwater');
+    expect(instance.configuration.headwater.capabilities).toEqual({
       bookmarks: false,
       status_deletion: false,
       account_moderation: false,
@@ -374,6 +375,9 @@ describe('instance metadata', () => {
       content_warnings: false,
       extended_profile: false,
     });
+    expect(instance.configuration.deltanet).toEqual(instance.configuration.headwater);
+    expect(instance.pleroma.headwater).toEqual(instance.configuration.headwater);
+    expect(instance.pleroma.deltanet).toEqual(instance.pleroma.headwater);
   });
 
   it.each([
@@ -449,7 +453,7 @@ describe('timelines', () => {
     expect(reply.in_reply_to_id).toBe('12');
     expect(reply.in_reply_to_account_id).toBe('11'); // bob's contact id
     expect(reply.mentions).toEqual([
-      { id: '11', username: 'zbie604yz', acct: BOB.address, url: `${BASE}/deltanet/contact/11`, display_name: 'bob', auth_name: 'bob' },
+      { id: '11', username: 'zbie604yz', acct: BOB.address, url: `${BASE}/headwater/contact/11`, display_name: 'bob', auth_name: 'bob' },
     ]);
   });
 });
@@ -480,9 +484,9 @@ describe('posting', () => {
   });
 });
 
-describe('deltanet: default images', () => {
+describe('Headwater: default images', () => {
   it('serves a header banner image', async () => {
-    const res = await makeApp().request('/deltanet/header.png');
+    const res = await makeApp().request('/headwater/header.png');
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('image/svg+xml');
     expect(await res.text()).toContain('<svg');
@@ -696,8 +700,8 @@ describe('deltanet: per-contact header route', () => {
 
   it('account mapping points header/header_static at the per-contact route', async () => {
     const account = await (await makeApp().request('/api/v1/accounts/verify_credentials')).json() as any;
-    expect(account.header).toBe(`${BASE}/deltanet/header/1`);
-    expect(account.header_static).toBe(`${BASE}/deltanet/header/1`);
+    expect(account.header).toBe(`${BASE}/headwater/header/1`);
+    expect(account.header_static).toBe(`${BASE}/headwater/header/1`);
   });
 });
 
@@ -788,7 +792,7 @@ describe('media uploads', () => {
     });
     expect(response.status).toBe(422);
     expect(await response.json()).toEqual({
-      error: 'Extended profile fields are not supported by this DeltaNet node',
+      error: 'Extended profile fields are not supported by this Headwater node',
       code: 'unsupported_capability',
     });
   });
@@ -1581,13 +1585,14 @@ describe('status mapping: boost from a follower (unresolvable -> placeholder)', 
 
     const status = await (await app.request('/api/v1/statuses/500')).json() as any;
     // 0002: no synthesized/attributed content; the booster's own status carries
-    // the placeholder + a deltanet marker so the frontend can render it.
+    // the placeholder + a Headwater marker so the frontend can render it.
     expect(status.reblog).toBeNull();
     expect(status.content).toBe('<p>[boosted post unavailable]</p>');
-    expect(status.pleroma.deltanet).toEqual({
+    expect(status.pleroma.headwater).toEqual({
       placeholder: 'boost',
       ref: { key: 'unknown-mid@remote.org', addr: 'remote@remote.org' },
     });
+    expect(status.pleroma.deltanet).toEqual(status.pleroma.headwater);
   });
 });
 
@@ -1882,14 +1887,14 @@ describe('action routes harden non-numeric ids to 404 (never 500)', () => {
   });
 });
 
-describe('deltanet follow endpoints', () => {
+describe('Headwater follow endpoints', () => {
   it('exposes the feed invite', async () => {
-    const invite = await (await makeApp().request('/api/deltanet/invite')).json() as any;
+    const invite = await (await makeApp().request('/api/headwater/invite')).json() as any;
     expect(invite.invite).toBe('OPENPGP4FPR:FAKEINVITE');
   });
 
   it('follows an invite link', async () => {
-    const res = await makeApp().request('/api/deltanet/follow', {
+    const res = await makeApp().request('/api/headwater/follow', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ invite: 'OPENPGP4FPR:SOMEONE' }),
@@ -2257,6 +2262,13 @@ describe('intentionally empty read-only endpoints', () => {
 });
 
 describe('GET /api/deltanet/status', () => {
+  it('serves the preferred Headwater route and retains the DeltaNet alias', async () => {
+    const app = makeApp();
+    expect(await (await app.request('/api/headwater/status')).json()).toEqual(
+      await (await app.request('/api/deltanet/status')).json(),
+    );
+  });
+
   it('reports unconfigured with a null address', async () => {
     const app = createUnsafeTestApp(makeUnconfiguredCtx(), { baseUrl: BASE });
     const res = await app.request('/api/deltanet/status');
@@ -2286,7 +2298,7 @@ describe('POST /api/deltanet/signup', () => {
     const statusBefore = await (await app.request('/api/deltanet/status')).json() as any;
     expect(statusBefore.configured).toBe(false);
 
-    const res = await app.request('/api/deltanet/signup', {
+    const res = await app.request('/api/headwater/signup', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ display_name: 'alice' }),
@@ -2517,7 +2529,8 @@ describe('thread subscription endpoints (thread-subscribe)', () => {
     const res = await app.request('/api/v1/pleroma/statuses/500/subscribe', { method: 'POST' });
     expect(res.status).toBe(200);
     const status = (await res.json()) as any;
-    expect(status.pleroma.deltanet.thread_subscribed).toBe(true); // optimistic pending
+    expect(status.pleroma.headwater.thread_subscribed).toBe(true); // optimistic pending
+    expect(status.pleroma.deltanet).toEqual(status.pleroma.headwater);
     // Scoped invite-request DM went to BOB (key-contact 11).
     const req = fake.dms.find((d) => parseEnv(d.text).type === 'invite-request');
     expect(req?.contactId).toBe(11);
@@ -2595,7 +2608,8 @@ describe('thread subscription endpoints (thread-subscribe)', () => {
     expect(fake.leftChats).toContain(424);
     expect(store.isSubscribedToThread(THREAD_ROOT_UUID)).toBe(false);
     const status = (await res.json()) as any;
-    expect(status.pleroma.deltanet.thread_subscribed).toBe(false);
+    expect(status.pleroma.headwater.thread_subscribed).toBe(false);
+    expect(status.pleroma.deltanet).toEqual(status.pleroma.headwater);
   });
 
   it('the root status carries thread_subscribed once subscribed', async () => {
@@ -2603,7 +2617,8 @@ describe('thread subscription endpoints (thread-subscribe)', () => {
     store.addThreadSubscription(THREAD_ROOT_UUID, 424);
     const res = await app.request('/api/v1/statuses/500');
     const status = (await res.json()) as any;
-    expect(status.pleroma.deltanet.thread_subscribed).toBe(true);
+    expect(status.pleroma.headwater.thread_subscribed).toBe(true);
+    expect(status.pleroma.deltanet).toEqual(status.pleroma.headwater);
   });
 
   it('a non-existent status id 404s', async () => {
@@ -2728,6 +2743,24 @@ describe('backup endpoints', () => {
     dnbkTmpDirs.push(dir);
     return dir;
   };
+
+  it('reuses a legacy signing key without creating a new Headwater identity', async () => {
+    const dir = scratchDir();
+    const legacyKeyPath = join(dir, 'deltanet-signing-key.json');
+    const legacyPublicKey = openAttestor(legacyKeyPath).publicKeyBase64();
+    const { transport, posts } = makeFakeTransport();
+    const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, dataDir: dir });
+
+    const response = await app.request('/api/v1/statuses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'legacy identity survives' }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(parseEnvelope(posts.at(-1)!.text)?.pubkey).toBe(legacyPublicKey);
+    expect(existsSync(join(dir, 'headwater-signing-key.json'))).toBe(false);
+  });
   afterAll(() => {
     for (const dir of dnbkTmpDirs) rmSync(dir, { recursive: true, force: true });
   });
@@ -2735,7 +2768,7 @@ describe('backup endpoints', () => {
   it('401s unconfigured on both backup info and export', async () => {
     const app = createUnsafeTestApp(makeUnconfiguredCtx(), { baseUrl: BASE });
     expect((await app.request('/api/deltanet/backup')).status).toBe(401);
-    const res = await app.request('/api/deltanet/backup/export', {
+    const res = await app.request('/api/headwater/backup/export', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ passphrase: 'pw' }),
@@ -2829,14 +2862,14 @@ describe('backup endpoints', () => {
     const before = (await (await app.request('/api/deltanet/backup')).json()) as any;
     expect(before.last_backup_at).toBeNull();
 
-    const res = await app.request('/api/deltanet/backup/export', {
+    const res = await app.request('/api/headwater/backup/export', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ passphrase: 'hunter2' }),
     });
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toBe('application/octet-stream');
-    expect(res.headers.get('content-disposition')).toMatch(/^attachment; filename="deltanet-backup-.*\.dnbk"$/);
+    expect(res.headers.get('content-disposition')).toMatch(/^attachment; filename="headwater-backup-.*\.dnbk"$/);
 
     const { sidecar, coreTar } = decodeBackupContainer(Buffer.from(await res.arrayBuffer()), 'hunter2');
     expect(Buffer.compare(coreTar, FAKE_CORE_TAR)).toBe(0);
@@ -2974,7 +3007,7 @@ describe('backup endpoints', () => {
     const fd = new FormData();
     fd.append('file', new File([Buffer.from('x')], 'b.dnbk'));
     fd.append('passphrase', 'pw');
-    const res = await app.request('/api/deltanet/restore', { method: 'POST', body: fd });
+    const res = await app.request('/api/headwater/restore', { method: 'POST', body: fd });
     expect(res.status).toBe(501);
   });
 
@@ -3311,7 +3344,7 @@ describe('backup endpoints', () => {
     const fd = new FormData();
     fd.append('file', new File([new Uint8Array(container)], 'backup.dnbk'));
     fd.append('passphrase', 'hunter2');
-    const res = await app.request('/api/deltanet/restore', { method: 'POST', body: fd });
+    const res = await app.request('/api/headwater/restore', { method: 'POST', body: fd });
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
     expect(body.account.acct).toBe('p6yalimhl@nine.testrun.org');
@@ -3338,9 +3371,9 @@ describe('backup endpoints', () => {
 
 // --- petnames (see meta/issues/petnames.md) ---------------------------------
 
-describe('POST /api/deltanet/contacts/:id/petname', () => {
-  const post = (app: ReturnType<typeof createUnsafeTestApp>, id: string, petname: string) =>
-    app.request(`/api/deltanet/contacts/${id}/petname`, {
+describe('Headwater contact petname routes', () => {
+  const post = (app: ReturnType<typeof createUnsafeTestApp>, id: string, petname: string, prefix = 'deltanet') =>
+    app.request(`/api/${prefix}/contacts/${id}/petname`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ petname }),
@@ -3368,12 +3401,13 @@ describe('POST /api/deltanet/contacts/:id/petname', () => {
   it('sets a petname and returns the updated account', async () => {
     const { transport, setNames } = makeFakeTransport();
     const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE });
-    const res = await post(app, '11', '  bobby  ');
+    const res = await post(app, '11', '  bobby  ', 'headwater');
     expect(res.status).toBe(200);
     const account = (await res.json()) as any;
     expect(setNames).toEqual([{ contactId: 11, name: 'bobby' }]);
     expect(account.display_name).toBe('bobby');
-    expect(account.pleroma.deltanet).toEqual({ auth_name: 'bob', petname: 'bobby' });
+    expect(account.pleroma.headwater).toEqual({ auth_name: 'bob', petname: 'bobby' });
+    expect(account.pleroma.deltanet).toEqual(account.pleroma.headwater);
   });
 
   it('clears the petname with an empty string, reverting to the auth name', async () => {
@@ -3388,7 +3422,8 @@ describe('POST /api/deltanet/contacts/:id/petname', () => {
       { contactId: 11, name: '' },
     ]);
     expect(account.display_name).toBe('bob');
-    expect(account.pleroma.deltanet).toEqual({ auth_name: 'bob' });
+    expect(account.pleroma.headwater).toEqual({ auth_name: 'bob' });
+    expect(account.pleroma.deltanet).toEqual(account.pleroma.headwater);
   });
 });
 
@@ -3415,7 +3450,8 @@ describe('GET /api/v1/accounts/search', () => {
     expect(accounts.length).toBe(1);
     expect(accounts[0].id).toBe('11');
     expect(accounts[0].display_name).toBe('bobcat');
-    expect(accounts[0].pleroma.deltanet).toEqual({ auth_name: 'bob', petname: 'bobcat' });
+    expect(accounts[0].pleroma.headwater).toEqual({ auth_name: 'bob', petname: 'bobcat' });
+    expect(accounts[0].pleroma.deltanet).toEqual(accounts[0].pleroma.headwater);
   });
 
   it('returns [] for a blank query and respects the limit', async () => {
@@ -3487,7 +3523,7 @@ describe('body mentions on status JSON', () => {
         id: '11',
         username: 'zbie604yz',
         acct: BOB.address,
-        url: `${BASE}/deltanet/contact/11`,
+        url: `${BASE}/headwater/contact/11`,
         display_name: 'bob',
         auth_name: 'bob',
       },
@@ -3987,7 +4023,7 @@ describe('visibility channels 1B: requesting locked access', () => {
     const store = createStore(join(dir, 'store.json'));
     const { transport, dms } = makeFakeTransport();
     const app = createUnsafeTestApp(makeConfiguredCtx(transport), { baseUrl: BASE, store, dataDir: dir });
-    const res = await app.request('/api/deltanet/contacts/11/request-locked', { method: 'POST' });
+    const res = await app.request('/api/headwater/contacts/11/request-locked', { method: 'POST' });
     expect(res.status).toBe(200);
     expect(((await res.json()) as any).requested).toBe(true);
     expect(dms).toHaveLength(1);

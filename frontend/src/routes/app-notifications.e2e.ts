@@ -16,7 +16,7 @@ const session = {
 const authenticateWithSession = async (page: Page, storedSession: unknown) => {
 	await mockRightRailApis(page);
 	let streamTicket = 0;
-	await page.route('https://pleroma.example/api/deltanet/streaming/token', async (route) => {
+	await page.route('https://pleroma.example/api/headwater/streaming/token', async (route) => {
 		expect(route.request().headers().authorization).toBe('Bearer access-token');
 		streamTicket += 1;
 		await route.fulfill({
@@ -35,9 +35,9 @@ const authenticateWithSession = async (page: Page, storedSession: unknown) => {
 			onclose: ((event: Event) => void) | null;
 			close: () => void;
 		};
-		const testWindow = window as typeof window & { __deltanetSockets?: MockSocket[] };
-		if (!testWindow.__deltanetSockets) {
-			testWindow.__deltanetSockets = [];
+		const testWindow = window as typeof window & { __headwaterSockets?: MockSocket[] };
+		if (!testWindow.__headwaterSockets) {
+			testWindow.__headwaterSockets = [];
 			const MockWebSocket = function (url: string) {
 				const socket: MockSocket = {
 					url,
@@ -50,14 +50,14 @@ const authenticateWithSession = async (page: Page, storedSession: unknown) => {
 						this.closeCalled = true;
 					}
 				};
-				testWindow.__deltanetSockets?.push(socket);
+				testWindow.__headwaterSockets?.push(socket);
 				return socket;
 			} as unknown as new (url: string) => MockSocket;
 
 			Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockWebSocket });
 		}
 
-		window.localStorage.setItem('deltanet.session', JSON.stringify(storedSession));
+		window.localStorage.setItem('headwater.session', JSON.stringify(storedSession));
 	}, storedSession);
 };
 
@@ -169,13 +169,13 @@ const mockOwnAccount = async (page: Page) => {
 
 const openLatestStream = async (page: Page) => {
 	await expect.poll(() => page.evaluate(() => {
-		const testWindow = window as typeof window & { __deltanetSockets?: unknown[] };
-		return testWindow.__deltanetSockets?.length ?? 0;
+		const testWindow = window as typeof window & { __headwaterSockets?: unknown[] };
+		return testWindow.__headwaterSockets?.length ?? 0;
 	})).toBeGreaterThan(0);
 	await page.evaluate(() => {
 		type MockSocket = { onopen: ((event: Event) => void) | null };
-		const testWindow = window as typeof window & { __deltanetSockets?: MockSocket[] };
-		const socket = testWindow.__deltanetSockets?.at(-1);
+		const testWindow = window as typeof window & { __headwaterSockets?: MockSocket[] };
+		const socket = testWindow.__headwaterSockets?.at(-1);
 		socket?.onopen?.(new Event('open'));
 	});
 };
@@ -183,8 +183,8 @@ const openLatestStream = async (page: Page) => {
 const emitStreamNotification = async (page: Page, nextNotification: PleromaNotification) => {
 	await page.evaluate((notification) => {
 		type MockSocket = { onmessage: ((event: { data: string }) => void) | null };
-		const testWindow = window as typeof window & { __deltanetSockets?: MockSocket[] };
-		const socket = testWindow.__deltanetSockets?.at(-1);
+		const testWindow = window as typeof window & { __headwaterSockets?: MockSocket[] };
+		const socket = testWindow.__headwaterSockets?.at(-1);
 		socket?.onmessage?.({ data: JSON.stringify({ event: 'notification', payload: JSON.stringify(notification) }) });
 	}, nextNotification);
 };
@@ -192,8 +192,8 @@ const emitStreamNotification = async (page: Page, nextNotification: PleromaNotif
 const closeLatestStream = async (page: Page) => {
 	await page.evaluate(() => {
 		type MockSocket = { onclose: ((event: Event) => void) | null };
-		const testWindow = window as typeof window & { __deltanetSockets?: MockSocket[] };
-		const socket = testWindow.__deltanetSockets?.at(-1);
+		const testWindow = window as typeof window & { __headwaterSockets?: MockSocket[] };
+		const socket = testWindow.__headwaterSockets?.at(-1);
 		socket?.onclose?.(new Event('close'));
 	});
 };
@@ -288,7 +288,7 @@ test('header notification rows navigate by target and close the popover', async 
 	await expect(popover).toHaveCount(0);
 });
 
-test('notification badge updates on polling and mark-read state persists locally', async ({ page }) => {
+test('legacy notification polling events still update the badge and persist Headwater read state', async ({ page }) => {
 	await authenticate(page);
 	await mockHomeTimeline(page);
 	let response = initialNotifications.slice(0, 1);
@@ -298,7 +298,7 @@ test('notification badge updates on polling and mark-read state persists locally
 
 	await expect(notificationBadge(page)).toHaveText('1');
 	response = [notification('notif-new', 'mention', mentionActor, '2026-05-18T12:03:00.000Z', mentionStatus), ...response];
-	await page.evaluate((eventName) => window.dispatchEvent(new Event(eventName)), NOTIFICATION_POLL_EVENT);
+	await page.evaluate(() => window.dispatchEvent(new Event('deltanet:poll-notifications')));
 	await expect(notificationBadge(page)).toHaveText('2');
 	expect(requests()).toBe(2);
 
@@ -391,7 +391,7 @@ test('notification read state waits for account hydration before choosing a stor
 	await expect(page.getByTestId('notifications-list')).toContainText('orbit mentioned you');
 	await page.getByRole('button', { name: 'Mark all read' }).click();
 	await expect.poll(() => page.evaluate((key) => window.localStorage.getItem(key), notificationLastSeenStorageKey(session))).toBe('2026-05-18T12:02:00.000Z');
-	expect(await page.evaluate((key) => window.localStorage.getItem(key), `deltanet.notifications.lastSeenAt.${session.instanceUrl}.self`)).toBeNull();
+	expect(await page.evaluate((key) => window.localStorage.getItem(key), `headwater.notifications.lastSeenAt.${session.instanceUrl}.self`)).toBeNull();
 });
 
 test('token-only notification route surfaces account hydration failures', async ({ page }) => {
@@ -470,7 +470,7 @@ test('notification polling pauses after the session is removed', async ({ page }
 	await expect(notificationBadge(page)).toHaveText('1');
 	const beforeSignOutPoll = requests();
 
-	await page.evaluate(() => window.localStorage.removeItem('deltanet.session'));
+	await page.evaluate(() => window.localStorage.removeItem('headwater.session'));
 	await page.evaluate((eventName) => window.dispatchEvent(new Event(eventName)), NOTIFICATION_POLL_EVENT);
 	await page.waitForTimeout(50);
 

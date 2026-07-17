@@ -124,7 +124,7 @@ describe('backup & restore over the relay', () => {
     expect(petRes.status).toBe(200);
     const petAccount = (await petRes.json()) as any;
     expect(petAccount.display_name).toBe('bobby');
-    expect(petAccount.pleroma.deltanet.petname).toBe('bobby');
+    expect(petAccount.pleroma.headwater.petname).toBe('bobby');
     expect((await a.contact(bContactId!))?.displayName).toBe('bobby');
 
     // Export a .dnbk through the endpoint (real core exportBackup underneath).

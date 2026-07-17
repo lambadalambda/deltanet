@@ -2,23 +2,25 @@
 	import { goto } from '$app/navigation';
 	import {
 		buildAuthorizationUrl,
+		clearPendingOAuth,
 		createOAuthState,
-		defaultDeltanetInstanceUrl,
-		DELTANET_OAUTH_SCOPES,
-		DELTANET_DEFAULT_RELAY,
-		fetchDeltanetStatus,
+		defaultHeadwaterInstanceUrl,
+		HEADWATER_OAUTH_SCOPES,
+		HEADWATER_DEFAULT_RELAY,
+		fetchHeadwaterStatus,
 		normalizeInstanceUrl,
 		readPleromaOAuthClient,
 		registerOAuthApp,
 		readPleromaSession,
 		removePleromaOAuthClient,
-		restoreDeltanet,
-		signupDeltanet,
+		restoreHeadwater,
+		signupHeadwater,
 		storePleromaOAuthClient,
 		storePendingOAuth
 	} from '$lib/pleroma';
 	import type { PendingPleromaOAuth } from '$lib/pleroma';
 	import Icon from '$lib/rebuild/Icon.svelte';
+	import HeadwaterLogo from '$lib/rebuild/HeadwaterLogo.svelte';
 	import { env } from '$env/dynamic/public';
 	import { onMount } from 'svelte';
 
@@ -26,7 +28,7 @@
 	type AuthStep = 'enter' | 'signup-success' | 'restore-success' | 'redirect';
 	type SignupView = 'create' | 'restore';
 
-	const scopes = DELTANET_OAUTH_SCOPES;
+	const scopes = HEADWATER_OAUTH_SCOPES;
 
 	let mode = $state<AuthMode>('signin');
 	let authStep = $state<AuthStep>('enter');
@@ -40,7 +42,7 @@
 	let authAttempt = 0;
 
 	let displayName = $state('');
-	let relay = $state(DELTANET_DEFAULT_RELAY);
+	let relay = $state(HEADWATER_DEFAULT_RELAY);
 	let signupPending = $state(false);
 	let signupError = $state('');
 	let signupAddress = $state('');
@@ -61,7 +63,7 @@
 		if (!value.trim()) return true;
 		try {
 			const url = new URL(value.trim());
-			return url.origin === DELTANET_DEFAULT_RELAY && url.pathname === '/' && !url.search && !url.hash && !url.username && !url.password;
+			return url.origin === HEADWATER_DEFAULT_RELAY && url.pathname === '/' && !url.search && !url.hash && !url.username && !url.password;
 		} catch {
 			return false;
 		}
@@ -83,7 +85,7 @@
 		authStep = 'enter';
 		authError = '';
 		authorizationUrl = '';
-		sessionStorage.removeItem('deltanet.oauth.pending');
+		clearPendingOAuth(sessionStorage);
 	};
 	const startOAuth = async () => {
 		if (!instance.trim()) return;
@@ -103,7 +105,7 @@
 				if (!code) throw new Error('Enter the one-time enrollment code printed by the daemon.');
 				const registered = await registerOAuthApp({
 					instanceUrl,
-					clientName: 'DeltaNet',
+					clientName: 'Headwater',
 					redirectUri,
 					scopes,
 					enrollmentCode: code,
@@ -159,7 +161,7 @@
 		restorePending = true;
 		restoreError = '';
 		try {
-			const result = await restoreDeltanet({
+			const result = await restoreHeadwater({
 				instanceUrl: selectedInstanceUrl,
 				file: restoreFile,
 				passphrase: restorePassphrase,
@@ -195,7 +197,7 @@
 		signupPending = true;
 		signupError = '';
 		try {
-			const result = await signupDeltanet({
+			const result = await signupHeadwater({
 				instanceUrl: selectedInstanceUrl,
 				displayName: displayName.trim(),
 				relay: relay.trim() || undefined,
@@ -233,7 +235,7 @@
 			return;
 		}
 
-		instance = defaultDeltanetInstanceUrl({
+		instance = defaultHeadwaterInstanceUrl({
 			windowOrigin: window.location.origin,
 			publicInstanceUrl: env.PUBLIC_PLEROMA_INSTANCE_URL
 		});
@@ -241,7 +243,7 @@
 
 		void (async () => {
 			try {
-				const status = await fetchDeltanetStatus({ instanceUrl: instance, fetch: window.fetch.bind(window) });
+				const status = await fetchHeadwaterStatus({ instanceUrl: instance, fetch: window.fetch.bind(window) });
 				mode = status.configured ? 'signin' : 'signup';
 			} catch {
 				// Default to sign-in if status can't be read; the field is still editable.
@@ -264,15 +266,15 @@
 </script>
 
 <svelte:head>
-	<title>DeltaNet · Landing</title>
+	<title>Headwater · Landing</title>
 </svelte:head>
 
 <div class="signedout">
-	<header class="so-header" aria-label="DeltaNet landing">
+	<header class="so-header" aria-label="Headwater landing">
 		<div class="so-shell so-header-inner">
-			<a class="so-brand" href="/" aria-label="DeltaNet home">
-				<span class="brand-mark"><Icon name="sparkBig" /></span>
-				<span class="brand-name">DeltaNet<sup>TM</sup></span>
+			<a class="so-brand" href="/" aria-label="Headwater home">
+				<span class="brand-mark"><HeadwaterLogo /></span>
+				<span class="brand-name">Headwater<sup>TM</sup></span>
 			</a>
 			<nav class="so-nav" aria-label="Public links">
 				<a href="/public">Browse public</a>
@@ -287,7 +289,7 @@
 			<div class="so-copy">
 				<div class="so-eyebrow"><span></span> Your node · Encrypted email federation</div>
 				<h1>A quieter corner of the social web.</h1>
-				<p class="so-lede">DeltaNet is your own single-user node. It federates over encrypted email instead of ActivityPub: your identity is an email address on a chatmail relay, posts are delivered end-to-end encrypted, and following someone means joining their feed with an invite link. Servers only ever see ciphertext — never your posts, never your contacts.</p>
+				<p class="so-lede">Headwater is your own single-user node. It federates over encrypted email instead of ActivityPub: your identity is an email address on a chatmail relay, posts are delivered end-to-end encrypted, and following someone means joining their feed with an invite link. Relays temporarily store ciphertext and see delivery metadata, but cannot read your posts or recover your identity keys.</p>
 				<div class="so-stats" aria-label="How it works">
 					<div><strong>1</strong><span>Account, this node</span></div>
 					<div><strong>e2e</strong><span>Encrypted delivery</span></div>
@@ -295,7 +297,7 @@
 				</div>
 			</div>
 
-			<section id="oauth" class="so-auth" aria-label="DeltaNet sign-in and account creation">
+			<section id="oauth" class="so-auth" aria-label="Headwater sign-in and account creation">
 				<div class="so-auth-tabs" role="tablist" aria-label="Authentication mode">
 					<button type="button" role="tab" aria-selected={mode === 'signin'} class:active={mode === 'signin'} onclick={() => selectMode('signin')}>Sign in</button>
 					<button type="button" role="tab" aria-selected={mode === 'signup'} class:active={mode === 'signup'} onclick={() => selectMode('signup')}>Create account</button>
@@ -303,7 +305,7 @@
 
 				{#if authStep === 'enter' && mode === 'signin'}
 					<div class="so-auth-body">
-						<p class="so-blurb">Sign in to your node. DeltaNet redirects you there to authorize — no password is ever entered here.</p>
+						<p class="so-blurb">Sign in to your node. Headwater redirects you there to authorize; no password is ever entered here.</p>
 						{#if authError}
 							<p class="so-error">{authError}</p>
 						{/if}
@@ -324,11 +326,11 @@
 							</div>
 						{/if}
 						<button type="button" class="so-cta" disabled={continueDisabled} onclick={startOAuth}>Continue</button>
-						<p class="so-footnote">DeltaNet never sees your password. Authorization is granted by your node via OAuth.</p>
+						<p class="so-footnote">Headwater never sees your password. Authorization is granted by your node via OAuth.</p>
 					</div>
 				{:else if authStep === 'enter' && mode === 'signup' && signupView === 'restore'}
 					<div class="so-auth-body">
-						<p class="so-blurb">Restore this node from an encrypted DeltaNet backup (.dnbk). Your address, follows, and history come back exactly as exported.</p>
+						<p class="so-blurb">Restore this node from an encrypted Headwater backup (.dnbk). Your address, follows, and history come back exactly as exported.</p>
 						{#if restoreError}
 							<p class="so-error">{restoreError}</p>
 						{/if}
@@ -364,7 +366,7 @@
 							<div class="so-field">
 								<label for="relay">Relay</label>
 								<div class="so-input-wrap">
-									<input id="relay" aria-label="Relay" value={relay} oninput={(event) => (relay = event.currentTarget.value)} placeholder={DELTANET_DEFAULT_RELAY} />
+									<input id="relay" aria-label="Relay" value={relay} oninput={(event) => (relay = event.currentTarget.value)} placeholder={HEADWATER_DEFAULT_RELAY} />
 								</div>
 								<p class="so-hint">This is the mail relay hosting your address.</p>
 							</div>
@@ -412,9 +414,9 @@
 					</div>
 				{:else}
 					<div class="so-auth-body so-redirect">
-						<div class="so-redirect-mark"><span class="brand-mark"><Icon name="sparkBig" /></span><Icon name="arrow" /><span class="so-globe"><Icon name="globe" /></span></div>
+						<div class="so-redirect-mark"><span class="brand-mark"><HeadwaterLogo /></span><Icon name="arrow" /><span class="so-globe"><Icon name="globe" /></span></div>
 						<h2>Redirecting to {selectedInstanceUrl}</h2>
-						<p>Your node will ask you to authorize DeltaNet. We will bring you right back.</p>
+						<p>Your node will ask you to authorize Headwater. We will bring you right back.</p>
 						{#if authorizationUrl}
 							<a class="so-cta so-auth-link" href={authorizationUrl}>Open {selectedInstanceUrl} authorization</a>
 						{:else if authError}
@@ -431,7 +433,7 @@
 
 	<section class="so-band" aria-label="Principles">
 		<div class="so-shell so-band-inner">
-			<div><span>01</span><strong>Servers only see ciphertext.</strong><p>Posts are encrypted end-to-end before they ever leave this node. No relay, no admin, can read your feed.</p></div>
+			<div><span>01</span><strong>Relays cannot read your posts.</strong><p>Posts are encrypted end-to-end before they leave this node. Relays see delivery addresses, timing, and sizes, but message bodies remain ciphertext.</p></div>
 			<div><span>02</span><strong>Your identity is an email address.</strong><p>No usernames tied to a platform. Your address lives on a chatmail relay you choose.</p></div>
 			<div><span>03</span><strong>Following is an invite link.</strong><p>No public firehose to search. Share a link, or receive one, to join a feed.</p></div>
 		</div>

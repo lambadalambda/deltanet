@@ -20,7 +20,8 @@ interrupted-update recovery, and platform-specific update delivery.
   unsupported downgrade behavior.
 - Resolve the alpha-data policy before public release: migrate the alpha
   application ID/user-data directory, or keep it deliberately isolated and
-  provide a documented `.dnbk` migration path.
+  provide a documented migration path using the legacy-compatible `.dnbk`
+  backup format.
 - Coordinate update shutdown with daemon graceful close, prevent concurrent
   application instances during replacement, and recover from interruption
   before, during, and after binary swap/migration.

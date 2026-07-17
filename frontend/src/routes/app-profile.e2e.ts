@@ -127,7 +127,7 @@ const authenticate = async (page: Page) => {
 	await mockRightRailApis(page);
 	await page.route('https://pleroma.example/api/v1/notifications**', async (route) => fulfillJson(route, []));
 	await page.addInitScript((storedSession) => {
-		window.localStorage.setItem('deltanet.session', JSON.stringify(storedSession));
+		window.localStorage.setItem('headwater.session', JSON.stringify(storedSession));
 	}, session);
 };
 
@@ -291,7 +291,7 @@ test('profile navigation uses cached timeline account and refreshes existing pos
 	const post = page.getByTestId('home-timeline-list').locator('.post').first();
 	await expect(post).toContainText('cached.soft old');
 	releaseNewerTimeline();
-	await page.evaluate(() => window.dispatchEvent(new CustomEvent('deltanet:check-home-timeline')));
+	await page.evaluate(() => window.dispatchEvent(new CustomEvent('headwater:check-home-timeline')));
 	await expect(post).toContainText('cached.soft updated');
 	await expect(page.getByTestId('timeline-header-actions').getByRole('button', { name: '1 new posts' })).toBeVisible();
 	await post.getByRole('link', { name: '@cached.soft@kolektiva.social' }).click();
@@ -681,7 +681,7 @@ test('profile route refreshes token-only own locked profiles after account hydra
 		await fulfillJson(route, pleromaFixtures.timelines.home);
 	});
 	await page.addInitScript((storedSession) => {
-		window.localStorage.setItem('deltanet.session', JSON.stringify(storedSession));
+		window.localStorage.setItem('headwater.session', JSON.stringify(storedSession));
 	}, {
 		instanceUrl: session.instanceUrl,
 		accessToken: session.accessToken,
@@ -798,7 +798,7 @@ test('profile follow signs out and redirects when unauthorized', async ({ page }
 	await page.getByTestId('profile-view').getByRole('button', { name: 'Follow', exact: true }).click();
 
 	await page.waitForURL('/');
-	const storedSession = await page.evaluate(() => window.localStorage.getItem('deltanet.session'));
+	const storedSession = await page.evaluate(() => window.localStorage.getItem('headwater.session'));
 	expect(storedSession).toBeNull();
 });
 
@@ -854,7 +854,7 @@ test('signed-out visitors resolve remote profiles through account lookup', async
 });
 
 test('petnames: set from the profile, rendered as a chip after their chosen name', async ({ page }) => {
-	// A deltanet contact account (numeric-ish contact id, deltanet extension).
+	// A Headwater contact account (numeric-ish contact id, Headwater extension).
 	const carolAccount: PleromaAccount = {
 		...profileAccount,
 		id: '12',
@@ -866,7 +866,7 @@ test('petnames: set from the profile, rendered as a chip after their chosen name
 		pleroma: {
 			...profileAccount.pleroma,
 			relationship: undefined,
-			deltanet: { auth_name: 'Carol Sparkle' }
+			headwater: { auth_name: 'Carol Sparkle' }
 		}
 	};
 	await authenticate(page);
@@ -875,12 +875,12 @@ test('petnames: set from the profile, rendered as a chip after their chosen name
 		await fulfillJson(route, [relationshipFor(carolAccount.id, { following: true })]);
 	});
 	let petnameBody: unknown;
-	await page.route('https://pleroma.example/api/deltanet/contacts/12/petname', async (route: Route) => {
+	await page.route('https://pleroma.example/api/headwater/contacts/12/petname', async (route: Route) => {
 		petnameBody = route.request().postDataJSON();
 		await fulfillJson(route, {
 			...carolAccount,
 			display_name: 'carol',
-			pleroma: { ...carolAccount.pleroma, deltanet: { auth_name: 'Carol Sparkle', petname: 'carol' } }
+			pleroma: { ...carolAccount.pleroma, headwater: { auth_name: 'Carol Sparkle', petname: 'carol' } }
 		});
 	});
 	await setViewport(page, 'desktop');
@@ -915,7 +915,7 @@ test('locked access can be requested from a followed profile', async ({ page }) 
 		display_name: 'Carol Sparkle',
 		bot: false,
 		fields: [],
-		pleroma: { ...profileAccount.pleroma, relationship: undefined, deltanet: { auth_name: 'Carol Sparkle' } }
+		pleroma: { ...profileAccount.pleroma, relationship: undefined, headwater: { auth_name: 'Carol Sparkle' } }
 	};
 	await authenticate(page);
 	await mockProfileApis(page, followedAccount);
@@ -923,7 +923,7 @@ test('locked access can be requested from a followed profile', async ({ page }) 
 		await fulfillJson(route, [relationshipFor(followedAccount.id, { following: true })]);
 	});
 	let requestMethod = '';
-	await page.route('https://pleroma.example/api/deltanet/contacts/12/request-locked', async (route: Route) => {
+	await page.route('https://pleroma.example/api/headwater/contacts/12/request-locked', async (route: Route) => {
 		requestMethod = route.request().method();
 		await fulfillJson(route, { requested: true });
 	});

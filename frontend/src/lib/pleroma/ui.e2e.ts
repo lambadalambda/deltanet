@@ -190,7 +190,7 @@ test('Pleroma status adapters synthesize reply addressees from metadata without 
 });
 
 test('Pleroma status adapters map addressee handles to display names from mentions', () => {
-	// deltanet ships a non-standard `display_name` on mentions (chatmail local
+	// Headwater ships a non-standard `display_name` on mentions (chatmail local
 	// parts are random registration strings); the "Replying to" pill renders it.
 	const post = adaptPleromaStatus(withStatus({
 		id: 'named-reply',
@@ -204,7 +204,7 @@ test('Pleroma status adapters map addressee handles to display names from mentio
 		mentions: [
 			{
 				id: 'parent-account',
-				url: 'http://localhost:4030/deltanet/contact/12',
+				url: 'http://localhost:4030/headwater/contact/12',
 				username: 'zbie604yz',
 				acct: 'zbie604yz@nine.testrun.org',
 				display_name: 'Carol Sparkle'
@@ -781,23 +781,34 @@ test('reply addressees and body mentions canonicalize to full federated handles'
 	expect(local.addressees).toEqual(['@quietadmin']);
 });
 
-test('account/profile adapters expose auth name + petname from pleroma.deltanet', () => {
+test('account/profile adapters prefer pleroma.headwater and fall back to legacy deltanet', () => {
 	const carol = {
 		...pleromaFixtures.account,
 		id: 'carol-account',
 		acct: 'zbie604yz@nine.testrun.org',
 		display_name: 'carol',
-		pleroma: { ...pleromaFixtures.account.pleroma, deltanet: { auth_name: 'Carol Sparkle', petname: 'carol' } }
+		pleroma: {
+			...pleromaFixtures.account.pleroma,
+			headwater: { auth_name: 'Carol Headwater', petname: 'caz' },
+			deltanet: { auth_name: 'Legacy Carol', petname: 'legacy' }
+		}
 	};
 	const view = adaptPleromaAccount(carol);
-	expect(view.authName).toBe('Carol Sparkle');
-	expect(view.petname).toBe('carol');
+	expect(view.authName).toBe('Carol Headwater');
+	expect(view.petname).toBe('caz');
 
 	const profile = adaptPleromaProfile(carol);
-	expect(profile.authName).toBe('Carol Sparkle');
-	expect(profile.petname).toBe('carol');
+	expect(profile.authName).toBe('Carol Headwater');
+	expect(profile.petname).toBe('caz');
 
-	// No deltanet bag (fediverse account) -> nulls.
+	const legacy = adaptPleromaAccount({
+		...carol,
+		pleroma: { ...pleromaFixtures.account.pleroma, deltanet: { auth_name: 'Legacy Carol', petname: 'legacy' } }
+	});
+	expect(legacy.authName).toBe('Legacy Carol');
+	expect(legacy.petname).toBe('legacy');
+
+	// No Headwater or legacy bag (fediverse account) -> nulls.
 	const plain = adaptPleromaAccount(pleromaFixtures.account);
 	expect(plain.authName).toBeNull();
 	expect(plain.petname).toBeNull();
@@ -811,7 +822,7 @@ test('status adapter carries the author petname + auth name onto the post view',
 			id: 'carol-account',
 			acct: 'zbie604yz@nine.testrun.org',
 			display_name: 'carol',
-			pleroma: { ...pleromaFixtures.account.pleroma, deltanet: { auth_name: 'Carol Sparkle', petname: 'carol' } }
+			pleroma: { ...pleromaFixtures.account.pleroma, headwater: { auth_name: 'Carol Sparkle', petname: 'carol' } }
 		}
 	}));
 	// name stays displayName (petname-first, like core); the pill render uses
@@ -834,7 +845,7 @@ test('addressee maps prefer the auth name and expose petnames separately', () =>
 		mentions: [
 			{
 				id: 'carol-account',
-				url: 'http://localhost:4030/deltanet/contact/12',
+				url: 'http://localhost:4030/headwater/contact/12',
 				username: 'zbie604yz',
 				acct: 'zbie604yz@nine.testrun.org',
 				display_name: 'carol',
@@ -855,7 +866,7 @@ test('mentionNames maps body mention handles to petname-first labels', () => {
 		mentions: [
 			{
 				id: 'carol-account',
-				url: 'http://localhost:4030/deltanet/contact/12',
+				url: 'http://localhost:4030/headwater/contact/12',
 				username: 'zbie604yz',
 				acct: 'zbie604yz@nine.testrun.org',
 				display_name: 'carol',
@@ -864,7 +875,7 @@ test('mentionNames maps body mention handles to petname-first labels', () => {
 			},
 			{
 				id: 'bob-account',
-				url: 'http://localhost:4030/deltanet/contact/11',
+				url: 'http://localhost:4030/headwater/contact/11',
 				username: 'aab3ff9',
 				acct: 'aab3ff9@nine.testrun.org',
 				display_name: 'bob',

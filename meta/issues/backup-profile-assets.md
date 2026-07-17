@@ -2,7 +2,8 @@
 
 ## Summary
 
-Make `.dnbk` coverage match the documented profile state by including the
+Make the legacy-compatible `.dnbk` backup coverage match the documented profile
+state by including the
 daemon-local custom header, or deliberately redesigning/removing that local-only
 state before public desktop release.
 
@@ -11,8 +12,8 @@ state before public desktop release.
 - Add a versioned, authenticated sidecar representation for the custom
   `header.png` with explicit MIME, size, and resource limits, or document and
   implement a different authoritative storage model.
-- Preserve read compatibility with existing DNBK1 containers that have no
-  header field.
+- Preserve read compatibility with existing containers using the immutable
+  legacy `DNBK1` marker that have no header field.
 - Restore the asset transactionally with the signing key, store, credentials,
   and restore journal; rollback or crash recovery must not publish a mixed
   profile state.

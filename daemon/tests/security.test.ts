@@ -188,7 +188,7 @@ const register = async (
       ...(proof.accessToken ? { Authorization: `Bearer ${proof.accessToken}` } : {}),
     },
     body: new URLSearchParams({
-      client_name: 'DeltaNet',
+      client_name: 'Headwater',
       redirect_uris: REDIRECT,
       scopes: 'read write follow push',
       ...(proof.enrollmentCode ? { enrollment_code: proof.enrollmentCode } : {}),
@@ -386,7 +386,7 @@ describe('OAuth security contract', () => {
       method: 'POST',
       headers: { Origin: TRUSTED },
       body: new URLSearchParams({
-        client_name: 'DeltaNet',
+        client_name: 'Headwater',
         redirect_uris: REDIRECT,
         scopes: 'read write follow push',
       }),
@@ -406,7 +406,7 @@ describe('OAuth security contract', () => {
         method: 'POST',
         headers: { Origin: TRUSTED },
         body: new URLSearchParams({
-          client_name: 'DeltaNet',
+          client_name: 'Headwater',
           redirect_uris: REDIRECT,
           scopes,
           enrollment_code: enrollment.code,
@@ -426,7 +426,7 @@ describe('OAuth security contract', () => {
       const response = await app.request('/api/v1/apps', {
         method: 'POST',
         headers: { Origin: TRUSTED },
-        body: new URLSearchParams({ client_name: 'DeltaNet', redirect_uris, scopes: 'read' }),
+        body: new URLSearchParams({ client_name: 'Headwater', redirect_uris, scopes: 'read' }),
       });
       expect(response.status).toBe(422);
     }
@@ -497,7 +497,7 @@ describe('OAuth security contract', () => {
       method: 'POST',
       headers: { Origin: TRUSTED },
       body: new URLSearchParams({
-        client_name: 'DeltaNet',
+        client_name: 'Headwater',
         redirect_uris: REDIRECT,
         scopes: 'read write follow push',
         enrollment_code: enrollment.code,
@@ -646,7 +646,9 @@ describe('public projections and restricted blobs', () => {
       });
       expect(statuses[0].account.display_name).toBe('Bob Public');
       expect(statuses[0].account.pleroma.relationship).toBeUndefined();
-      expect(statuses[0].account.pleroma.deltanet.petname).toBeUndefined();
+      expect(statuses[0].account.pleroma.headwater.petname).toBeUndefined();
+      expect(statuses[0].account.pleroma.deltanet).toEqual(statuses[0].account.pleroma.headwater);
+      expect(statuses[0].pleroma.headwater).toBeUndefined();
       expect(statuses[0].pleroma.deltanet).toBeUndefined();
     }
   });
@@ -794,7 +796,7 @@ describe('WebSocket authentication', () => {
       redirectUri: authenticated.client.redirect_uri,
       code: secondCode,
     });
-    const issued = await app.request('/api/deltanet/streaming/token', {
+    const issued = await app.request('/api/headwater/streaming/token', {
       method: 'POST',
       headers: { Authorization: `Bearer ${authenticated.access_token}` },
     });

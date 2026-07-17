@@ -61,7 +61,7 @@ export const resolveStreamName = (requested: string | undefined): StreamName =>
 
 /**
  * A Mastodon streaming text frame: `stream` is always present (even though
- * the deltanet frontend's parser only reads `event`/`payload` — see
+ * the Headwater frontend's parser only reads `event`/`payload`; see
  * `../frontend/src/lib/pleroma/streaming.ts` — matching the wire shape keeps
  * us compatible with any stricter Mastodon-API client). `payload` is the
  * mapped status/notification JSON re-encoded as a string: the frontend

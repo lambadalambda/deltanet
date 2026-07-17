@@ -18,7 +18,7 @@ const updatedAccount = {
 		{ name: 'home', value: 'small web', verified_at: null },
 		{
 			name: 'Website',
-			value: '<a href="https://deltanet.example/~dreambyte">deltanet.example/~dreambyte</a>',
+			value: '<a href="https://headwater.example/~dreambyte">headwater.example/~dreambyte</a>',
 			verified_at: null
 		},
 		{ name: 'Location', value: 'low orbit', verified_at: null }
@@ -28,7 +28,7 @@ const updatedAccount = {
 		note: 'keeping the lights low',
 		fields: [
 			{ name: 'home', value: 'small web' },
-			{ name: 'Website', value: 'https://deltanet.example/~dreambyte' },
+			{ name: 'Website', value: 'https://headwater.example/~dreambyte' },
 			{ name: 'Location', value: 'low orbit' }
 		]
 	}
@@ -39,7 +39,7 @@ const authenticate = async (page: Page) => {
 		await fulfillJson(route, pleromaFixtures.instance);
 	});
 	await page.addInitScript((storedSession) => {
-		window.localStorage.setItem('deltanet.session', JSON.stringify(storedSession));
+		window.localStorage.setItem('headwater.session', JSON.stringify(storedSession));
 	}, session);
 };
 
@@ -86,7 +86,7 @@ test('real settings route saves through the account update API and reconciles th
 	const rail = page.getByTestId('right-rail');
 
 	await page.getByRole('textbox', { name: 'Display name' }).fill('dreambyte archive');
-	await page.getByRole('textbox', { name: 'Website' }).fill('https://deltanet.example/~dreambyte');
+	await page.getByRole('textbox', { name: 'Website' }).fill('https://headwater.example/~dreambyte');
 	await page.getByRole('textbox', { name: 'Location' }).fill('low orbit');
 	await page.getByRole('switch', { name: 'Show follower count' }).click();
 
@@ -104,14 +104,14 @@ test('real settings route saves through the account update API and reconciles th
 		hide_followers_count: true,
 		fields_attributes: [
 			{ name: 'home', value: 'small web' },
-			{ name: 'Website', value: 'https://deltanet.example/~dreambyte' },
+			{ name: 'Website', value: 'https://headwater.example/~dreambyte' },
 			{ name: 'Location', value: 'low orbit' }
 		]
 	});
 
 	await expect(page.getByRole('button', { name: 'dreambyte archive account menu' })).toBeVisible();
 	const storedSession = await page.evaluate(() =>
-		JSON.parse(window.localStorage.getItem('deltanet.session') ?? 'null')
+		JSON.parse(window.localStorage.getItem('headwater.session') ?? 'null')
 	);
 	expect(storedSession?.account?.display_name).toBe('dreambyte archive');
 
@@ -119,15 +119,15 @@ test('real settings route saves through the account update API and reconciles th
 	await expect(page.getByTestId('settings-save-state')).toContainText('Unsaved changes');
 	await page.getByRole('button', { name: 'Reset profile settings' }).click();
 	await expect(page.getByRole('textbox', { name: 'Display name' })).toHaveValue('dreambyte archive');
-	await expect(page.getByRole('textbox', { name: 'Website' })).toHaveValue('https://deltanet.example/~dreambyte');
+	await expect(page.getByRole('textbox', { name: 'Website' })).toHaveValue('https://headwater.example/~dreambyte');
 	await expect(page.getByTestId('settings-save-state')).toContainText('Saved');
 });
 
 const avatarUpdatedAccount = {
 	...pleromaFixtures.account,
-	avatar: 'https://pleroma.example/deltanet/avatar/account-1.png',
-	avatar_static: 'https://pleroma.example/deltanet/avatar/account-1.png',
-	header: 'https://pleroma.example/deltanet/header/account-1.png'
+	avatar: 'https://pleroma.example/headwater/avatar/account-1.png',
+	avatar_static: 'https://pleroma.example/headwater/avatar/account-1.png',
+	header: 'https://pleroma.example/headwater/header/account-1.png'
 };
 
 const pngBuffer = Buffer.from([
@@ -162,12 +162,12 @@ test('choosing an avatar shows a preview and saves it as multipart form-data', a
 	expect(capturedPostData).toContain('name="display_name"');
 
 	const storedSession = await page.evaluate(() =>
-		JSON.parse(window.localStorage.getItem('deltanet.session') ?? 'null')
+		JSON.parse(window.localStorage.getItem('headwater.session') ?? 'null')
 	);
 	// Avatar URLs are stable per contact id, so the client appends a
 	// cache-busting query param so the new image repaints in-place.
 	expect(storedSession?.account?.avatar).toMatch(
-		/^https:\/\/pleroma\.example\/deltanet\/avatar\/account-1\.png\?_cb=\d+$/
+		/^https:\/\/pleroma\.example\/headwater\/avatar\/account-1\.png\?_cb=\d+$/
 	);
 
 	await expect(page.getByTestId('avatar-preview')).toHaveCount(0);
@@ -195,10 +195,10 @@ test('choosing a banner shows a preview and saves it as multipart form-data', as
 	expect(capturedPostData).toContain('filename="wide.png"');
 
 	const storedSession = await page.evaluate(() =>
-		JSON.parse(window.localStorage.getItem('deltanet.session') ?? 'null')
+		JSON.parse(window.localStorage.getItem('headwater.session') ?? 'null')
 	);
 	expect(storedSession?.account?.header).toMatch(
-		/^https:\/\/pleroma\.example\/deltanet\/header\/account-1\.png\?_cb=\d+$/
+		/^https:\/\/pleroma\.example\/headwater\/header\/account-1\.png\?_cb=\d+$/
 	);
 });
 
@@ -285,7 +285,7 @@ test('real settings route signs out and redirects when the save is unauthorized'
 	await page.getByRole('button', { name: 'Save profile settings' }).click();
 
 	await page.waitForURL('/');
-	const storedSession = await page.evaluate(() => window.localStorage.getItem('deltanet.session'));
+	const storedSession = await page.evaluate(() => window.localStorage.getItem('headwater.session'));
 	expect(storedSession).toBeNull();
 });
 
@@ -311,11 +311,11 @@ test('backup card nags when no backup exists and downloads an encrypted backup',
 	await authenticate(page);
 	await setViewport(page, 'wide');
 
-	await page.route('https://pleroma.example/api/deltanet/backup', async (route: Route) => {
+	await page.route('https://pleroma.example/api/headwater/backup', async (route: Route) => {
 		await fulfillJson(route, { last_backup_at: null });
 	});
 	let exportBody: unknown;
-	await page.route('https://pleroma.example/api/deltanet/backup/export', async (route: Route) => {
+	await page.route('https://pleroma.example/api/headwater/backup/export', async (route: Route) => {
 		exportBody = route.request().postDataJSON();
 		await route.fulfill({
 			status: 200,
@@ -325,7 +325,7 @@ test('backup card nags when no backup exists and downloads an encrypted backup',
 				// cross-origin frontend can't read the filename.
 				'access-control-allow-origin': '*',
 				'access-control-expose-headers': 'Content-Disposition',
-				'content-disposition': 'attachment; filename="deltanet-backup-quietadmin-2026-07-07.dnbk"'
+				'content-disposition': 'attachment; filename="headwater-backup-quietadmin-2026-07-07.dnbk"'
 			},
 			body: Buffer.from('DNBK1\nfake-container-bytes')
 		});
@@ -345,10 +345,10 @@ test('backup card nags when no backup exists and downloads an encrypted backup',
 	const downloadPromise = page.waitForEvent('download');
 	await exportButton.click();
 	const download = await downloadPromise;
-	expect(download.suggestedFilename()).toBe('deltanet-backup-quietadmin-2026-07-07.dnbk');
+	expect(download.suggestedFilename()).toBe('headwater-backup-quietadmin-2026-07-07.dnbk');
 	expect(exportBody).toMatchObject({ passphrase: 'correct horse battery' });
 
-	await expect(page.getByTestId('backup-saved')).toContainText('deltanet-backup-quietadmin-2026-07-07.dnbk');
+	await expect(page.getByTestId('backup-saved')).toContainText('headwater-backup-quietadmin-2026-07-07.dnbk');
 	await expect(page.getByTestId('backup-status')).toContainText('Last backup');
 	// The passphrase field clears after a successful export.
 	await expect(page.getByLabel('Backup passphrase')).toHaveValue('');
@@ -359,10 +359,10 @@ test('backup card nags about a stale backup and surfaces export failures', async
 	await setViewport(page, 'wide');
 
 	const sixtyDaysAgo = Date.now() - 60 * 24 * 60 * 60 * 1000;
-	await page.route('https://pleroma.example/api/deltanet/backup', async (route: Route) => {
+	await page.route('https://pleroma.example/api/headwater/backup', async (route: Route) => {
 		await fulfillJson(route, { last_backup_at: sixtyDaysAgo });
 	});
-	await page.route('https://pleroma.example/api/deltanet/backup/export', async (route: Route) => {
+	await page.route('https://pleroma.example/api/headwater/backup/export', async (route: Route) => {
 		await fulfillJson(route, { error: 'backup export exploded' }, 500);
 	});
 

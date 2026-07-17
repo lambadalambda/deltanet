@@ -251,7 +251,7 @@ describe('thread subscribe: C follows the thread via A\'s hosted channel', () =>
 
     // The thread ROOT status is flagged subscribed.
     const rootStatus = (await (await cApp.request(`/api/v1/statuses/orig-${aRootUuid}`)).json()) as any;
-    expect(rootStatus.pleroma.deltanet.thread_subscribed).toBe(true);
+    expect(rootStatus.pleroma.headwater.thread_subscribed).toBe(true);
 
     // --- Suppression: the channel-republished reply is NOT in C's home timeline
     //     and produced no mention notification. ---

@@ -14,7 +14,7 @@ const session = {
 const authenticate = async (page: Page) => {
 	await mockRightRailApis(page);
 	await page.addInitScript((storedSession) => {
-		window.localStorage.setItem('deltanet.session', JSON.stringify(storedSession));
+		window.localStorage.setItem('headwater.session', JSON.stringify(storedSession));
 	}, session);
 };
 
@@ -43,7 +43,7 @@ test.describe('responsive regression coverage', () => {
 			await setViewport(page, viewportName);
 			await page.goto('/design-system');
 
-			await expect(page).toHaveTitle('DeltaNet · Design System');
+			await expect(page).toHaveTitle('Headwater · Design System');
 			await expect(page.getByRole('heading', { name: 'Foundations' })).toBeVisible();
 			await expect(page.getByRole('heading', { name: 'Controls' })).toBeVisible();
 			await expectNoHorizontalOverflow(page);

@@ -44,7 +44,7 @@ export const resolveResourceLimits = (input: Partial<ResourceLimits> = {}): Reso
 });
 
 export const requestBodyLimitFor = (path: string, limits: ResourceLimits): number => {
-  if (path === '/api/deltanet/restore') {
+  if (path === '/api/headwater/restore' || path === '/api/deltanet/restore') {
     return limits.maxRestoreBytes + limits.multipartOverheadBytes;
   }
   if (

@@ -5,7 +5,7 @@ import { openRelayTransport, register } from './relay.js';
 
 /**
  * Real federation over chatmail (a local ephemeral podman relay by default,
- * or nine.testrun.org with DELTANET_TEST_RELAY=testrun): alice publishes a
+ * or nine.testrun.org with HEADWATER_TEST_RELAY=testrun): alice publishes a
  * feed, bob follows it via the invite link, alice posts, bob sees the post.
  * Slow by nature (real SMTP/IMAP + securejoin handshake).
  */

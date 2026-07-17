@@ -6,8 +6,33 @@ import type { PostOptions, ProfileUpdate, TimelineQuery, Transport } from './typ
 import { initialOf } from '../mastodon/entities.js';
 
 const DC_CONTACT_ID_SELF = 1;
-const FEED_CHAT_ID_KEY = 'ui.deltanet.feed_chat_id';
-const LOCKED_CHAT_ID_KEY = 'ui.deltanet.locked_chat_id';
+const FEED_CHAT_ID_KEY = 'ui.headwater.feed_chat_id';
+const LEGACY_FEED_CHAT_ID_KEY = 'ui.deltanet.feed_chat_id';
+const LOCKED_CHAT_ID_KEY = 'ui.headwater.locked_chat_id';
+const LEGACY_LOCKED_CHAT_ID_KEY = 'ui.deltanet.locked_chat_id';
+
+export const readCompatibleConfig = async (
+  get: (key: string) => Promise<string | null>,
+  set: (key: string, value: string) => Promise<unknown>,
+  preferredKey: string,
+  legacyKey: string,
+): Promise<string | null> => {
+  const preferred = await get(preferredKey);
+  if (preferred) return preferred;
+  const legacy = await get(legacyKey);
+  if (legacy) await set(preferredKey, legacy);
+  return legacy;
+};
+
+export const writeCompatibleConfig = async (
+  set: (key: string, value: string) => Promise<unknown>,
+  preferredKey: string,
+  legacyKey: string,
+  value: string,
+): Promise<void> => {
+  await set(legacyKey, value);
+  await set(preferredKey, value);
+};
 
 /** Chat types whose messages appear in the timeline. */
 const FEED_CHAT_TYPES: ReadonlySet<T.ChatType> = new Set([
@@ -249,7 +274,8 @@ export const openTransport = async (
 };
 
 /** Config key stamped after the API validates a complete downloadable backup. */
-export const LAST_BACKUP_AT_KEY = 'ui.deltanet.last_backup_at';
+export const LAST_BACKUP_AT_KEY = 'ui.headwater.last_backup_at';
+export const LEGACY_LAST_BACKUP_AT_KEY = 'ui.deltanet.last_backup_at';
 
 /**
  * Pure mapper: reconstruct `ChatmailCredentials` from an imported backup's
@@ -290,7 +316,7 @@ export const restoreTransport = async (
   options: OpenTransportOptions = {},
   /**
    * Runs after the core import succeeded but BEFORE IO starts and any
-   * ingestion can fire — the window where the API layer writes the deltanet
+   * ingestion can fire: the window where the API layer writes the Headwater
    * sidecar files (store + signing key) into the data dir. It cannot write
    * them any earlier: core REFUSES to initialize an accounts structure in a
    * non-empty directory ("<dir> is not empty", exits immediately — observed
@@ -325,7 +351,12 @@ export const restoreTransport = async (
     // this the settings nag would claim "never backed up" right after a
     // restore: complete export finalization stamps AFTER exporting, so the stamp inside the
     // tar always points at the previous export (null for a first backup).
-    await rpc.setConfig(accountId, LAST_BACKUP_AT_KEY, String(Date.now()));
+    await writeCompatibleConfig(
+      (key, value) => rpc.setConfig(accountId, key, value),
+      LAST_BACKUP_AT_KEY,
+      LEGACY_LAST_BACKUP_AT_KEY,
+      String(Date.now()),
+    );
     beforeOpen?.();
     const deferred: DeferredBackground = {};
     const transport = buildTransport(dc, accountId, creds, options, deferred);
@@ -444,21 +475,41 @@ const buildTransport = (
   };
 
   const ensureFeedChat = async (): Promise<number> => {
-    const stored = await rpc.getConfig(accountId, FEED_CHAT_ID_KEY);
+    const stored = await readCompatibleConfig(
+      (key) => rpc.getConfig(accountId, key),
+      (key, value) => rpc.setConfig(accountId, key, value),
+      FEED_CHAT_ID_KEY,
+      LEGACY_FEED_CHAT_ID_KEY,
+    );
     if (stored) return Number(stored);
-    const name = `${creds.displayName}'s feed`;
+    const name = `${creds.displayName}'s Headwater feed`;
     const chatId = await rpc.createBroadcast(accountId, name);
-    await rpc.setConfig(accountId, FEED_CHAT_ID_KEY, String(chatId));
+    await writeCompatibleConfig(
+      (key, value) => rpc.setConfig(accountId, key, value),
+      FEED_CHAT_ID_KEY,
+      LEGACY_FEED_CHAT_ID_KEY,
+      String(chatId),
+    );
     return chatId;
   };
 
   /** The LOCKED channel (visibility channels), created lazily like the feed. */
   const ensureLockedChat = async (): Promise<number> => {
-    const stored = await rpc.getConfig(accountId, LOCKED_CHAT_ID_KEY);
+    const stored = await readCompatibleConfig(
+      (key) => rpc.getConfig(accountId, key),
+      (key, value) => rpc.setConfig(accountId, key, value),
+      LOCKED_CHAT_ID_KEY,
+      LEGACY_LOCKED_CHAT_ID_KEY,
+    );
     if (stored) return Number(stored);
-    const name = `${creds.displayName}'s locked feed`;
+    const name = `${creds.displayName}'s locked Headwater feed`;
     const chatId = await rpc.createBroadcast(accountId, name);
-    await rpc.setConfig(accountId, LOCKED_CHAT_ID_KEY, String(chatId));
+    await writeCompatibleConfig(
+      (key, value) => rpc.setConfig(accountId, key, value),
+      LOCKED_CHAT_ID_KEY,
+      LEGACY_LOCKED_CHAT_ID_KEY,
+      String(chatId),
+    );
     return chatId;
   };
 
@@ -467,7 +518,12 @@ const buildTransport = (
    * self timeline) must not conjure an empty channel as a side effect.
    */
   const lockedChatIdIfAny = async (): Promise<number | null> => {
-    const stored = await rpc.getConfig(accountId, LOCKED_CHAT_ID_KEY);
+    const stored = await readCompatibleConfig(
+      (key) => rpc.getConfig(accountId, key),
+      (key, value) => rpc.setConfig(accountId, key, value),
+      LOCKED_CHAT_ID_KEY,
+      LEGACY_LOCKED_CHAT_ID_KEY,
+    );
     return stored ? Number(stored) : null;
   };
 
@@ -763,11 +819,21 @@ const buildTransport = (
     },
 
     markBackupExported: async (exportedAt) => {
-      await rpc.setConfig(accountId, LAST_BACKUP_AT_KEY, String(exportedAt));
+      await writeCompatibleConfig(
+        (key, value) => rpc.setConfig(accountId, key, value),
+        LAST_BACKUP_AT_KEY,
+        LEGACY_LAST_BACKUP_AT_KEY,
+        String(exportedAt),
+      );
     },
 
     lastBackupAt: async () => {
-      const raw = await rpc.getConfig(accountId, LAST_BACKUP_AT_KEY).catch(() => null);
+      const raw = await readCompatibleConfig(
+        (key) => rpc.getConfig(accountId, key).catch(() => null),
+        (key, value) => rpc.setConfig(accountId, key, value),
+        LAST_BACKUP_AT_KEY,
+        LEGACY_LAST_BACKUP_AT_KEY,
+      );
       const parsed = Number(raw);
       return raw && Number.isFinite(parsed) ? parsed : null;
     },

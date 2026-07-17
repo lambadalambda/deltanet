@@ -42,10 +42,10 @@ const record = (value: unknown): Record<string, unknown> | null =>
 export const capabilitiesForInstance = (instance: PleromaInstance | null): InstanceCapabilities => {
 	if (!instance) return NO_MUTABLE_CAPABILITIES;
 	const configuration = record(instance.configuration);
-	const deltanet = record(configuration?.deltanet);
-	// No DeltaNet metadata means this is an ordinary Pleroma-compatible node.
-	if (!deltanet) return PLEROMA_CAPABILITIES;
-	const capabilities = record(deltanet.capabilities);
+	const headwater = record(configuration?.headwater) ?? record(configuration?.deltanet);
+	// No Headwater metadata means this is an ordinary Pleroma-compatible node.
+	if (!headwater) return PLEROMA_CAPABILITIES;
+	const capabilities = record(headwater.capabilities);
 	if (!capabilities) return NO_MUTABLE_CAPABILITIES;
 	return {
 		bookmarks: capabilities.bookmarks === true,

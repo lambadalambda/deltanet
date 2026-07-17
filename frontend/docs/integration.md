@@ -1,6 +1,6 @@
 # Integration Tests
 
-DeltaNet keeps Dockerized Pleroma checks opt-in. Default commands such as
+Headwater keeps Dockerized Pleroma checks opt-in. Default commands such as
 `mise exec -- pnpm test`, `mise exec -- pnpm run test:e2e`, and `mise run test`
 only run mocked, deterministic Playwright tests.
 

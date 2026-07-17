@@ -34,5 +34,6 @@ existing ed25519 key), so a tally is a set of receipts, not bare counts.
 - A relayed tally only counts receipts that verify; unverifiable ones are
   excluded or rendered as unconfirmed.
 - Canonical-payload addition documented with the same downgrade analysis
-  rigor as dn3 (reaction envelopes are a NEW signed surface, so no
+  rigor as the immutable compatibility signature identifier `dn3` (reaction
+  envelopes are a NEW signed surface, so no
   legacy-fallback trap: absent sig = legacy reaction).

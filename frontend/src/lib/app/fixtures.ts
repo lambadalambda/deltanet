@@ -92,7 +92,7 @@ export const initialThreadReplies: ThreadPost[] = [
 			{
 				id: 'reply-dreambyte',
 				name: 'dreambyte',
-				handle: '@dreambyte@deltanet.example',
+				handle: '@dreambyte@headwater.example',
 				time: '8m',
 				body: 'saving this thread for later.',
 				avatar: 'grad-1',

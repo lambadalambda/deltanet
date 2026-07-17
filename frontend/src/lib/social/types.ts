@@ -147,13 +147,13 @@ export type SocialPost = {
 	media?: MediaVariant;
 	attachments?: PostAttachment[];
 	addressees?: string[];
-	/** Addressee handle (lowercased) -> their chosen name, when known (deltanet mentions). */
+	/** Addressee handle (lowercased) -> their chosen name, when known (Headwater mentions). */
 	addresseeNames?: Record<string, string>;
-	/** Addressee handle (lowercased) -> my local petname, when set (deltanet mentions). */
+	/** Addressee handle (lowercased) -> my local petname, when set (Headwater mentions). */
 	addresseePetnames?: Record<string, string>;
 	/** Body-mention handle (lowercased) -> render label (petname-first). */
 	mentionNames?: Record<string, string>;
-	/** The author's self-chosen name (deltanet petnames; name above prefers my petname). */
+	/** The author's self-chosen name (Headwater petnames; name above prefers my petname). */
 	authName?: string;
 	/** Key confirmation: attribution is signature-only, no pinned key yet. */
 	authorUnconfirmed?: boolean;

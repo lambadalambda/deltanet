@@ -153,8 +153,17 @@ type AuthStoreOptions = {
 
 const randomValue = (): string => randomBytes(RANDOM_BYTES).toString('base64url');
 
-const secretHash = (kind: 'client' | 'code' | 'token' | 'enrollment' | 'ticket', value: string): string =>
-  createHash('sha256').update(`deltanet:${kind}:`).update(value).digest('base64url');
+type SecretKind = 'client' | 'code' | 'token' | 'enrollment' | 'ticket';
+
+const secretHashForDomain = (domain: 'headwater' | 'deltanet', kind: SecretKind, value: string): string =>
+  createHash('sha256').update(`${domain}:${kind}:`).update(value).digest('base64url');
+
+const secretHash = (kind: SecretKind, value: string): string =>
+  secretHashForDomain('headwater', kind, value);
+
+const matchesSecretHash = (stored: string, kind: SecretKind, value: string): boolean =>
+  equalHash(stored, secretHash(kind, value)) ||
+  equalHash(stored, secretHashForDomain('deltanet', kind, value));
 
 const equalHash = (left: string, right: string): boolean => {
   const a = Buffer.from(left);
@@ -361,7 +370,7 @@ export const createAuthStore = (filePath: string, options: AuthStoreOptions = {}
 
   const validateEnrollmentCode = (code: string): boolean => {
     if (!code || !data.enrollmentCode || data.enrollmentCode.expiresAt <= now()) return false;
-    return equalHash(data.enrollmentCode.codeHash, secretHash('enrollment', code));
+    return matchesSecretHash(data.enrollmentCode.codeHash, 'enrollment', code);
   };
 
   const registerClient: AuthStore['registerClient'] = ({ name, redirectUri, scope }, proof) => {
@@ -393,7 +402,7 @@ export const createAuthStore = (filePath: string, options: AuthStoreOptions = {}
 
   const validateClientSecret = (clientId: string, clientSecret: string): boolean => {
     const record = clientRecord(clientId);
-    return record !== null && equalHash(record.secretHash, secretHash('client', clientSecret));
+    return record !== null && matchesSecretHash(record.secretHash, 'client', clientSecret);
   };
 
   const issueAuthorizationCode: AuthStore['issueAuthorizationCode'] = ({ clientId, redirectUri, scope }) => {
@@ -438,8 +447,7 @@ export const createAuthStore = (filePath: string, options: AuthStoreOptions = {}
     if (!validateClientSecret(clientId, clientSecret)) {
       throw new AuthError('invalid_client', 'invalid OAuth client credentials');
     }
-    const codeHash = secretHash('code', code);
-    const record = data.authorizationCodes.find((candidate) => equalHash(candidate.codeHash, codeHash));
+    const record = data.authorizationCodes.find((candidate) => matchesSecretHash(candidate.codeHash, 'code', code));
     const timestamp = now();
     if (
       !record ||
@@ -487,16 +495,14 @@ export const createAuthStore = (filePath: string, options: AuthStoreOptions = {}
 
   const validateAccessToken = (accessToken: string): AuthSession | null => {
     if (!accessToken) return null;
-    const tokenHash = secretHash('token', accessToken);
-    const session = data.sessions.find((candidate) => equalHash(candidate.tokenHash, tokenHash));
+    const session = data.sessions.find((candidate) => matchesSecretHash(candidate.tokenHash, 'token', accessToken));
     if (!session || session.revokedAt !== undefined || session.expiresAt <= now()) return null;
     return sessionView(session);
   };
 
   const revokeAccessToken = (accessToken: string): boolean => {
     if (!accessToken) return false;
-    const tokenHash = secretHash('token', accessToken);
-    const index = data.sessions.findIndex((candidate) => equalHash(candidate.tokenHash, tokenHash));
+    const index = data.sessions.findIndex((candidate) => matchesSecretHash(candidate.tokenHash, 'token', accessToken));
     if (index === -1 || data.sessions[index]!.revokedAt !== undefined) return false;
     const sessions = data.sessions.map((session, sessionIndex) =>
       sessionIndex === index ? { ...session, revokedAt: now() } : session,
@@ -546,8 +552,7 @@ export const createAuthStore = (filePath: string, options: AuthStoreOptions = {}
 
   const consumeStreamTicket = (ticket: string): AuthSession | null => {
     if (!ticket) return null;
-    const ticketHash = secretHash('ticket', ticket);
-    const record = data.streamTickets.find((candidate) => equalHash(candidate.ticketHash, ticketHash));
+    const record = data.streamTickets.find((candidate) => matchesSecretHash(candidate.ticketHash, 'ticket', ticket));
     if (!record) return null;
     persist({
       ...data,

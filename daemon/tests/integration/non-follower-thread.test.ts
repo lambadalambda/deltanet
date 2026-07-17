@@ -19,7 +19,7 @@ const bodyOf = (m: T.Message): string => parseWire(m.text).body;
 /**
  * Acceptance topology from ../meta/issues/non-follower-thread-rendering.md, over
  * real chatmail (local podman relay by default,
- * nine.testrun.org with DELTANET_TEST_RELAY=testrun):
+ * nine.testrun.org with HEADWATER_TEST_RELAY=testrun):
  *
  *   B follows A; A does NOT follow B. A posts; B replies; A reacts ❤ to B's
  *   reply AND replies to it — but A only ever holds the DM copy of B's reply

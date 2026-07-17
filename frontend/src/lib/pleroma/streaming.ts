@@ -98,7 +98,7 @@ export const fetchPleromaStreamingTicket = async ({
 	const http = createPleromaHttp({ instanceUrl, accessToken, fetch });
 	return http.request<{ ticket: string; expires_at: number }>({
 		method: 'POST',
-		path: '/api/deltanet/streaming/token',
+		path: '/api/headwater/streaming/token',
 		signal,
 		auth: 'required'
 	});

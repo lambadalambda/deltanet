@@ -9,9 +9,11 @@ import {
 /**
  * The `.dnbk` backup container (see ../meta/issues/backup-second-device.md).
  *
- * Core's `exportBackup` tar is NOT the whole deltanet identity: the ed25519
- * post-attestation key (`deltanet-signing-key.json`, TOFU-pinned by followers
- * and non-recoverable) and the deltanet store (`deltanet-store.json`, whose
+ * Core's `exportBackup` tar is NOT the whole Headwater identity: the ed25519
+ * post-attestation key (`headwater-signing-key.json`, with the deployed
+ * `deltanet-signing-key.json` name retained when present) and the Headwater
+ * store (`headwater-store.json`, likewise retaining a deployed
+ * `deltanet-store.json`, whose
  * held envelopes / pins / thread chatIds cannot be re-derived from dc.db)
  * must survive too. This container packs both alongside the core tar in ONE
  * downloadable file:
@@ -39,9 +41,9 @@ const KEY_LEN = 32;
 export type BackupSidecar = {
   addr: string;
   exportedAt: number;
-  /** Contents of deltanet-signing-key.json, when the node has signed before. */
+  /** Contents of the active Headwater or legacy signing-key file. */
   signingKey?: string;
-  /** Contents of deltanet-store.json, when one exists. */
+  /** Contents of the active Headwater or legacy store file. */
   store?: string;
 };
 
@@ -99,7 +101,7 @@ export const backupPrefixLength = (header: Buffer, limits: BackupDecodeLimits = 
     header.length < headerLen ||
     header.subarray(0, BACKUP_MAGIC.length).toString('utf8') !== BACKUP_MAGIC
   ) {
-    throw new BackupDecodeError('not a deltanet backup file');
+    throw new BackupDecodeError('not a Headwater backup file');
   }
   const blockLen = header.readUInt32BE(BACKUP_MAGIC.length);
   if (limits.maxSidecarBytes !== undefined && blockLen > limits.maxSidecarBytes) {
@@ -178,9 +180,9 @@ export const decodeBackupContainer = (
   return { sidecar: decoded.sidecar, coreTar };
 };
 
-/** `deltanet-backup-<addr, filename-safe>-<utc date>.dnbk` for the download header. */
+/** `headwater-backup-<addr, filename-safe>-<utc date>.dnbk` for the download header. */
 export const backupFilename = (addr: string, exportedAt: number): string => {
   const safeAddr = addr.replace(/[^a-zA-Z0-9.@_-]+/g, '-').replace(/@/g, '-');
   const date = new Date(exportedAt).toISOString().slice(0, 10);
-  return `deltanet-backup-${safeAddr}-${date}.dnbk`;
+  return `headwater-backup-${safeAddr}-${date}.dnbk`;
 };

@@ -9,13 +9,73 @@ import {
   openSync,
   readFileSync,
 } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { ChatmailCredentials } from './transport/deltachat.js';
 import { atomicWriteText, type FileOwner } from './durable-file.js';
 import { acquireInterprocessLock } from './interprocess-lock.js';
 
 export type AccountsFile = Record<string, ChatmailCredentials>;
 export type AccountValue = ChatmailCredentials | null;
+
+type DaemonEnv = Record<string, string | undefined>;
+
+export type DaemonConfig = {
+  account: string;
+  dataDir: string;
+  baseUrl: string;
+  accountsFile: string;
+  authFile: string;
+  allowedOrigins: string[];
+  signupRelays: string[];
+  staticDir: string;
+};
+
+const compatibleEnv = (env: DaemonEnv, name: string): string | undefined =>
+  env[`HEADWATER_${name}`] ?? env[`DELTANET_${name}`];
+
+const csvEnv = (value: string | undefined): string[] =>
+  (value ?? '').split(',').map((entry) => entry.trim()).filter(Boolean);
+
+const errorCode = (error: unknown): string =>
+  (error as NodeJS.ErrnoException | null)?.code ?? 'unknown';
+
+const dataPathExists = (path: string): boolean => {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return false;
+    throw error;
+  }
+};
+
+/** Resolve preferred Headwater settings with deployed DeltaNet names as fallbacks. */
+export const resolveDaemonConfig = (env: DaemonEnv, port: number): DaemonConfig => {
+  const account = compatibleEnv(env, 'ACCOUNT') ?? 'main';
+  const dataDir = compatibleEnv(env, 'DATA') ?? `data/${account}`;
+  return {
+    account,
+    dataDir,
+    baseUrl: compatibleEnv(env, 'BASE_URL') ?? `http://localhost:${port}`,
+    accountsFile: compatibleEnv(env, 'ACCOUNTS') ?? 'accounts.local.json',
+    authFile: compatibleEnv(env, 'AUTH') ?? `${dataDir}.auth.json`,
+    allowedOrigins: csvEnv(compatibleEnv(env, 'ALLOWED_ORIGINS')),
+    signupRelays: csvEnv(compatibleEnv(env, 'SIGNUP_RELAYS')),
+    staticDir: compatibleEnv(env, 'STATIC') ?? '../frontend/build',
+  };
+};
+
+/** Prefer a Headwater state file, but keep using deployed legacy state when present. */
+export const resolveDataFilePath = (
+  dataDir: string,
+  preferredName: string,
+  legacyName: string,
+): string => {
+  const preferred = join(dataDir, preferredName);
+  if (dataPathExists(preferred) || dataPathExists(`${preferred}.recovery`)) return preferred;
+  const legacy = join(dataDir, legacyName);
+  return dataPathExists(legacy) || dataPathExists(`${legacy}.recovery`) ? legacy : preferred;
+};
 
 export class AccountConflictError extends Error {
   constructor(name: string) {
@@ -41,9 +101,6 @@ const sameAccount = (left: AccountValue, right: AccountValue): boolean =>
     left.password === right.password &&
     left.displayName === right.displayName,
   );
-
-const errorCode = (error: unknown): string =>
-  (error as NodeJS.ErrnoException | null)?.code ?? 'unknown';
 
 const ensureCredentialsParent = (path: string): void => {
   const parent = dirname(path);

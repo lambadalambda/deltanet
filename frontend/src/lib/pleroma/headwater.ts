@@ -1,20 +1,20 @@
 import type { FetchLike } from './http';
 
-export type DeltanetStatus = { configured: boolean; address: string | null };
-export type DeltanetSignupInput = { displayName: string; relay?: string; enrollmentCode?: string };
-export type DeltanetSignupResult = { acct: string };
-export type DeltanetSignupError =
+export type HeadwaterStatus = { configured: boolean; address: string | null };
+export type HeadwaterSignupInput = { displayName: string; relay?: string; enrollmentCode?: string };
+export type HeadwaterSignupResult = { acct: string };
+export type HeadwaterSignupError =
 	| { kind: 'conflict'; message: string }
 	| { kind: 'invalid'; message: string }
 	| { kind: 'network'; message: string };
-export type DeltanetFollowResult = { chatId: number };
-export type DeltanetFollowError = { kind: 'invalid'; message: string } | { kind: 'network'; message: string };
+export type HeadwaterFollowResult = { chatId: number };
+export type HeadwaterFollowError = { kind: 'invalid'; message: string } | { kind: 'network'; message: string };
 
 const DEFAULT_RELAY = 'https://nine.testrun.org';
 
-export const DELTANET_DEFAULT_RELAY = DEFAULT_RELAY;
+export const HEADWATER_DEFAULT_RELAY = DEFAULT_RELAY;
 
-export const defaultDeltanetInstanceUrl = ({
+export const defaultHeadwaterInstanceUrl = ({
 	windowOrigin,
 	publicInstanceUrl,
 	fallback = 'http://localhost:4030'
@@ -43,17 +43,17 @@ const errorMessage = (payload: unknown, fallback: string) => {
 	return fallback;
 };
 
-export const fetchDeltanetStatus = async ({
+export const fetchHeadwaterStatus = async ({
 	instanceUrl,
 	fetch: fetchImpl
 }: {
 	instanceUrl: string;
 	fetch?: FetchLike;
-}): Promise<DeltanetStatus> => {
+}): Promise<HeadwaterStatus> => {
 	const requestFetch = fetchImpl ?? globalThis.fetch?.bind(globalThis);
-	if (!requestFetch) throw new Error('A fetch implementation is required for deltanet requests.');
+	if (!requestFetch) throw new Error('A fetch implementation is required for Headwater requests.');
 
-	const response = await requestFetch(new URL('/api/deltanet/status', instanceUrl).toString(), {
+	const response = await requestFetch(new URL('/api/headwater/status', instanceUrl).toString(), {
 		headers: { accept: 'application/json' }
 	});
 	const payload = await readJsonBody(response);
@@ -68,7 +68,7 @@ export const fetchDeltanetStatus = async ({
 	};
 };
 
-export const signupDeltanet = async ({
+export const signupHeadwater = async ({
 	instanceUrl,
 	displayName,
 	relay,
@@ -77,13 +77,13 @@ export const signupDeltanet = async ({
 }: {
 	instanceUrl: string;
 	fetch?: FetchLike;
-} & DeltanetSignupInput): Promise<DeltanetSignupResult> => {
+} & HeadwaterSignupInput): Promise<HeadwaterSignupResult> => {
 	const requestFetch = fetchImpl ?? globalThis.fetch?.bind(globalThis);
-	if (!requestFetch) throw new Error('A fetch implementation is required for deltanet requests.');
+	if (!requestFetch) throw new Error('A fetch implementation is required for Headwater requests.');
 
 	let response: Response;
 	try {
-		response = await requestFetch(new URL('/api/deltanet/signup', instanceUrl).toString(), {
+		response = await requestFetch(new URL('/api/headwater/signup', instanceUrl).toString(), {
 			method: 'POST',
 			headers: { accept: 'application/json', 'content-type': 'application/json' },
 			body: JSON.stringify({
@@ -96,7 +96,7 @@ export const signupDeltanet = async ({
 		throw {
 			kind: 'network',
 			message: cause instanceof Error ? cause.message : 'Could not reach this node to create an account.'
-		} satisfies DeltanetSignupError;
+		} satisfies HeadwaterSignupError;
 	}
 
 	const payload = await readJsonBody(response);
@@ -104,19 +104,19 @@ export const signupDeltanet = async ({
 		throw {
 			kind: 'conflict',
 			message: 'This node already has an account — sign in instead.'
-		} satisfies DeltanetSignupError;
+		} satisfies HeadwaterSignupError;
 	}
 	if (response.status === 422) {
 		throw {
 			kind: 'invalid',
 			message: errorMessage(payload, 'That display name was not accepted.')
-		} satisfies DeltanetSignupError;
+		} satisfies HeadwaterSignupError;
 	}
 	if (!response.ok) {
 		throw {
 			kind: 'network',
 			message: errorMessage(payload, 'Could not create an account on this node.')
-		} satisfies DeltanetSignupError;
+		} satisfies HeadwaterSignupError;
 	}
 
 	const account = payload && typeof payload === 'object' ? (payload as { account?: { acct?: unknown } }).account : null;
@@ -124,7 +124,7 @@ export const signupDeltanet = async ({
 	return { acct };
 };
 
-export const fetchDeltanetInvite = async ({
+export const fetchHeadwaterInvite = async ({
 	instanceUrl,
 	accessToken,
 	channel,
@@ -137,9 +137,9 @@ export const fetchDeltanetInvite = async ({
 	fetch?: FetchLike;
 }): Promise<string> => {
 	const requestFetch = fetchImpl ?? globalThis.fetch?.bind(globalThis);
-	if (!requestFetch) throw new Error('A fetch implementation is required for deltanet requests.');
+	if (!requestFetch) throw new Error('A fetch implementation is required for Headwater requests.');
 
-	const url = new URL('/api/deltanet/invite', instanceUrl);
+	const url = new URL('/api/headwater/invite', instanceUrl);
 	if (channel === 'locked') url.searchParams.set('channel', 'locked');
 	const response = await requestFetch(url.toString(), {
 		headers: { accept: 'application/json', authorization: `Bearer ${accessToken}` }
@@ -152,8 +152,8 @@ export const fetchDeltanetInvite = async ({
 	return (payload as { invite: string }).invite;
 };
 
-export type DeltanetBackupInfo = { lastBackupAt: number | null };
-export type DeltanetRestoreError =
+export type HeadwaterBackupInfo = { lastBackupAt: number | null };
+export type HeadwaterRestoreError =
 	| { kind: 'conflict'; message: string }
 	| { kind: 'invalid'; message: string }
 	| { kind: 'network'; message: string };
@@ -164,7 +164,7 @@ export const BACKUP_NAG_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
 export const backupNagState = (lastBackupAt: number | null, now: number): 'never' | 'stale' | 'fresh' =>
 	lastBackupAt === null ? 'never' : now - lastBackupAt > BACKUP_NAG_AFTER_MS ? 'stale' : 'fresh';
 
-export const fetchDeltanetBackupInfo = async ({
+export const fetchHeadwaterBackupInfo = async ({
 	instanceUrl,
 	accessToken,
 	fetch: fetchImpl
@@ -172,11 +172,11 @@ export const fetchDeltanetBackupInfo = async ({
 	instanceUrl: string;
 	accessToken: string;
 	fetch?: FetchLike;
-}): Promise<DeltanetBackupInfo> => {
+}): Promise<HeadwaterBackupInfo> => {
 	const requestFetch = fetchImpl ?? globalThis.fetch?.bind(globalThis);
-	if (!requestFetch) throw new Error('A fetch implementation is required for deltanet requests.');
+	if (!requestFetch) throw new Error('A fetch implementation is required for Headwater requests.');
 
-	const response = await requestFetch(new URL('/api/deltanet/backup', instanceUrl).toString(), {
+	const response = await requestFetch(new URL('/api/headwater/backup', instanceUrl).toString(), {
 		headers: { accept: 'application/json', authorization: `Bearer ${accessToken}` }
 	});
 	const payload = await readJsonBody(response);
@@ -187,7 +187,7 @@ export const fetchDeltanetBackupInfo = async ({
 	return { lastBackupAt: typeof at === 'number' ? at : null };
 };
 
-export const exportDeltanetBackup = async ({
+export const exportHeadwaterBackup = async ({
 	instanceUrl,
 	accessToken,
 	passphrase,
@@ -199,9 +199,9 @@ export const exportDeltanetBackup = async ({
 	fetch?: FetchLike;
 }): Promise<{ blob: Blob; filename: string }> => {
 	const requestFetch = fetchImpl ?? globalThis.fetch?.bind(globalThis);
-	if (!requestFetch) throw new Error('A fetch implementation is required for deltanet requests.');
+	if (!requestFetch) throw new Error('A fetch implementation is required for Headwater requests.');
 
-	const response = await requestFetch(new URL('/api/deltanet/backup/export', instanceUrl).toString(), {
+	const response = await requestFetch(new URL('/api/headwater/backup/export', instanceUrl).toString(), {
 		method: 'POST',
 		headers: {
 			accept: 'application/octet-stream',
@@ -215,11 +215,11 @@ export const exportDeltanetBackup = async ({
 		throw new Error(errorMessage(payload, 'Could not export a backup from this node.'));
 	}
 	const disposition = response.headers.get('content-disposition') ?? '';
-	const filename = /filename="([^"]+)"/.exec(disposition)?.[1] ?? 'deltanet-backup.dnbk';
+	const filename = /filename="([^"]+)"/.exec(disposition)?.[1] ?? 'headwater-backup.dnbk';
 	return { blob: await response.blob(), filename };
 };
 
-export const restoreDeltanet = async ({
+export const restoreHeadwater = async ({
 	instanceUrl,
 	file,
 	passphrase,
@@ -231,14 +231,14 @@ export const restoreDeltanet = async ({
 	fetch?: FetchLike;
 }): Promise<{ acct: string }> => {
 	const requestFetch = fetchImpl ?? globalThis.fetch?.bind(globalThis);
-	if (!requestFetch) throw new Error('A fetch implementation is required for deltanet requests.');
+	if (!requestFetch) throw new Error('A fetch implementation is required for Headwater requests.');
 
 	const form = new FormData();
 	form.append('file', file);
 	form.append('passphrase', passphrase);
 	let response: Response;
 	try {
-		response = await requestFetch(new URL('/api/deltanet/restore', instanceUrl).toString(), {
+		response = await requestFetch(new URL('/api/headwater/restore', instanceUrl).toString(), {
 			method: 'POST',
 			headers: { accept: 'application/json' },
 			body: form
@@ -247,7 +247,7 @@ export const restoreDeltanet = async ({
 		throw {
 			kind: 'network',
 			message: cause instanceof Error ? cause.message : 'Could not reach this node to restore.'
-		} satisfies DeltanetRestoreError;
+		} satisfies HeadwaterRestoreError;
 	}
 
 	const payload = await readJsonBody(response);
@@ -255,19 +255,19 @@ export const restoreDeltanet = async ({
 		throw {
 			kind: 'conflict',
 			message: 'This node already has an account — sign in instead.'
-		} satisfies DeltanetRestoreError;
+		} satisfies HeadwaterRestoreError;
 	}
 	if (response.status === 422) {
 		throw {
 			kind: 'invalid',
 			message: errorMessage(payload, 'That backup file or passphrase was not accepted.')
-		} satisfies DeltanetRestoreError;
+		} satisfies HeadwaterRestoreError;
 	}
 	if (!response.ok) {
 		throw {
 			kind: 'network',
 			message: errorMessage(payload, 'Could not restore a backup on this node.')
-		} satisfies DeltanetRestoreError;
+		} satisfies HeadwaterRestoreError;
 	}
 
 	const account = payload && typeof payload === 'object' ? (payload as { account?: { acct?: unknown } }).account : null;
@@ -280,7 +280,7 @@ export const restoreDeltanet = async ({
  * (meta/issues/petnames.md). Returns the updated raw account payload so the
  * caller can re-adapt profile/relationship state.
  */
-export const setDeltanetPetname = async ({
+export const setHeadwaterPetname = async ({
 	instanceUrl,
 	accessToken,
 	contactId,
@@ -294,10 +294,10 @@ export const setDeltanetPetname = async ({
 	fetch?: FetchLike;
 }): Promise<unknown> => {
 	const requestFetch = fetchImpl ?? globalThis.fetch?.bind(globalThis);
-	if (!requestFetch) throw new Error('A fetch implementation is required for deltanet requests.');
+	if (!requestFetch) throw new Error('A fetch implementation is required for Headwater requests.');
 
 	const response = await requestFetch(
-		new URL(`/api/deltanet/contacts/${encodeURIComponent(contactId)}/petname`, instanceUrl).toString(),
+		new URL(`/api/headwater/contacts/${encodeURIComponent(contactId)}/petname`, instanceUrl).toString(),
 		{
 			method: 'POST',
 			headers: {
@@ -320,7 +320,7 @@ export const setDeltanetPetname = async ({
  * (visibility channels 1B). Their owner approves via the follow-request UI;
  * the grant then auto-joins on this node.
  */
-export const requestDeltanetLockedAccess = async ({
+export const requestHeadwaterLockedAccess = async ({
 	instanceUrl,
 	accessToken,
 	contactId,
@@ -332,10 +332,10 @@ export const requestDeltanetLockedAccess = async ({
 	fetch?: FetchLike;
 }): Promise<void> => {
 	const requestFetch = fetchImpl ?? globalThis.fetch?.bind(globalThis);
-	if (!requestFetch) throw new Error('A fetch implementation is required for deltanet requests.');
+	if (!requestFetch) throw new Error('A fetch implementation is required for Headwater requests.');
 
 	const response = await requestFetch(
-		new URL(`/api/deltanet/contacts/${encodeURIComponent(contactId)}/request-locked`, instanceUrl).toString(),
+		new URL(`/api/headwater/contacts/${encodeURIComponent(contactId)}/request-locked`, instanceUrl).toString(),
 		{
 			method: 'POST',
 			headers: { accept: 'application/json', authorization: `Bearer ${accessToken}` }
@@ -352,7 +352,7 @@ export const isFeedInvite = (value: string) => {
 	return trimmed.startsWith('https://i.delta.chat/') || trimmed.toUpperCase().startsWith('OPENPGP4FPR:');
 };
 
-export const followDeltanetInvite = async ({
+export const followHeadwaterInvite = async ({
 	instanceUrl,
 	accessToken,
 	invite,
@@ -362,13 +362,13 @@ export const followDeltanetInvite = async ({
 	accessToken: string;
 	invite: string;
 	fetch?: FetchLike;
-}): Promise<DeltanetFollowResult> => {
+}): Promise<HeadwaterFollowResult> => {
 	const requestFetch = fetchImpl ?? globalThis.fetch?.bind(globalThis);
-	if (!requestFetch) throw new Error('A fetch implementation is required for deltanet requests.');
+	if (!requestFetch) throw new Error('A fetch implementation is required for Headwater requests.');
 
 	let response: Response;
 	try {
-		response = await requestFetch(new URL('/api/deltanet/follow', instanceUrl).toString(), {
+		response = await requestFetch(new URL('/api/headwater/follow', instanceUrl).toString(), {
 			method: 'POST',
 			headers: { accept: 'application/json', 'content-type': 'application/json', authorization: `Bearer ${accessToken}` },
 			body: JSON.stringify({ invite })
@@ -377,7 +377,7 @@ export const followDeltanetInvite = async ({
 		throw {
 			kind: 'network',
 			message: cause instanceof Error ? cause.message : 'Could not reach this node to follow that feed.'
-		} satisfies DeltanetFollowError;
+		} satisfies HeadwaterFollowError;
 	}
 
 	const payload = await readJsonBody(response);
@@ -385,13 +385,13 @@ export const followDeltanetInvite = async ({
 		throw {
 			kind: 'invalid',
 			message: errorMessage(payload, 'That invite link was not accepted.')
-		} satisfies DeltanetFollowError;
+		} satisfies HeadwaterFollowError;
 	}
 	if (!response.ok) {
 		throw {
 			kind: 'network',
 			message: errorMessage(payload, 'Could not follow that feed.')
-		} satisfies DeltanetFollowError;
+		} satisfies HeadwaterFollowError;
 	}
 
 	const chatId = payload && typeof payload === 'object' ? (payload as { chat_id?: unknown }).chat_id : undefined;

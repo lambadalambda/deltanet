@@ -156,7 +156,7 @@ describe('boost embed rendering ladder', () => {
     // and the contact-keyed avatar route (NOT the id-`0` `?`-avatar shell).
     expect(status.reblog!.account.id).toBe('77');
     expect(status.reblog!.account.display_name).toBe('Alice Sparkle');
-    expect(status.reblog!.account.avatar).toContain('/deltanet/avatar/77');
+    expect(status.reblog!.account.avatar).toContain('/headwater/avatar/77');
     expect(status.reblog!.account.acct).toBe(ALICE);
     // Nested status identity is UNCHANGED: orig-<uuid> id, orig.ts created_at,
     // zero counts (we still don't hold the post, only the author's profile).
@@ -179,7 +179,7 @@ describe('boost embed rendering ladder', () => {
     expect(status.reblog!.media_attachments).toHaveLength(1);
     expect((status.reblog!.media_attachments[0] as any).description).toBe('sunset');
     // The blob url points at the BOOST message's own id (bytes live there).
-    expect((status.reblog!.media_attachments[0] as any).url).toContain('/deltanet/blob/52');
+    expect((status.reblog!.media_attachments[0] as any).url).toContain('/headwater/blob/52');
   });
 
   it('placeholder "boost" when there is no embedded orig (ref-only/legacy)', async () => {

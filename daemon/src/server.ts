@@ -90,6 +90,7 @@ import {
   type ResourceLimits,
 } from './resource-limits.js';
 import { createResourceBudget } from './resource-budget.js';
+import { resolveDataFilePath } from './config.js';
 
 const DC_CONTACT_ID_SELF = 1;
 const FAVOURITE_EMOJI = '❤';
@@ -109,7 +110,7 @@ export type ServerOptions = {
   /** Absolute path to a built frontend SPA to serve as static files; skipped if unset/missing. */
   staticDir?: string;
   /**
-   * The deltanet wire-convention store (mid/msgId index, reply/boost
+   * The Headwater wire-convention store (mid/msgId index, reply/boost
    * edges). Share the same instance passed to `openTransport`'s
    * `onMessage` hook so ingestion from timeline reads and from the daemon's
    * background event subscription land in one place. Defaults to a fresh
@@ -179,6 +180,12 @@ const OAUTH_SCOPE = 'read write follow push';
 const MAX_POST_CHARS = 5000;
 const DEFAULT_PAGE = 20;
 const DEFAULT_RELAY = 'https://nine.testrun.org';
+const API_PREFIXES = ['/api/headwater', '/api/deltanet'] as const;
+const ASSET_PREFIXES = ['/headwater', '/deltanet'] as const;
+const apiPaths = (suffix: string): string[] => API_PREFIXES.map((prefix) => `${prefix}${suffix}`);
+const assetPaths = (suffix: string): string[] => ASSET_PREFIXES.map((prefix) => `${prefix}${suffix}`);
+const isApiPath = (path: string, suffix: string): boolean => apiPaths(suffix).includes(path);
+const isAssetPath = (path: string): boolean => ASSET_PREFIXES.some((prefix) => path.startsWith(prefix));
 const testOnlyRandomCredential = (): string => randomBytes(32).toString('base64url');
 
 const intParam = (value: string | undefined): number | undefined => {
@@ -187,7 +194,7 @@ const intParam = (value: string | undefined): number | undefined => {
 };
 
 /** A unique scratch dir for profile assets when no real data dir is provided (tests). */
-const profileScratchDir = (): string => join(tmpdir(), `deltanet-profile-${randomUUID()}`);
+const profileScratchDir = (): string => join(tmpdir(), `headwater-profile-${randomUUID()}`);
 
 /** File extension (with dot) for an uploaded image, from its mime; '.png' fallback. */
 const imageExt = (mime: string): string =>
@@ -270,7 +277,11 @@ export const createApp = (
   // Per-account ed25519 signing key (post attestations, sketch #6). Persisted
   // in the account data dir exactly like the store — never logged. Falls back
   // to a scratch dir when no real data dir is provided (tests).
-  const attestorKeyPath = join(profileDir, 'deltanet-signing-key.json');
+  const attestorKeyPath = resolveDataFilePath(
+    profileDir,
+    'headwater-signing-key.json',
+    'deltanet-signing-key.json',
+  );
   const attestor = openAttestor(attestorKeyPath);
   const backgroundMutation = (
     operation: () => Promise<void>,
@@ -286,7 +297,7 @@ export const createApp = (
     const mutating = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(c.req.method);
     if (
       !mutating ||
-      c.req.path.replace(/\/$/, '') === '/api/deltanet/backup/export'
+      isApiPath(c.req.path.replace(/\/$/, ''), '/backup/export')
     ) return next();
     const release = store.beginExternalMutation();
     try {
@@ -539,7 +550,7 @@ export const createApp = (
     blobUrl: enabledSecurity
       ? (msgId) => {
           const signed = enabledSecurity.auth.signBlobPath(msgId);
-          const url = new URL(`/deltanet/blob/${msgId}`, baseUrl);
+          const url = new URL(`/headwater/blob/${msgId}`, baseUrl);
           url.searchParams.set('expires', String(signed.expires));
           url.searchParams.set('signature', signed.signature);
           return url.toString();
@@ -812,7 +823,7 @@ export const createApp = (
 
   /**
    * The status JSON the subscribe/unsubscribe endpoints return: the target status
-   * re-rendered so `pleroma.deltanet.thread_subscribed` reflects the post-mutation
+   * re-rendered so `pleroma.headwater.thread_subscribed` reflects the post-mutation
    * store state (the mapper reads it from `store.isSubscribedToThread`). When the
    * subscription is merely PENDING (request sent, grant not yet arrived), the
    * store isn't subscribed yet, so `forcePending` overlays the flag optimistically
@@ -833,14 +844,19 @@ export const createApp = (
       status = await resolveOrigStatus(transport, parsed.uuid);
     }
     const subscribed = forcePending || store.isSubscribedToThread(rootUuid);
-    if (!status) {
-      return { id: parsed.kind === 'msg' ? String(parsed.msgId) : `orig-${parsed.uuid}`, pleroma: { deltanet: { thread_subscribed: subscribed } } };
-    }
+    const metadata = { thread_subscribed: subscribed };
+    if (!status) return {
+      id: parsed.kind === 'msg' ? String(parsed.msgId) : `orig-${parsed.uuid}`,
+      pleroma: { headwater: metadata, deltanet: metadata },
+    };
+    const currentMetadata = status.pleroma.headwater ?? status.pleroma.deltanet ?? {};
+    const nextMetadata = { ...currentMetadata, thread_subscribed: subscribed };
     return {
       ...status,
       pleroma: {
         ...status.pleroma,
-        deltanet: { ...(status.pleroma.deltanet ?? {}), thread_subscribed: subscribed },
+        headwater: nextMetadata,
+        deltanet: nextMetadata,
       },
     };
   };
@@ -853,25 +869,25 @@ export const createApp = (
     path === '/api/v1/streaming' || path === '/api/v1/streaming/';
   const isAnonymousRequest = (method: string, path: string): boolean => {
     if (method === 'GET' && (path === '/api/v1/instance' || path === '/api/v2/instance')) return true;
-    if (method === 'GET' && path === '/api/deltanet/status') return true;
+    if (method === 'GET' && isApiPath(path, '/status')) return true;
     if (method === 'POST' && path === '/api/v1/apps') return true;
     if (method === 'GET' && path === '/oauth/authorize') return true;
     if (method === 'POST' && path === '/oauth/token') return true;
     if (
       method === 'POST' &&
-      (path === '/api/deltanet/signup' || path === '/api/deltanet/restore') &&
+      (isApiPath(path, '/signup') || isApiPath(path, '/restore')) &&
       ctx.getTransport() === null
     ) return true;
     if (method === 'GET' && path === '/api/v1/timelines/public') return true;
     if (method === 'GET' && /^\/api\/v1\/accounts\/\d+(?:\/statuses)?$/.test(path)) return true;
-    if (method === 'GET' && /^\/deltanet\/(?:avatar|header)\//.test(path)) return true;
-    if (method === 'GET' && (path === '/deltanet/header.png' || /^\/deltanet\/blob\/[^/]+$/.test(path))) return true;
+    if (method === 'GET' && /^\/(?:headwater|deltanet)\/(?:avatar|header)\//.test(path)) return true;
+    if (method === 'GET' && (/^\/(?:headwater|deltanet)\/header\.png$/.test(path) || /^\/(?:headwater|deltanet)\/blob\/[^/]+$/.test(path))) return true;
     if (method === 'GET' && (path === '/api/v1/custom_emojis' || path === '/api/v1/trends' || path === '/api/v1/trends/tags')) return true;
     if (
       (method === 'GET' || method === 'HEAD') &&
       !path.startsWith('/api') &&
       !path.startsWith('/oauth') &&
-      !path.startsWith('/deltanet')
+      !isAssetPath(path)
     ) return true;
     return false;
   };
@@ -894,9 +910,9 @@ export const createApp = (
       isStreamingPath(path) ||
       path.startsWith('/oauth') ||
       path === '/api/v1/apps' ||
-      path === '/api/deltanet/status' ||
-      path === '/api/deltanet/signup' ||
-      path === '/api/deltanet/restore';
+      isApiPath(path, '/status') ||
+      isApiPath(path, '/signup') ||
+      isApiPath(path, '/restore');
 
     const setCorsHeaders = () => {
       if (!trustedOrigin) return;
@@ -944,7 +960,7 @@ export const createApp = (
 
   app.use('*', async (c, next) => {
     if (!['POST', 'PUT', 'PATCH'].includes(c.req.method)) return next();
-    const isRestore = c.req.path === '/api/deltanet/restore';
+    const isRestore = isApiPath(c.req.path, '/restore');
     if (isRestore && readingRestoreBody) {
       return c.json({ error: 'configuration already in progress', code: 'resource_busy' }, 409);
     }
@@ -1005,11 +1021,11 @@ export const createApp = (
     await next();
   };
 
-  // --- deltanet: status + signup --------------------------------------------
+  // --- Headwater: status + signup -------------------------------------------
 
   let configuring = false;
 
-  app.get('/api/deltanet/status', async (c) => {
+  app.on('GET', apiPaths('/status'), async (c) => {
     const transport = ctx.getTransport();
     if (!transport) return c.json({ configured: false, address: null });
     // Configuration is safe onboarding metadata; the account address itself is
@@ -1019,7 +1035,7 @@ export const createApp = (
     return c.json({ configured: true, address: self?.address ?? null });
   });
 
-  app.post('/api/deltanet/signup', async (c) => {
+  app.on('POST', apiPaths('/signup'), async (c) => {
     if (ctx.getTransport()) return c.json({ error: 'already configured' }, 409);
     if (configuring) return c.json({ error: 'configuration already in progress' }, 409);
     configuring = true;
@@ -1057,15 +1073,15 @@ export const createApp = (
     }
   });
 
-  // --- deltanet: backup & restore (see ../meta/issues/backup-second-device.md)
+  // --- Headwater: backup & restore ------------------------------------------
 
   let exportingBackup = false;
 
-  app.get('/api/deltanet/backup', requireTransport, async (c) =>
+  app.on('GET', apiPaths('/backup'), requireTransport, async (c) =>
     c.json({ last_backup_at: await c.get('transport').lastBackupAt() }),
   );
 
-  app.post('/api/deltanet/backup/export', requireTransport, async (c) => {
+  app.on('POST', apiPaths('/backup/export'), requireTransport, async (c) => {
     const transport = c.get('transport');
     const body = await c.req.json<{ passphrase?: string }>().catch(() => ({}) as { passphrase?: string });
     const passphrase = String(body.passphrase ?? '');
@@ -1076,7 +1092,7 @@ export const createApp = (
       return c.json({ error: 'A backup export is already in progress', code: 'resource_busy' }, 429);
     }
     exportingBackup = true;
-    const scratch = mkdtempSync(join(tmpdir(), 'deltanet-export-'));
+    const scratch = mkdtempSync(join(tmpdir(), 'headwater-export-'));
     let handedOff = false;
     let cleaned = false;
     const cleanup = () => {
@@ -1164,7 +1180,7 @@ export const createApp = (
     }
   });
 
-  app.post('/api/deltanet/restore', async (c) => {
+  app.on('POST', apiPaths('/restore'), async (c) => {
     if (ctx.getTransport()) return c.json({ error: 'already configured' }, 409);
     if (!ctx.restore) return c.json({ error: 'restore not supported' }, 501);
     if (configuring) return c.json({ error: 'configuration already in progress' }, 409);
@@ -1217,7 +1233,7 @@ export const createApp = (
       throw err;
     }
 
-    const scratch = mkdtempSync(join(tmpdir(), 'deltanet-restore-'));
+    const scratch = mkdtempSync(join(tmpdir(), 'headwater-restore-'));
     try {
       const tarPath = join(scratch, 'core-backup.tar');
       await pipeline(
@@ -1434,11 +1450,11 @@ export const createApp = (
       return c.json({ error: 'invalid_token' }, 401);
     }
     const enrollment = enabledSecurity.auth.createEnrollmentCode();
-    console.log(`deltanet: one-time frontend enrollment code (10 minutes): ${enrollment.code}`);
+    console.log(`Headwater: one-time frontend enrollment code (10 minutes): ${enrollment.code}`);
     return c.json({});
   });
 
-  app.post('/api/deltanet/streaming/token', (c) => {
+  app.on('POST', apiPaths('/streaming/token'), (c) => {
     if (!enabledSecurity) {
       return c.json({ ticket: testOnlyRandomCredential(), expires_at: Date.now() + 30_000 });
     }
@@ -1524,33 +1540,38 @@ export const createApp = (
 
   // --- Instance -----------------------------------------------------------
 
+  const capabilities = {
+    bookmarks: false,
+    status_deletion: false,
+    account_moderation: false,
+    media_description: true,
+    chats: false,
+    polls: false,
+    unlisted_visibility: false,
+    content_warnings: false,
+    extended_profile: false,
+  };
+  const productConfiguration = { capabilities };
   const instanceV2 = () => ({
     domain: new URL(baseUrl).host,
-    title: 'deltanet',
-    version: '2.7.2 (compatible; deltanet 0.0.1)',
-    source_url: 'https://localhost/deltanet',
+    title: 'Headwater',
+    version: '2.7.2 (compatible; Headwater 0.0.1)',
+    source_url: 'https://localhost/headwater',
     description: 'single-user pleroma-style backend federating over chatmail',
     languages: ['en'],
     registrations: { enabled: false, approval_required: false },
     configuration: {
       statuses: { max_characters: MAX_POST_CHARS, max_media_attachments: 1 },
       media_attachments: { supported_mime_types: ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] },
-      deltanet: {
-        capabilities: {
-          bookmarks: false,
-          status_deletion: false,
-          account_moderation: false,
-          media_description: true,
-          chats: false,
-          polls: false,
-          unlisted_visibility: false,
-          content_warnings: false,
-          extended_profile: false,
-        },
-      },
+      headwater: productConfiguration,
+      deltanet: productConfiguration,
     },
     max_toot_chars: MAX_POST_CHARS,
-    pleroma: { metadata: { features: [], max_toot_chars: MAX_POST_CHARS } },
+    pleroma: {
+      metadata: { features: [], max_toot_chars: MAX_POST_CHARS },
+      headwater: productConfiguration,
+      deltanet: productConfiguration,
+    },
   });
 
   app.get('/api/v2/instance', (c) => c.json(instanceV2()));
@@ -1591,7 +1612,7 @@ export const createApp = (
     if (Object.keys(body).some((key) =>
       key === 'discoverable' || key === 'hide_followers_count' || key.startsWith('fields_attributes'),
     )) {
-      return c.json({ error: 'Extended profile fields are not supported by this DeltaNet node', code: 'unsupported_capability' }, 422);
+      return c.json({ error: 'Extended profile fields are not supported by this Headwater node', code: 'unsupported_capability' }, 422);
     }
 
     const updates: Parameters<Transport['updateProfile']>[0] = {};
@@ -1715,16 +1736,20 @@ export const createApp = (
 
   const publicAccountProjection = (account: MastodonStatus['account']): MastodonStatus['account'] => {
     const pleroma = account.pleroma as Record<string, unknown>;
-    const deltanet = (pleroma['deltanet'] ?? {}) as Record<string, unknown>;
+    const headwater = (pleroma['headwater'] ?? pleroma['deltanet'] ?? {}) as Record<string, unknown>;
     const { relationship: _relationship, ...publicPleroma } = pleroma;
-    const { petname: _petname, ...publicDeltanet } = deltanet;
-    const authName = typeof publicDeltanet['auth_name'] === 'string' && publicDeltanet['auth_name']
-      ? publicDeltanet['auth_name']
+    const { petname: _petname, ...publicHeadwater } = headwater;
+    const authName = typeof publicHeadwater['auth_name'] === 'string' && publicHeadwater['auth_name']
+      ? publicHeadwater['auth_name']
       : account.display_name;
     return {
       ...account,
       display_name: authName,
-      pleroma: { ...publicPleroma, deltanet: publicDeltanet },
+      pleroma: {
+        ...publicPleroma,
+        headwater: publicHeadwater,
+        deltanet: publicHeadwater,
+      },
     } as MastodonStatus['account'];
   };
 
@@ -1748,6 +1773,7 @@ export const createApp = (
         ...status.pleroma,
         conversation_id: null,
         emoji_reactions: [],
+        headwater: undefined,
         deltanet: undefined,
       },
     };
@@ -2084,10 +2110,10 @@ export const createApp = (
       return c.json({ error: `Unsupported visibility: ${requestedVisibilityValue}`, code: 'unsupported_capability' }, 422);
     }
     if (String(body['spoiler_text'] ?? '').trim()) {
-      return c.json({ error: 'Content warnings are not supported by this DeltaNet node', code: 'unsupported_capability' }, 422);
+      return c.json({ error: 'Content warnings are not supported by this Headwater node', code: 'unsupported_capability' }, 422);
     }
     if (Object.keys(body).some((key) => key === 'poll' || key.startsWith('poll['))) {
-      return c.json({ error: 'Polls are not supported by this DeltaNet node', code: 'unsupported_capability' }, 422);
+      return c.json({ error: 'Polls are not supported by this Headwater node', code: 'unsupported_capability' }, 422);
     }
     const text = String(body['status'] ?? '').trim();
     const submittedMediaIds = mediaIds(body as Record<string, unknown>);
@@ -2888,7 +2914,7 @@ export const createApp = (
     return c.json(await toStatus(transport, msg, mediaStore.descriptionForMessage(msg.id)));
   });
 
-  // --- deltanet-specific: feed invite + follow ----------------------------
+  // --- Headwater-specific: feed invite + follow ---------------------------
 
   // Locked follow requests (visibility channels 1B): the queue the ingest
   // path fills from locked-scoped invite-request DMs. Approval = DM-ing the
@@ -2933,7 +2959,7 @@ export const createApp = (
   // Requester side: ask a contact for access to their LOCKED channel. Records
   // the pending marker so their eventual invite-grant DM auto-joins (the
   // existing follow-back accept path — unsolicited grants still never join).
-  app.post('/api/deltanet/contacts/:id/request-locked', requireTransport, async (c) => {
+  app.on('POST', apiPaths('/contacts/:id/request-locked'), requireTransport, async (c) => {
     const transport = c.get('transport');
     const contactId = Number(c.req.param('id'));
     if (!Number.isInteger(contactId) || contactId <= 0) {
@@ -2952,7 +2978,7 @@ export const createApp = (
   // Petnames (see ../meta/issues/petnames.md): set/clear MY local, key-bound
   // name override for a contact. Core's `displayName` prefers it everywhere,
   // so timelines/mentions/notifications pick it up with no further plumbing.
-  app.post('/api/deltanet/contacts/:id/petname', requireTransport, async (c) => {
+  app.on('POST', apiPaths('/contacts/:id/petname'), requireTransport, async (c) => {
     const transport = c.get('transport');
     const contactId = Number(c.req.param('id'));
     if (!Number.isInteger(contactId) || contactId <= 0) {
@@ -2970,7 +2996,7 @@ export const createApp = (
     return c.json(contactToAccount(updated ?? existing, baseUrl));
   });
 
-  app.get('/api/deltanet/invite', requireTransport, async (c) => {
+  app.on('GET', apiPaths('/invite'), requireTransport, async (c) => {
     // Visibility channels: `?channel=locked` hands out the locked channel's
     // invite — meant to be shared one-to-one (approval = sending it), never
     // published. Default stays the public feed.
@@ -2978,7 +3004,7 @@ export const createApp = (
     return c.json({ invite: await c.get('transport').feedInvite(channel) });
   });
 
-  app.post('/api/deltanet/follow', requireTransport, async (c) => {
+  app.on('POST', apiPaths('/follow'), requireTransport, async (c) => {
     const { invite } = await c.req.json<{ invite?: string }>();
     if (!invite) return c.json({ error: 'invite missing' }, 422);
     return c.json({ chat_id: await c.get('transport').follow(invite) });
@@ -2998,7 +3024,7 @@ export const createApp = (
 
   const NEUTRAL_BADGE = { initial: '?', color: '#2a3542' };
 
-  app.get('/deltanet/avatar/:contactId', async (c) => {
+  app.on('GET', assetPaths('/avatar/:contactId'), async (c) => {
     const contactId = Number(c.req.param('contactId'));
     const transport = ctx.getTransport();
     if (enabledSecurity && !c.get('authSession') && contactId !== DC_CONTACT_ID_SELF) {
@@ -3026,7 +3052,7 @@ export const createApp = (
   // Per-contact header banner. Only SELF (contact id 1) can have a stored
   // custom header (uploaded via update_credentials, kept locally — headers
   // don't federate); every other contact id gets the generated gradient.
-  app.get('/deltanet/header/:contactId', async (c) => {
+  app.on('GET', assetPaths('/header/:contactId'), async (c) => {
     const contactId = Number(c.req.param('contactId'));
     if (contactId === DC_CONTACT_ID_SELF) {
       const { readFile } = await import('node:fs/promises');
@@ -3042,9 +3068,9 @@ export const createApp = (
 
   // Back-compat alias for the old single global header route (still the
   // default gradient) so any cached URLs / synthesized accounts keep working.
-  app.get('/deltanet/header.png', gradientHeader);
+  app.on('GET', assetPaths('/header.png'), gradientHeader);
 
-  app.get('/deltanet/blob/:msgId', async (c) => {
+  app.on('GET', assetPaths('/blob/:msgId'), async (c) => {
     c.header('Cache-Control', 'private, no-store');
     const msgId = Number(c.req.param('msgId'));
     if (enabledSecurity) {
@@ -3104,7 +3130,7 @@ export const createApp = (
     app.use('*', serveStatic({ root: staticDir }));
     app.get('*', async (c, next) => {
       const path = new URL(c.req.url).pathname;
-      if (path.startsWith('/api') || path.startsWith('/oauth') || path.startsWith('/deltanet')) {
+      if (path.startsWith('/api') || path.startsWith('/oauth') || isAssetPath(path)) {
         return next();
       }
       return serveStatic({ root: staticDir, path: 'index.html' })(c, next);

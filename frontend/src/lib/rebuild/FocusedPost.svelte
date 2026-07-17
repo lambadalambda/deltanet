@@ -41,7 +41,7 @@
 		own?: boolean;
 		authorHandle?: string;
 		statusUrl?: string;
-		/** deltanet thread-subscribe: true iff the viewer is subscribed to this thread root. */
+		/** Headwater thread-subscribe: true iff the viewer is subscribed to this thread root. */
 		threadSubscribed?: boolean;
 		replies: number;
 		boosts: number;

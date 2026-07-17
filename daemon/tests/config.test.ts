@@ -7,8 +7,82 @@ import {
   CredentialsFileError,
   compareExchangeAccount,
   readAccounts,
+  resolveDaemonConfig,
+  resolveDataFilePath,
   writeAccount,
 } from '../src/config.js';
+
+describe('daemon environment configuration', () => {
+  it('prefers HEADWATER variables over DELTANET fallbacks', () => {
+    const config = resolveDaemonConfig({
+      HEADWATER_ACCOUNT: 'preferred',
+      DELTANET_ACCOUNT: 'legacy',
+      HEADWATER_DATA: 'headwater-data',
+      DELTANET_DATA: 'deltanet-data',
+      HEADWATER_BASE_URL: 'https://headwater.example',
+      DELTANET_BASE_URL: 'https://deltanet.example',
+    }, 4030);
+
+    expect(config.account).toBe('preferred');
+    expect(config.dataDir).toBe('headwater-data');
+    expect(config.baseUrl).toBe('https://headwater.example');
+  });
+
+  it('uses legacy DELTANET variables when HEADWATER variables are absent', () => {
+    const config = resolveDaemonConfig({
+      DELTANET_ACCOUNT: 'legacy',
+      DELTANET_DATA: 'legacy-data',
+      DELTANET_ALLOWED_ORIGINS: 'https://one.example, https://two.example',
+      DELTANET_SIGNUP_RELAYS: 'https://relay.example',
+    }, 4040);
+
+    expect(config.account).toBe('legacy');
+    expect(config.dataDir).toBe('legacy-data');
+    expect(config.baseUrl).toBe('http://localhost:4040');
+    expect(config.allowedOrigins).toEqual(['https://one.example', 'https://two.example']);
+    expect(config.signupRelays).toEqual(['https://relay.example']);
+  });
+});
+
+describe('resolveDataFilePath', () => {
+  let dir: string;
+
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('uses a legacy persisted file instead of creating a new identity file', () => {
+    dir = mkdtempSync(join(tmpdir(), 'headwater-data-path-'));
+    const legacy = join(dir, 'deltanet-signing-key.json');
+    writeFileSync(legacy, '{}');
+
+    expect(resolveDataFilePath(dir, 'headwater-signing-key.json', 'deltanet-signing-key.json')).toBe(legacy);
+  });
+
+  it('prefers the Headwater file when both names exist', () => {
+    dir = mkdtempSync(join(tmpdir(), 'headwater-data-path-'));
+    const preferred = join(dir, 'headwater-store.json');
+    writeFileSync(preferred, '{}');
+    writeFileSync(join(dir, 'deltanet-store.json'), '{}');
+
+    expect(resolveDataFilePath(dir, 'headwater-store.json', 'deltanet-store.json')).toBe(preferred);
+  });
+
+  it('selects a legacy store when only its recovery generation survives', () => {
+    dir = mkdtempSync(join(tmpdir(), 'headwater-data-path-'));
+    writeFileSync(join(dir, 'deltanet-store.json.recovery'), '{}');
+
+    expect(resolveDataFilePath(dir, 'headwater-store.json', 'deltanet-store.json')).toBe(
+      join(dir, 'deltanet-store.json'),
+    );
+  });
+
+  it('propagates state-file probe errors instead of selecting a fresh path', () => {
+    dir = mkdtempSync(join(tmpdir(), 'headwater-data-path-'));
+
+    expect(() => resolveDataFilePath(dir, '\0invalid', 'deltanet-store.json')).toThrow();
+  });
+});
 
 describe('readAccounts', () => {
   let dir: string;

@@ -196,11 +196,12 @@ describe('unconfirmed-author mark + thread-view key confirmation', () => {
     const { transport } = seedCarol();
     const app = createUnsafeTestApp(ctxFor(transport), { baseUrl: BASE, store });
     const before = (await (await app.request(`/api/v1/statuses/orig-${A_ROOT}`)).json()) as any;
-    expect(before.pleroma.deltanet?.author_unconfirmed).toBe(true);
+    expect(before.pleroma.headwater?.author_unconfirmed).toBe(true);
+    expect(before.pleroma.deltanet).toEqual(before.pleroma.headwater);
 
     store.pinKey(ALICE, aliceAttestor().publicKeyBase64());
     const after = (await (await app.request(`/api/v1/statuses/orig-${A_ROOT}`)).json()) as any;
-    expect(after.pleroma.deltanet?.author_unconfirmed).toBeUndefined();
+    expect(after.pleroma.headwater?.author_unconfirmed).toBeUndefined();
   });
 
   it('viewing held content from an unpinned author triggers ONE background confirmation', async () => {

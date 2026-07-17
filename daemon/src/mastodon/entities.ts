@@ -6,10 +6,10 @@ const DC_CONTACT_ID_SELF = 1;
 
 /**
  * The fixed placeholder text for a boost whose target is not locally held
- * (any era). Per decision 0002, deltanet never synthesizes attributed content:
+ * (any era). Per decision 0002, Headwater never synthesizes attributed content:
  * an unresolvable boost renders as the BOOSTER's own status with this honest
  * placeholder body and `reblog: null` — never fabricated author content. The
- * frontend distinguishes it via `pleroma.deltanet.placeholder`.
+ * frontend distinguishes it via `pleroma.headwater.placeholder`.
  */
 export const BOOST_PLACEHOLDER_TEXT = '[boosted post unavailable]';
 
@@ -29,7 +29,7 @@ export type MastodonMention = {
    * vanilla clients ignore extra fields).
    */
   display_name: string;
-  /** NON-STANDARD: the name THEY chose (see petnames — mirrors account pleroma.deltanet.auth_name). */
+  /** NON-STANDARD: the name THEY chose (mirrors account pleroma.headwater.auth_name). */
   auth_name: string;
   /** NON-STANDARD: MY local key-bound petname for them, when set (never for SELF). */
   petname?: string;
@@ -50,6 +50,14 @@ export type MastodonRelationship = {
   domain_blocking: boolean;
   endorsed: boolean;
   note: string;
+};
+
+type HeadwaterStatusMetadata = {
+  placeholder?: 'boost' | 'boost-unverified';
+  ref?: { key: string; addr: string };
+  thread_subscribed?: boolean;
+  /** Signature verified, but no key is pinned for this author yet. */
+  author_unconfirmed?: boolean;
 };
 
 export type MastodonStatus = {
@@ -89,7 +97,7 @@ export type MastodonStatus = {
     quote_id: null;
     quote_visible: boolean;
     /**
-     * deltanet-specific marker for a status the frontend must render specially.
+     * Headwater-specific marker for a status the frontend must render specially.
      * Present only on a boost rendered as a placeholder (never attributed
      * content, per 0002), with the target `ref`:
      *  - `'boost'`: the boosted post is unavailable/legacy (no embedded signed
@@ -102,19 +110,9 @@ export type MastodonStatus = {
      * currently subscribed to (thread-subscribe) — drives the Subscribe/Unsubscribe
      * toggle on the thread view's root status. Present (true) only when subscribed;
      * absent/false otherwise.
-     */
-    deltanet?: {
-      placeholder?: 'boost' | 'boost-unverified';
-      ref?: { key: string; addr: string };
-      thread_subscribed?: boolean;
-      /**
-       * Key confirmation (meta/issues/key-confirmation.md): the author's
-       * signature verified but we hold NO pinned key for their address —
-       * attribution is self-certifying only, pending active confirmation.
-       * The UI renders a distinct "unconfirmed" treatment.
-       */
-      author_unconfirmed?: boolean;
-    };
+    */
+    headwater?: HeadwaterStatusMetadata;
+    deltanet?: HeadwaterStatusMetadata;
   };
 };
 
@@ -159,6 +157,11 @@ export const headerSvg = (): string =>
   `</linearGradient></defs>` +
   `<rect width="1500" height="500" fill="url(#g)"/></svg>`;
 
+const headwaterCompatibility = <T extends Record<string, unknown>>(metadata: T) => ({
+  headwater: metadata,
+  deltanet: metadata,
+});
+
 export const contactToAccount = (
   contact: T.Contact,
   baseUrl: string,
@@ -171,11 +174,11 @@ export const contactToAccount = (
     acct: contact.address,
     display_name: contact.displayName,
     note: textToHtml(contact.status),
-    url: `${baseUrl}/deltanet/contact/${contact.id}`,
-    avatar: `${baseUrl}/deltanet/avatar/${contact.id}`,
-    avatar_static: `${baseUrl}/deltanet/avatar/${contact.id}`,
-    header: `${baseUrl}/deltanet/header/${contact.id}`,
-    header_static: `${baseUrl}/deltanet/header/${contact.id}`,
+    url: `${baseUrl}/headwater/contact/${contact.id}`,
+    avatar: `${baseUrl}/headwater/avatar/${contact.id}`,
+    avatar_static: `${baseUrl}/headwater/avatar/${contact.id}`,
+    header: `${baseUrl}/headwater/header/${contact.id}`,
+    header_static: `${baseUrl}/headwater/header/${contact.id}`,
     created_at: new Date(0).toISOString(),
     followers_count: 0,
     following_count: 0,
@@ -197,10 +200,10 @@ export const contactToAccount = (
       // `display_name` above) already prefers the petname; shipping both lets
       // the UI render "TheirName ⟦petname⟧". SELF's `name` is the account's
       // own configured displayname, never a petname.
-      deltanet: {
+      ...headwaterCompatibility({
         auth_name: contact.authName,
         ...(contact.id !== 1 && contact.name.trim() ? { petname: contact.name } : {}),
-      },
+      }),
     },
   };
 };
@@ -223,11 +226,11 @@ export const addrToAccount = (addr: string, baseUrl: string, displayName?: strin
     // addr-derived username. We NEVER invent a display name for an address.
     display_name: displayName ?? username,
     note: '',
-    url: `${baseUrl}/deltanet/contact/0`,
-    avatar: `${baseUrl}/deltanet/avatar/0`,
-    avatar_static: `${baseUrl}/deltanet/avatar/0`,
-    header: `${baseUrl}/deltanet/header.png`,
-    header_static: `${baseUrl}/deltanet/header.png`,
+    url: `${baseUrl}/headwater/contact/0`,
+    avatar: `${baseUrl}/headwater/avatar/0`,
+    avatar_static: `${baseUrl}/headwater/avatar/0`,
+    header: `${baseUrl}/headwater/header.png`,
+    header_static: `${baseUrl}/headwater/header.png`,
     created_at: new Date(0).toISOString(),
     followers_count: 0,
     following_count: 0,
@@ -245,7 +248,7 @@ export const addrToAccount = (addr: string, baseUrl: string, displayName?: strin
       // Addr shells have no contact row, so no petname is possible; the
       // attested display name (when present) is the closest thing to an
       // auth_name we can honestly claim.
-      deltanet: { auth_name: displayName ?? '' },
+      ...headwaterCompatibility({ auth_name: displayName ?? '' }),
     },
   };
 };
@@ -257,7 +260,7 @@ export const contactToMention = (contact: T.Contact, baseUrl: string): MastodonM
     id: String(contact.id),
     username,
     acct: contact.address,
-    url: `${baseUrl}/deltanet/contact/${contact.id}`,
+    url: `${baseUrl}/headwater/contact/${contact.id}`,
     display_name: contact.displayName,
     auth_name: contact.authName,
     ...(contact.id !== 1 && contact.name.trim() ? { petname: contact.name } : {}),
@@ -273,8 +276,8 @@ const mediaAttachments = (msg: T.Message, baseUrl: string, description: string |
     {
       id: String(msg.id),
       type,
-      url: `${baseUrl}/deltanet/blob/${msg.id}`,
-      preview_url: `${baseUrl}/deltanet/blob/${msg.id}`,
+      url: `${baseUrl}/headwater/blob/${msg.id}`,
+      preview_url: `${baseUrl}/headwater/blob/${msg.id}`,
       remote_url: null,
       description,
     },
@@ -368,8 +371,8 @@ export const verifiedEmbedToStatus = (
   const createdAt = new Date(orig.ts ?? 0).toISOString();
   return {
     id,
-    uri: `${baseUrl}/deltanet/orig/${orig.uuid ?? ''}`,
-    url: `${baseUrl}/deltanet/orig/${orig.uuid ?? ''}`,
+    uri: `${baseUrl}/headwater/orig/${orig.uuid ?? ''}`,
+    url: `${baseUrl}/headwater/orig/${orig.uuid ?? ''}`,
     content: textToHtml(orig.text ?? ''),
     created_at: createdAt,
     account: account ?? addrToAccount(addr, baseUrl),
@@ -389,7 +392,7 @@ export const verifiedEmbedToStatus = (
     visibility: 'public' as const,
     language: null,
     reblog: null,
-    application: { name: 'deltanet' },
+    application: { name: 'Headwater' },
     emojis: [],
     mentions: [],
     tags: [],
@@ -402,7 +405,7 @@ export const verifiedEmbedToStatus = (
       quote: null,
       quote_id: null,
       quote_visible: false,
-      ...deltanetPleroma(null, false, authorUnconfirmed),
+      ...headwaterPleroma(null, false, authorUnconfirmed),
     },
   };
 };
@@ -437,8 +440,8 @@ export const heldEnvelopeToStatus = (
   const bodyText = env.type === 'boost' ? '' : (env.text ?? parsed.body);
   return {
     id: `orig-${env.uuid ?? 'unknown'}`,
-    uri: `${baseUrl}/deltanet/orig/${env.uuid ?? ''}`,
-    url: `${baseUrl}/deltanet/orig/${env.uuid ?? ''}`,
+    uri: `${baseUrl}/headwater/orig/${env.uuid ?? ''}`,
+    url: `${baseUrl}/headwater/orig/${env.uuid ?? ''}`,
     content: textToHtml(bodyText),
     created_at: new Date(env.ts ?? 0).toISOString(),
     account: account ?? addrToAccount(authorAddr, baseUrl),
@@ -460,7 +463,7 @@ export const heldEnvelopeToStatus = (
     visibility: 'public' as const,
     language: null,
     reblog: null,
-    application: { name: 'deltanet' },
+    application: { name: 'Headwater' },
     emojis: [],
     mentions: [],
     tags: [],
@@ -473,13 +476,13 @@ export const heldEnvelopeToStatus = (
       quote: null,
       quote_id: null,
       quote_visible: false,
-      ...deltanetPleroma(null, threadSubscribed, authorUnconfirmed),
+      ...headwaterPleroma(null, threadSubscribed, authorUnconfirmed),
     },
   };
 };
 
 /**
- * What `messageToStatus` needs to resolve deltanet wire-convention markers
+ * What `messageToStatus` needs to resolve Headwater wire-convention markers
  * into real Mastodon links/counts. Built in server.ts from the per-account
  * `Store`; defaults to no-op so old call sites (and tests that don't care
  * about threading/boosts) keep working unchanged.
@@ -515,7 +518,7 @@ export type StatusResolver = {
   heldOrigId?(keyString: string): string | null;
   /**
    * thread-subscribe: is this uuid a thread ROOT the user currently subscribes
-   * to? Drives `pleroma.deltanet.thread_subscribed` on the root status so the UI
+   * to? Drives `pleroma.headwater.thread_subscribed` on the root status so the UI
    * shows Subscribe vs Unsubscribe. Default false (no subscriptions).
    */
   isThreadSubscribed?(uuid: string): boolean;
@@ -540,7 +543,7 @@ const FAVOURITE_EMOJI = '❤';
  * we have it on hand (in-memory registry keyed by media/msg id) — chatmail
  * itself has no per-attachment alt text field.
  *
- * `resolver` maps the deltanet wire convention (v2 JSON envelopes, or the v0/v1
+ * `resolver` maps the Headwater wire convention (v2 JSON envelopes, or the v0/v1
  * markers read-side — see ../wire.ts) to real ids/counts via the per-account
  * Store; a boosted/replied-to post that resolves to a locally-known message
  * needs `resolveMessage` (the raw message + its mapping) to embed the real
@@ -676,8 +679,8 @@ export const messageToStatus = (
 
   return {
     id: String(msg.id),
-    uri: `${baseUrl}/deltanet/message/${msg.id}`,
-    url: `${baseUrl}/deltanet/message/${msg.id}`,
+    uri: `${baseUrl}/headwater/message/${msg.id}`,
+    url: `${baseUrl}/headwater/message/${msg.id}`,
     content: textToHtml(boostPlaceholder ? BOOST_PLACEHOLDER_TEXT : bodyText),
     created_at: new Date(msg.timestamp * 1000).toISOString(),
     account: contactToAccount(msg.sender, baseUrl),
@@ -706,7 +709,7 @@ export const messageToStatus = (
         : 'public') as 'public' | 'private' | 'direct',
     language: null,
     reblog,
-    application: { name: 'deltanet' },
+    application: { name: 'Headwater' },
     emojis: [],
     mentions,
     tags: [],
@@ -719,24 +722,26 @@ export const messageToStatus = (
       quote: null,
       quote_id: null,
       quote_visible: false,
-      ...deltanetPleroma(boostPlaceholder, threadSubscribed),
+      ...headwaterPleroma(boostPlaceholder, threadSubscribed),
     },
   };
 };
 
 /**
- * Build the optional `pleroma.deltanet` object from a boost placeholder and/or a
+ * Build compatible `pleroma.headwater` and `pleroma.deltanet` metadata from a
  * thread-subscription flag — merged so a status can carry either or both without
  * clobbering. Omitted entirely when neither applies (the common case).
  */
-const deltanetPleroma = (
+const headwaterPleroma = (
   boostPlaceholder: { placeholder: 'boost' | 'boost-unverified'; key: string; addr: string } | null,
   threadSubscribed: boolean,
   authorUnconfirmed = false,
-): { deltanet: NonNullable<MastodonStatus['pleroma']['deltanet']> } | {} => {
+): {
+  headwater: NonNullable<MastodonStatus['pleroma']['headwater']>;
+  deltanet: NonNullable<MastodonStatus['pleroma']['headwater']>;
+} | {} => {
   if (!boostPlaceholder && !threadSubscribed && !authorUnconfirmed) return {};
-  return {
-    deltanet: {
+  return headwaterCompatibility({
       ...(boostPlaceholder
         ? {
             placeholder: boostPlaceholder.placeholder,
@@ -745,8 +750,7 @@ const deltanetPleroma = (
         : {}),
       ...(threadSubscribed ? { thread_subscribed: true } : {}),
       ...(authorUnconfirmed ? { author_unconfirmed: true } : {}),
-    },
-  };
+  });
 };
 
 /**

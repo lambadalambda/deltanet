@@ -1,8 +1,8 @@
-# DeltaNet
+# Headwater
 
 Your own single-user social network that federates over **encrypted email**.
 
-DeltaNet looks and feels like Pleroma/Mastodon, but there is no multi-user
+Headwater looks and feels like Pleroma/Mastodon, but there is no multi-user
 instance and no ActivityPub: you run a small daemon on your own machine, your
 identity is an email address on a [chatmail](https://chatmail.at) relay
 (registered for you at sign-up, no form to fill), and your feed is an
@@ -84,11 +84,11 @@ capability.
   every associated live socket, and prints a fresh one-use enrollment code in
   the daemon terminal. The next sign-in cannot reuse retained client credentials
   and requires that fresh terminal code.
-- Auth state defaults to `${DELTANET_DATA}.auth.json`. It is atomically replaced
+- Auth state defaults to `${HEADWATER_DATA}.auth.json`. It is atomically replaced
   and forced to mode `0600`. Deleting it while the daemon is stopped rotates the
   blob-signing secret and invalidates every browser session and OAuth client.
-- Existing browser storage containing the former fixed `deltanet-token` is not
-  accepted. Those browsers naturally return to sign-in and receive a random
+- Existing browser storage containing the legacy fixed `deltanet-token` key is
+  not accepted. Those browsers naturally return to sign-in and receive a random
   session.
 - Every message blob requires either the Bearer header or a short-lived signed
   URL capability, including public-looking, malformed, and control-message
@@ -97,25 +97,25 @@ capability.
   after session/client revocation; blob responses are always `private, no-store`.
   Sanitized public avatars and headers remain anonymous projections.
 
-CORS echoes only `DELTANET_BASE_URL`'s origin and the comma-separated origins in
-`DELTANET_ALLOWED_ORIGINS`; it never emits `*`. The production SPA needs no
+CORS echoes only `HEADWATER_BASE_URL`'s origin and the comma-separated origins in
+`HEADWATER_ALLOWED_ORIGINS`; it never emits `*`. The production SPA needs no
 extra origin because the daemon serves it same-origin. For a separate Vite dev
 server, start the daemon with an explicit origin, for example:
 
 ```sh
-env DELTANET_ALLOWED_ORIGINS=http://localhost:5173 mise exec -- pnpm start
+env HEADWATER_ALLOWED_ORIGINS=http://localhost:5173 mise exec -- pnpm start
 ```
 
 Useful environment settings are documented in `daemon/.env.example`. A
-non-loopback `DELTANET_HOSTNAME` is rejected unless
-`DELTANET_ALLOW_NON_LOOPBACK=1` is also set. That opt-in does not add TLS or
+non-loopback `HEADWATER_HOSTNAME` is rejected unless
+`HEADWATER_ALLOW_NON_LOOPBACK=1` is also set. That opt-in does not add TLS or
 make Bearer tokens safe on an untrusted LAN; use an HTTPS-authenticated reverse
-proxy, set `DELTANET_BASE_URL` to its real origin, and restrict
-`DELTANET_ALLOWED_ORIGINS` when intentionally exposing the listener.
+proxy, set `HEADWATER_BASE_URL` to its real origin, and restrict
+`HEADWATER_ALLOWED_ORIGINS` when intentionally exposing the listener.
 
 Signup uses `https://nine.testrun.org` by default. Custom relay selection is an
 operator-controlled capability: add exact HTTPS origins to the comma-separated
-`DELTANET_SIGNUP_RELAYS` setting before starting the daemon. Relay URLs with
+`HEADWATER_SIGNUP_RELAYS` setting before starting the daemon. Relay URLs with
 credentials, paths, queries, or fragments are rejected, and an API caller
 cannot choose an origin outside that allowlist. Selecting any non-default relay
 also requires the current one-time enrollment code printed by the daemon.
@@ -137,7 +137,7 @@ name + a data directory. From `daemon/`:
 mise exec -- pnpm start
 
 # node B on :4031, in a second terminal
-env PORT=4031 DELTANET_ACCOUNT=second DELTANET_DATA=data/second mise exec -- pnpm start
+env PORT=4031 HEADWATER_ACCOUNT=second HEADWATER_DATA=data/second mise exec -- pnpm start
 ```
 
 Then, in the browser:
@@ -158,17 +158,17 @@ Then, in the browser:
 The same works over curl if you prefer scripts:
 
 ```sh
-curl -s localhost:4030/api/deltanet/invite \
-     -H "Authorization: Bearer $DELTANET_TOKEN_A"     # get A's invite
-curl -s -X POST localhost:4031/api/deltanet/follow \
-     -H "Authorization: Bearer $DELTANET_TOKEN_B" \
+curl -s localhost:4030/api/headwater/invite \
+     -H "Authorization: Bearer $HEADWATER_TOKEN_A"     # get A's invite
+curl -s -X POST localhost:4031/api/headwater/follow \
+     -H "Authorization: Bearer $HEADWATER_TOKEN_B" \
      -H 'Content-Type: application/json' \
      -d '{"invite": "<paste it here>"}'               # B follows A
 ```
 
 Private API calls require a session issued by the OAuth sign-in flow; the
-example assumes each node's raw value is available as `DELTANET_TOKEN_A` or
-`DELTANET_TOKEN_B`. Tokens are shown only once by `/oauth/token` and are
+example assumes each node's raw value is available as `HEADWATER_TOKEN_A` or
+`HEADWATER_TOKEN_B`. Tokens are shown only once by `/oauth/token` and are
 otherwise held in that browser origin's local storage. Each node port has a
 separate browser origin, client, session, and default auth file, so two local
 nodes do not collide and cannot share a bearer token.
@@ -187,8 +187,10 @@ Notes:
 - Killing a daemon and restarting it is safe: the relay holds undelivered mail
   for up to 20 days (7 days for messages over 200 KiB, subject to quota), the
   daemon re-derives message indices from its Delta Chat database, and durable
-  non-derivable state is recovered from `deltanet-store.json` plus its recovery
-  copy. A relay account is deleted after roughly 90 days without login.
+  non-derivable state is recovered from `headwater-store.json` plus its recovery
+  copy. A migrated node with the legacy `deltanet-store.json` filename keeps
+  using that file rather than creating split state. A relay account is deleted
+  after roughly 90 days without login.
 
 ## Backup & restore
 
@@ -197,11 +199,14 @@ lives in the Delta Chat database, while the post-attestation signing key that
 followers pin lives beside it. The live node also needs credentials and local
 OAuth state, which default to files beside rather than inside the data
 directory. Relays temporarily hold encrypted mail but not these private keys,
-and delete accounts idle for roughly 90 days. Use a `.dnbk` export rather than
-assuming that copying only `${DELTANET_DATA}` captures every live-node file.
+and delete accounts idle for roughly 90 days. Use Headwater's encrypted backup,
+which retains the legacy-compatible `.dnbk` container extension, rather than
+assuming that copying only `${HEADWATER_DATA}` captures every live-node file.
 
-- **Backup:** Settings → Backup — pick a passphrase and download a `.dnbk`
-  file. It contains core's passphrase-encrypted backup tar plus an encrypted
+- **Backup:** Settings → Backup — pick a passphrase and download a
+  `headwater-backup-*.dnbk` file. The `.dnbk` extension and `DNBK1` container
+  marker are retained legacy format identifiers for restore compatibility. It
+  contains core's passphrase-encrypted backup tar plus an encrypted
   sidecar containing the attestation signing key and durable daemon store. A
   restore brings back the address, OpenPGP identity, follows, message history,
   store state, and signing key, so followers' key pins keep verifying. Browser
@@ -210,9 +215,9 @@ assuming that copying only `${DELTANET_DATA}` captures every live-node file.
   currently included; the avatar is core-backed.
 - **Restore:** on a fresh node, choose **Restore from a backup** on the
   landing page's Create-account tab instead of signing up. Or over the API:
-  `POST /api/deltanet/restore` (multipart `file` + `passphrase`);
-  `POST /api/deltanet/backup/export` (`{"passphrase": ...}`) produces the
-  download; `GET /api/deltanet/backup` reports the last backup time.
+  `POST /api/headwater/restore` (multipart `file` + `passphrase`);
+  `POST /api/headwater/backup/export` (`{"passphrase": ...}`) produces the
+  download; `GET /api/headwater/backup` reports the last backup time.
 
 The passphrase is not recoverable — a wrong one fails cleanly (the container
 is authenticated) without touching the node.
@@ -244,7 +249,7 @@ Requirements: **podman** (rootless is fine). The relay image is a real
   yourself.
 - To run against the **real** `nine.testrun.org` relay instead (the old
   behavior — needs network, creates throwaway accounts there), set
-  `DELTANET_TEST_RELAY=testrun`. Then podman is not used at all.
+  `HEADWATER_TEST_RELAY=testrun`. Then podman is not used at all.
 
 The test relay uses a self-signed cert and an `_chatmail.example` domain; the
 daemon's transport connects with explicit IMAP/SMTP host+port and
@@ -270,7 +275,7 @@ jobs:
 - `daemon/` — TypeScript daemon: Mastodon client API in front,
   `deltachat-rpc-server` behind. Vitest unit tests and a multi-scenario
   federation suite against the disposable relay.
-- `frontend/` — DeltaNet web UI, a fork of
+- `frontend/` — Headwater web UI, a fork of
   PleromaNet (a SvelteKit Pleroma frontend) reworked for invite-based
   federation and daemon sign-up. Mocked Playwright tests plus an opt-in stock
   Pleroma compatibility check.
@@ -292,7 +297,7 @@ jobs:
   secret; SMTP recipient envelopes are then fanned out to members.
 - **Following:** securejoin handshake from an `https://i.delta.chat/#…` invite
   link. Locked-channel invites grant followers-only access; follow requests use
-  DeltaNet control messages.
+  Headwater control messages.
 - **Reading and discovery:** home/public/account timelines, profiles, known-user
   and locally held post search, replies, verified boosts, thread auto-backfill,
   and explicit thread subscriptions. There is no network-wide directory,
@@ -302,8 +307,9 @@ jobs:
   original author's node; portable signed receipts remain planned.
 - **Media and profile:** one PNG/JPEG/WebP/GIF image per post with alt text,
   plus display name, bio, avatar, custom local header, and petnames.
-- **Recovery:** encrypted `.dnbk` export/restore with identity, history, durable
-  store, and attestation-key continuity.
+- **Recovery:** encrypted Headwater backup/restore using the legacy-compatible
+  `.dnbk` container format, with identity, history, durable store, and
+  attestation-key continuity.
 - **Not yet available in the bundled daemon:** human chat/message threads,
   bookmarks, federated status deletion, mute/block, polls, unlisted visibility,
   content warnings, extended profile fields, and audio/video uploads. The UI
@@ -313,3 +319,31 @@ jobs:
 See `meta/frontend-daemon-capabilities.md` for the exact API contract,
 `docs/decisions.md` for standing decisions, and `DEVLOG.md` for implementation
 history.
+
+## DeltaNet migration compatibility
+
+Headwater was formerly named DeltaNet. Fresh installs and all examples above
+use Headwater names. Existing nodes are migrated without changing identity or
+splitting state:
+
+- `HEADWATER_*` is preferred. Deployed `DELTANET_*` environment variables remain
+  fallback aliases; if both forms are set, the Headwater value wins.
+- `/api/headwater/*` and `/headwater/*` are preferred. Legacy
+  `/api/deltanet/*` and `/deltanet/*` routes remain aliases for old clients.
+- API metadata is published under `configuration.headwater` and
+  `pleroma.headwater`. Legacy `configuration.deltanet` and `pleroma.deltanet`
+  namespaces remain compatibility mirrors during migration.
+- New state uses `headwater-store.json` and `headwater-signing-key.json`. When a
+  legacy `deltanet-store.json` or `deltanet-signing-key.json` already exists,
+  Headwater keeps using it so it does not create a replacement feed identity,
+  signing key, or divergent store.
+- The `.dnbk` extension, `DNBK1` backup marker, `dn: 2`, `dn2`, and `dn3` signed
+  protocol identifiers are immutable compatibility bytes, not current product
+  branding. Existing backups and signed history remain readable and verifiable.
+- Legacy browser keys, auth hash domains, core configuration keys, and
+  `ui.deltanet.*` values are read for continuity; new browser and core state uses
+  `headwater.*` and `ui.headwater.*` names.
+
+The checkout directory and git remote still use the former repository slug.
+Renaming either requires coordinated external follow-up and is intentionally
+outside this source-tree migration.

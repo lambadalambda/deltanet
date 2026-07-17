@@ -930,7 +930,7 @@ export type Store = {
 
 /** A fresh scratch path for callers (tests, `createApp` defaults) that don't need cross-restart persistence. */
 export const ephemeralStorePath = (): string =>
-  join(tmpdir(), `deltanet-store-${randomUUID()}.json`);
+  join(tmpdir(), `headwater-store-${randomUUID()}.json`);
 
 export type StoreFileOperations = {
   /** Returns false only for ENOENT; every other stat/probe error must throw. */
@@ -987,7 +987,7 @@ const dedupeKey = (input: NotificationInput): string | null => {
 };
 
 /**
- * Per-account persistent index over the deltanet wire convention: mid <->
+ * Per-account persistent index over the Headwater wire convention: mid <->
  * msgId, reply children, boost tallies, reactions, and notifications.
  * Loaded lazily from `filePath` (a JSON file whose path is injected — one
  * per account data dir) and saved synchronously on every mutation; the data

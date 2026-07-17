@@ -176,7 +176,7 @@ test('public timeline stays anonymous even when OAuth storage contains a session
 	let authorization: string | undefined;
 	await page.addInitScript(() => {
 		window.localStorage.setItem(
-			'deltanet.session',
+			'headwater.session',
 			JSON.stringify({ instanceUrl: 'https://pleroma.example', accessToken: 'access-token', tokenType: 'Bearer', scope: 'read', createdAt: Date.now() })
 		);
 	});

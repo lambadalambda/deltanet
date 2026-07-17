@@ -8,7 +8,7 @@ export type TimelineQuery = {
 
 export type PostOptions = {
   file?: string;
-  /** Freeform quote bubble (deltanet wire convention: reply/boost embeds). */
+  /** Freeform quote bubble (Headwater wire convention: reply/boost embeds). */
   quotedText?: string;
   /**
    * Which owned broadcast the post goes to (visibility channels): the PUBLIC
@@ -58,11 +58,11 @@ export interface Transport {
   /**
    * Export core's passphrase-encrypted backup tar into `destDir` and return
    * the written file's path. NOTE: this is only the CORE half of a
-   * deltanet backup — the API layer wraps it with the encrypted sidecar
+   * Headwater backup; the API layer wraps it with the encrypted sidecar
    * (signing key + store) into a `.dnbk` container (see ../backup.ts).
    */
   exportBackup(destDir: string, passphrase: string): Promise<string>;
-  /** Mark a fully validated deltanet container as exported. */
+  /** Mark a fully validated Headwater container as exported. */
   markBackupExported(exportedAt: number): Promise<void>;
   /** ms-epoch of the last successful complete export, or null if never. */
   lastBackupAt(): Promise<number | null>;

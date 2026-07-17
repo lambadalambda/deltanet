@@ -67,7 +67,7 @@ const emptyTimelinePagination = (): TimelinePagination => ({ next: null, previou
 
 const cursorFromUrl = (href: string): TimelineCursor | null => {
 	try {
-		const url = new URL(href, 'https://deltanet.invalid');
+		const url = new URL(href, 'https://headwater.invalid');
 		const cursor = {
 			maxId: url.searchParams.get('max_id') ?? undefined,
 			minId: url.searchParams.get('min_id') ?? undefined,
@@ -399,7 +399,7 @@ export const createPleromaClient = (config: ClientConfig) => {
 				auth: 'required'
 			}),
 
-		// Thread subscription (deltanet thread-subscribe): keep updated on a thread
+		// Thread subscription (Headwater thread-subscribe): keep updated on a thread
 		// regardless of who participates. `:id` is the thread ROOT status id.
 		subscribeThread: (id: string) =>
 			http.request<PleromaStatus>({

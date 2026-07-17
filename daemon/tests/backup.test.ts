@@ -6,6 +6,7 @@ import {
   backupFilename,
   decodeBackupContainer,
   encodeBackupContainer,
+  encodeBackupPrefix,
   type BackupSidecar,
 } from '../src/backup.js';
 
@@ -30,6 +31,17 @@ describe('backup container', () => {
   it('starts with the magic so files are identifiable', () => {
     const container = encodeBackupContainer({ sidecar: SIDECAR, coreTar: CORE_TAR }, 'hunter2');
     expect(container.subarray(0, BACKUP_MAGIC.length).toString('utf8')).toBe(BACKUP_MAGIC);
+    expect(BACKUP_MAGIC).toBe('DNBK1\n');
+  });
+
+  it('decodes legacy DNBK1 sidecars that predate the authenticated core hash', () => {
+    const prefix = encodeBackupPrefix({
+      sidecar: SIDECAR,
+      coreTarSha256: undefined,
+    } as any, 'hunter2');
+    const decoded = decodeBackupContainer(Buffer.concat([prefix, CORE_TAR]), 'hunter2');
+    expect(decoded.sidecar).toEqual(SIDECAR);
+    expect(decoded.coreTar).toEqual(CORE_TAR);
   });
 
   it('never leaks sidecar plaintext (the signing key) into the container', () => {
@@ -109,11 +121,11 @@ describe('backup container', () => {
 describe('backupFilename', () => {
   it('derives a dated, addr-tagged .dnbk name', () => {
     expect(backupFilename('alice@nine.testrun.org', 1751884800000)).toBe(
-      'deltanet-backup-alice-nine.testrun.org-2025-07-07.dnbk',
+      'headwater-backup-alice-nine.testrun.org-2025-07-07.dnbk',
     );
   });
 
   it('strips characters that are unsafe in filenames', () => {
-    expect(backupFilename('we/ird"addr\\x', 0)).toBe('deltanet-backup-we-ird-addr-x-1970-01-01.dnbk');
+    expect(backupFilename('we/ird"addr\\x', 0)).toBe('headwater-backup-we-ird-addr-x-1970-01-01.dnbk');
   });
 });

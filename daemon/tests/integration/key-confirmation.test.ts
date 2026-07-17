@@ -170,7 +170,7 @@ describe('key confirmation over the relay', () => {
     // background confirmation.
     const view = await cApp.request(`/api/v1/statuses/orig-${rootUuid}`);
     expect(view.status).toBe(200);
-    expect(((await view.json()) as any).pleroma.deltanet?.author_unconfirmed).toBe(true);
+    expect(((await view.json()) as any).pleroma.headwater?.author_unconfirmed).toBe(true);
 
     // Confirmation completes: C introduces itself to A via the held invite,
     // requests the post, A serves its own signed copy → the self-served
@@ -184,6 +184,6 @@ describe('key confirmation over the relay', () => {
 
     // The next render drops the mark.
     const confirmed = (await (await cApp.request(`/api/v1/statuses/orig-${rootUuid}`)).json()) as any;
-    expect(confirmed.pleroma.deltanet?.author_unconfirmed).toBeUndefined();
+    expect(confirmed.pleroma.headwater?.author_unconfirmed).toBeUndefined();
   }, 1_800_000);
 });

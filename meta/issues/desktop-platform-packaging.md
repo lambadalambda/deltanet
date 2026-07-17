@@ -33,7 +33,8 @@ tests on each target.
 - Contain and reap the Electron, daemon, and native-helper process tree. Abrupt
   main-process death must not leave a listener or helper running on any target,
   and the next launch must recover any stale lock safely.
-- Exercise packaged create-account/enrollment and `.dnbk` export-wipe-restore
+- Exercise packaged create-account/enrollment and legacy-compatible `.dnbk`
+  export-wipe-restore
   through native dialogs on every supported target, not only the alpha platform.
 
 ## Acceptance Criteria

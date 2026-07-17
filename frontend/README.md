@@ -1,6 +1,6 @@
-# DeltaNet
+# Headwater
 
-DeltaNet is the SvelteKit frontend for the DeltaNet daemon. It speaks a
+Headwater is the SvelteKit frontend for the Headwater daemon. It speaks a
 Pleroma/Mastodon-shaped client API while presenting the invite-based encrypted
 social model directly. The canonical visual handoff and implementation issues
 live under `meta/`.
@@ -8,11 +8,11 @@ live under `meta/`.
 ## Status
 
 This directory contains a SvelteKit TypeScript SPA/static frontend without SSR.
-It works with the bundled DeltaNet daemon and retains an opt-in compatibility
+It works with the bundled Headwater daemon and retains an opt-in compatibility
 check against stock Pleroma. The bundled daemon publishes capability metadata;
 mutable controls and routes are hidden or labeled when their persistence or
 federation semantics are not implemented. The current Explore page is static
-design/demo content, not real DeltaNet network discovery.
+design/demo content, not real Headwater network discovery.
 
 ### Real App Surface
 
@@ -25,7 +25,7 @@ design/demo content, not real DeltaNet network discovery.
   statuses; one image upload through the bundled daemon; mention/custom-emoji
   autocomplete; and the full emoji picker. Content-warning and poll controls
   exist for compatible Pleroma servers but remain capability-disabled on
-  DeltaNet until their signed federation contracts are implemented.
+  Headwater until their signed federation contracts are implemented.
 - Posts render replies, verified boosts, image media, favourites, and emoji
   reactions. Human chat threads, bookmarks, deletion, moderation, polls,
   unlisted visibility, content warnings, extended profiles, and audio/video are
@@ -33,7 +33,7 @@ design/demo content, not real DeltaNet network discovery.
 - `/app/profiles/...` can also render signed-out public projections, with
   sign-in prompts on authenticated actions.
 - `/public` is a stock-Pleroma compatibility/demo route backed by
-  `PUBLIC_PLEROMA_INSTANCE_URL`; it is not DeltaNet-wide discovery. A daemon's
+  `PUBLIC_PLEROMA_INSTANCE_URL`; it is not Headwater-wide discovery. A daemon's
   anonymous public timeline is its own sanitized local projection.
 - `/app/explore` is also a static design specimen today; its hashtags,
   communities, and Join toggles do not represent daemon-backed discovery.
@@ -118,6 +118,6 @@ mise exec -- pnpm preview
 
 The frontend targets a Pleroma-flavored client API. Stock Pleroma-specific
 features are used only when the connected server supports them; bundled
-DeltaNet behavior follows the explicit contract in
+Headwater behavior follows the explicit contract in
 `../meta/frontend-daemon-capabilities.md`. Pleroma API documentation is
 available at https://api.pleroma.social/.

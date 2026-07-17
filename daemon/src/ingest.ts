@@ -1,5 +1,5 @@
 /**
- * Derivation pass run over every ingested message: turns deltanet
+ * Derivation pass run over every ingested message: turns Headwater
  * wire-convention markers (see ./protocol.ts) into store side effects —
  * reaction tallies and notifications. Separate from `Store.ingestMessage`
  * (which only maintains the mid/msgId/reply/boost indices) so the

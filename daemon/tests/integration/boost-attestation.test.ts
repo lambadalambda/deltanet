@@ -217,12 +217,12 @@ describe('post-attestations: verified boost embed with media across a third-part
     expect(cStatus.reblog, 'C renders a verified reblog embed').not.toBeNull();
     expect(cStatus.reblog.content).toContain(postText);
     expect(cStatus.reblog.account.acct).toBe(aCreds.addr);
-    expect(cStatus.pleroma.deltanet, 'no placeholder on a verified embed').toBeUndefined();
+    expect(cStatus.pleroma.headwater, 'no placeholder on a verified embed').toBeUndefined();
 
     // The image rides on the embed; the media url points at C's boost blob route.
     expect(cStatus.reblog.media_attachments).toHaveLength(1);
     const mediaUrl: string = cStatus.reblog.media_attachments[0].url;
-    expect(mediaUrl).toContain(`/deltanet/blob/${cBoostMsg.id}`);
+    expect(mediaUrl).toContain(`/headwater/blob/${cBoostMsg.id}`);
 
     // Fetch the rendered blob from C's own route and hash it: it must equal the
     // ORIGINAL image A signed — verifiable media across the boost hop.

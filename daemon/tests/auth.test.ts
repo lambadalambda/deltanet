@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createAuthStore } from '../src/auth.js';
@@ -21,13 +22,53 @@ describe('persisted local auth store', () => {
     const enrollment = auth.createEnrollmentCode();
     return {
       client: auth.registerClient({
-        name: 'DeltaNet',
+        name: 'Headwater',
         redirectUri: 'http://localhost:4030/auth/callback',
         scope: 'read write follow push',
       }, { enrollmentCode: enrollment.code }),
       enrollment,
     };
   };
+
+  it('writes Headwater-domain hashes and accepts legacy DeltaNet-domain hashes', () => {
+    const path = authPath();
+    const auth = createAuthStore(path);
+    const { client } = register(auth);
+    const persisted = JSON.parse(readFileSync(path, 'utf8')) as any;
+    expect(persisted.clients[0].secretHash).toBe(
+      createHash('sha256').update('headwater:client:').update(client.clientSecret).digest('base64url'),
+    );
+
+    persisted.clients[0].secretHash = createHash('sha256')
+      .update('deltanet:client:')
+      .update(client.clientSecret)
+      .digest('base64url');
+    writeFileSync(path, `${JSON.stringify(persisted)}\n`);
+
+    expect(createAuthStore(path).validateClientSecret(client.clientId, client.clientSecret)).toBe(true);
+  });
+
+  it('keeps legacy DeltaNet-domain access tokens valid across the rebrand', () => {
+    const path = authPath();
+    const auth = createAuthStore(path);
+    const { client } = register(auth);
+    const code = auth.issueAuthorizationCode({
+      clientId: client.clientId,
+      redirectUri: client.redirectUri,
+      scope: client.scope,
+    });
+    const session = auth.exchangeAuthorizationCode({ ...client, code });
+    const persisted = JSON.parse(readFileSync(path, 'utf8')) as any;
+    persisted.sessions[0].tokenHash = createHash('sha256')
+      .update('deltanet:token:')
+      .update(session.accessToken)
+      .digest('base64url');
+    writeFileSync(path, `${JSON.stringify(persisted)}\n`);
+
+    expect(createAuthStore(path).validateAccessToken(session.accessToken)).toMatchObject({
+      clientId: client.clientId,
+    });
+  });
 
   it('persists only hashes of 256-bit client secrets, codes, and access tokens in a mode-0600 file', () => {
     const path = authPath();
@@ -199,7 +240,7 @@ describe('persisted local auth store', () => {
       maxClients: 2,
     });
     const input = {
-      name: 'DeltaNet',
+      name: 'Headwater',
       redirectUri: 'http://localhost:4030/auth/callback',
       scope: 'read write follow push',
     };

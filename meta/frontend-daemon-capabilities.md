@@ -1,9 +1,17 @@
 # Frontend-daemon capability contract
 
-The bundled frontend reads `configuration.deltanet.capabilities` from
+The bundled frontend reads `configuration.headwater.capabilities` from
 `GET /api/v2/instance`. Missing metadata is treated conservatively until the
-request completes; a non-DeltaNet Pleroma instance retains the ordinary
+request completes; a non-Headwater Pleroma instance retains the ordinary
 Pleroma feature set.
+
+During migration, the daemon also emits the same data under the legacy
+`configuration.deltanet` and `pleroma.deltanet` namespaces, and readers may
+fall back to those names for deployed nodes. New responses, frontend requests,
+tests, and documentation must prefer `configuration.headwater` and
+`pleroma.headwater`. Headwater-specific API and resource calls likewise prefer
+`/api/headwater/*` and `/headwater/*`; the former `/api/deltanet/*` and
+`/deltanet/*` routes are compatibility aliases only.
 
 ## Implemented
 
@@ -16,7 +24,7 @@ Pleroma feature set.
 | Interactions | favourite/unfavourite, reblog/unreblog, emoji reactions, thread subscribe/unsubscribe | Persisted/derived through signed control envelopes and Store state; unknown targets return 404. |
 | Media | upload, update description, explicit staged-media delete | 40 MiB file and 4 KiB description limits; one-hour staging; alt text enters the signed envelope. |
 | Notifications and streaming | notifications, stream ticket, user WebSocket | Store-backed notifications and one-use session-bound stream tickets. |
-| DeltaNet extensions | invite/follow, petname, locked-access request, backup/export/restore | Explicit DeltaNet JSON contracts covered by daemon tests. |
+| Headwater extensions | invite/follow, petname, locked-access request, backup/export/restore | Explicit Headwater JSON contracts covered by daemon tests. |
 
 Read-only custom emoji, trends, suggestions, filters, markers, and preferences
 are intentionally empty discovery surfaces. They do not imply a mutable

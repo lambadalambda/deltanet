@@ -12,7 +12,7 @@ import { resolveTestRelayConfig } from '../../src/testenv/relay-config.js';
  * we parse into `process.env` so the tests (and `resolveTestRelayConfig`)
  * pick up the exact host/ports it published.
  *
- * Opt out with `DELTANET_TEST_RELAY=testrun`: the suite then runs against the
+ * Opt out with `HEADWATER_TEST_RELAY=testrun`: the suite then runs against the
  * real `nine.testrun.org` relay and this setup does nothing (no podman, no
  * container lifecycle), preserving the historical behavior.
  */
@@ -30,7 +30,7 @@ const applyExports = (stdout: string): void => {
 export default async function setup(): Promise<() => void> {
   const cfg = resolveTestRelayConfig(process.env);
   if (cfg.isTestrun) {
-    console.log('[integration] DELTANET_TEST_RELAY=testrun — using nine.testrun.org, no local relay');
+    console.log('[integration] HEADWATER_TEST_RELAY=testrun: using nine.testrun.org, no local relay');
     return () => {};
   }
 

@@ -21,7 +21,7 @@ const authenticate = async (page: Page) => {
 		await fulfillJson(route, pleromaFixtures.customEmojis);
 	});
 	await page.addInitScript((storedSession) => {
-		window.localStorage.setItem('deltanet.session', JSON.stringify(storedSession));
+		window.localStorage.setItem('headwater.session', JSON.stringify(storedSession));
 	}, session);
 };
 
@@ -1028,7 +1028,7 @@ test('real thread route ignores stale status responses after moving to a no-id t
 	await expect(page.getByText('Thread unavailable')).toBeVisible();
 
 	releaseStatus();
-	await expect(page.getByText('DeltaNet needs a status id to load a thread.')).toBeVisible();
+	await expect(page.getByText('Headwater needs a status id to load a thread.')).toBeVisible();
 	await expect(page.getByTestId('focused-post')).toHaveCount(0);
 });
 
@@ -1226,14 +1226,14 @@ test('thread root: subscribe to thread flips the menu to Unsubscribe', async ({ 
 			content: { 'text/plain': 'quiet CSS can still carry the voice.' },
 			conversation_id: 99,
 			spoiler_text: { 'text/plain': '' },
-			deltanet: { thread_subscribed: false }
+			headwater: { thread_subscribed: false }
 		}
 	});
 	await mockThread(page, root, [], [threadAncestor], {
 		...pleromaFixtures.instance,
 		configuration: {
 			...pleromaFixtures.instance.configuration,
-			deltanet: { capabilities: { bookmarks: false, status_deletion: false, account_moderation: false, media_description: true, chats: false, polls: false, unlisted_visibility: false, content_warnings: false, extended_profile: false } }
+			headwater: { capabilities: { bookmarks: false, status_deletion: false, account_moderation: false, media_description: true, chats: false, polls: false, unlisted_visibility: false, content_warnings: false, extended_profile: false } }
 		}
 	});
 	// The subscribe endpoint returns the root now flagged subscribed.
@@ -1241,7 +1241,7 @@ test('thread root: subscribe to thread flips the menu to Unsubscribe', async ({ 
 		expect(route.request().method()).toBe('POST');
 		await fulfillJson(route, {
 			...root,
-			pleroma: { ...root.pleroma, deltanet: { thread_subscribed: true } }
+			pleroma: { ...root.pleroma, headwater: { thread_subscribed: true } }
 		});
 	});
 	await setViewport(page, 'desktop');
@@ -1265,7 +1265,7 @@ test('thread root: unreachable author shows a clean error toast', async ({ page 
 			content: { 'text/plain': 'quiet CSS can still carry the voice.' },
 			conversation_id: 99,
 			spoiler_text: { 'text/plain': '' },
-			deltanet: { thread_subscribed: false }
+			headwater: { thread_subscribed: false }
 		}
 	});
 	await mockThread(page, root, []);

@@ -20,7 +20,7 @@ const authenticate = async (page: Page, instance = pleromaFixtures.instance) => 
 	await mockRightRailApis(page);
 	await mockInstance(page, instance);
 	let streamTicket = 0;
-	await page.route('https://pleroma.example/api/deltanet/streaming/token', async (route) => {
+	await page.route('https://pleroma.example/api/headwater/streaming/token', async (route) => {
 		expect(route.request().headers().authorization).toMatch(/^Bearer .+-token$/);
 		streamTicket += 1;
 		await fulfillHome(route, { ticket: `stream-ticket-${streamTicket}`, expires_at: Date.now() + 30_000 });
@@ -41,11 +41,11 @@ const authenticate = async (page: Page, instance = pleromaFixtures.instance) => 
 				close: () => void;
 			};
 		const testWindow = window as typeof window & {
-			__deltanetSockets?: MockSocket[];
+			__headwaterSockets?: MockSocket[];
 		};
 
-		if (!testWindow.__deltanetSockets) {
-			testWindow.__deltanetSockets = [];
+		if (!testWindow.__headwaterSockets) {
+			testWindow.__headwaterSockets = [];
 			const MockWebSocket = function (url: string) {
 				const socket: MockSocket = {
 					url,
@@ -57,21 +57,21 @@ const authenticate = async (page: Page, instance = pleromaFixtures.instance) => 
 						this.closeCalled = true;
 					}
 				};
-				testWindow.__deltanetSockets?.push(socket);
+				testWindow.__headwaterSockets?.push(socket);
 				return socket;
 			} as unknown as new (url: string) => MockSocket;
 
 			Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockWebSocket });
 		}
 
-		window.localStorage.setItem('deltanet.session', JSON.stringify(storedSession));
+		window.localStorage.setItem('headwater.session', JSON.stringify(storedSession));
 	}, session);
 };
 
 const authenticateWithThrowingWebSocket = async (page: Page) => {
 	await mockRightRailApis(page);
 	await mockInstance(page);
-	await page.route('https://pleroma.example/api/deltanet/streaming/token', async (route) => {
+	await page.route('https://pleroma.example/api/headwater/streaming/token', async (route) => {
 		await fulfillHome(route, { ticket: 'stream-ticket', expires_at: Date.now() + 30_000 });
 	});
 	await page.route(customEmojisUrl, async (route) => {
@@ -82,7 +82,7 @@ const authenticateWithThrowingWebSocket = async (page: Page) => {
 			throw new Error('socket blocked');
 		};
 		Object.defineProperty(window, 'WebSocket', { configurable: true, value: ThrowingWebSocket });
-		window.localStorage.setItem('deltanet.session', JSON.stringify(storedSession));
+		window.localStorage.setItem('headwater.session', JSON.stringify(storedSession));
 	}, session);
 };
 
@@ -143,8 +143,8 @@ const statusWithText = (id: string, text: string) => ({
 const emitStreamUpdate = async (page: Page, status: unknown) => {
 	await page.evaluate((nextStatus) => {
 		type MockSocket = { onmessage: ((event: { data: string }) => void) | null };
-		const testWindow = window as typeof window & { __deltanetSockets?: MockSocket[] };
-		const socket = testWindow.__deltanetSockets?.at(-1);
+		const testWindow = window as typeof window & { __headwaterSockets?: MockSocket[] };
+		const socket = testWindow.__headwaterSockets?.at(-1);
 		socket?.onmessage?.({ data: JSON.stringify({ event: 'update', payload: JSON.stringify(nextStatus) }) });
 	}, status);
 };
@@ -152,8 +152,8 @@ const emitStreamUpdate = async (page: Page, status: unknown) => {
 const emitStreamError = async (page: Page) => {
 	await page.evaluate(() => {
 		type MockSocket = { onerror: ((event: Event) => void) | null };
-		const testWindow = window as typeof window & { __deltanetSockets?: MockSocket[] };
-		const socket = testWindow.__deltanetSockets?.at(-1);
+		const testWindow = window as typeof window & { __headwaterSockets?: MockSocket[] };
+		const socket = testWindow.__headwaterSockets?.at(-1);
 		socket?.onerror?.(new Event('error'));
 	});
 };
@@ -161,8 +161,8 @@ const emitStreamError = async (page: Page) => {
 const emitStreamNotification = async (page: Page, notification: unknown) => {
 	await page.evaluate((nextNotification) => {
 		type MockSocket = { onmessage: ((event: { data: string }) => void) | null };
-		const testWindow = window as typeof window & { __deltanetSockets?: MockSocket[] };
-		const socket = testWindow.__deltanetSockets?.at(-1);
+		const testWindow = window as typeof window & { __headwaterSockets?: MockSocket[] };
+		const socket = testWindow.__headwaterSockets?.at(-1);
 		socket?.onmessage?.({ data: JSON.stringify({ event: 'notification', payload: JSON.stringify(nextNotification) }) });
 	}, notification);
 };
@@ -306,13 +306,13 @@ test('home timeline composer uses the instance status character limit', async ({
 	await expect(page.locator('.composer-count')).toHaveText('4969');
 });
 
-test('DeltaNet capabilities hide unsupported mutations and retain honest unavailable routes', async ({ page }) => {
+test('Headwater capabilities hide unsupported mutations and retain honest unavailable routes', async ({ page }) => {
 	await authenticate(page, {
 		...pleromaFixtures.instance,
 		configuration: {
 			...pleromaFixtures.instance.configuration,
 			media_attachments: { supported_mime_types: ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] },
-			deltanet: { capabilities: { bookmarks: false, status_deletion: false, account_moderation: false, media_description: true, chats: false, polls: false, unlisted_visibility: false, content_warnings: false, extended_profile: false } }
+			headwater: { capabilities: { bookmarks: false, status_deletion: false, account_moderation: false, media_description: true, chats: false, polls: false, unlisted_visibility: false, content_warnings: false, extended_profile: false } }
 		}
 	});
 	await mockHomeTimeline(page, async (route) => {
@@ -408,7 +408,7 @@ test('media-description capability gates both home and inline-reply alt controls
 		configuration: {
 			...pleromaFixtures.instance.configuration,
 			media_attachments: { supported_mime_types: ['image/png'] },
-			deltanet: { capabilities: { bookmarks: false, status_deletion: false, account_moderation: false, media_description: false, chats: false, polls: false, unlisted_visibility: false, content_warnings: false, extended_profile: false } }
+			headwater: { capabilities: { bookmarks: false, status_deletion: false, account_moderation: false, media_description: false, chats: false, polls: false, unlisted_visibility: false, content_warnings: false, extended_profile: false } }
 		}
 	});
 	await mockHomeTimeline(page, async (route) => { await fulfillHome(route, [statusWithText('no-alt-post', 'reply target')]); });
@@ -1686,7 +1686,7 @@ test('home timeline clears stale pending actions after session changes', async (
 	await expect.poll(() => favoriteAuthorizations.join('|')).toContain('Bearer access-token');
 
 	await page.evaluate((storedSession) => {
-		window.localStorage.setItem('deltanet.session', JSON.stringify(storedSession));
+		window.localStorage.setItem('headwater.session', JSON.stringify(storedSession));
 	}, nextSession);
 	await page.getByRole('link', { name: 'Explore' }).first().click();
 	await expect(page).toHaveURL('/app/explore');
@@ -1838,7 +1838,7 @@ test('home timeline shows reply pill from metadata when the body has no leading 
 	await expect(post.locator('.post-pinged-also')).toHaveCount(0);
 });
 
-test('home timeline reply pill shows the chosen display name for deltanet mentions', async ({ page }) => {
+test('home timeline reply pill shows the chosen display name for Headwater mentions', async ({ page }) => {
 	await authenticate(page);
 	await mockHomeTimeline(page, async (route) => {
 		await fulfillHome(route, [
@@ -1857,10 +1857,10 @@ test('home timeline reply pill shows the chosen display name for deltanet mentio
 				mentions: [
 					{
 						id: 'carol-account',
-						url: 'https://pleroma.example/deltanet/contact/12',
+						url: 'https://pleroma.example/headwater/contact/12',
 						username: 'zbie604yz',
 						acct: 'zbie604yz@nine.testrun.org',
-						// deltanet's non-standard mention field: the chosen name.
+						// Headwater's non-standard mention field: the chosen name.
 						display_name: 'Carol Sparkle'
 					}
 				]
@@ -1925,7 +1925,7 @@ test('home timeline post menu copies raw post JSON for bug reports', async ({ pa
 			configurable: true,
 			value: {
 				writeText: async (text: string) => {
-					window.localStorage.setItem('deltanet.copied-post-json', text);
+					window.localStorage.setItem('headwater.copied-post-json', text);
 				}
 			}
 		});
@@ -1941,7 +1941,7 @@ test('home timeline post menu copies raw post JSON for bug reports', async ({ pa
 	await post.getByRole('button', { name: 'More post actions' }).click();
 	await post.getByRole('menuitem', { name: 'Copy post JSON' }).click();
 
-	const copied = await page.evaluate(() => window.localStorage.getItem('deltanet.copied-post-json'));
+	const copied = await page.evaluate(() => window.localStorage.getItem('headwater.copied-post-json'));
 	expect(copied).not.toBeNull();
 	expect(JSON.parse(copied ?? '')).toMatchObject({
 		id: 'status-1',
@@ -2503,8 +2503,8 @@ test('home timeline opens a user stream and queues streamed posts behind the ind
 	const list = page.getByTestId('home-timeline-list');
 	await expect(list).toContainText('stable existing post');
 	expect(await page.evaluate(() => {
-		const testWindow = window as typeof window & { __deltanetSockets?: Array<{ url: string }> };
-		return testWindow.__deltanetSockets?.[0]?.url;
+		const testWindow = window as typeof window & { __headwaterSockets?: Array<{ url: string }> };
+		return testWindow.__headwaterSockets?.[0]?.url;
 	})).toBe('wss://pleroma.example/api/v1/streaming/?stream=user&ticket=stream-ticket-1');
 
 	await emitStreamUpdate(page, statusWithText('status-stream', 'fresh streamed post'));
@@ -2519,8 +2519,8 @@ test('home timeline opens a user stream and queues streamed posts behind the ind
 	await page.getByRole('link', { name: 'Explore' }).first().click();
 	await expect(page.getByRole('heading', { name: 'Explore the network' })).toBeVisible();
 	expect(await page.evaluate(() => {
-		const testWindow = window as typeof window & { __deltanetSockets?: Array<{ closeCalled: boolean }> };
-		return testWindow.__deltanetSockets?.[0]?.closeCalled;
+		const testWindow = window as typeof window & { __headwaterSockets?: Array<{ closeCalled: boolean }> };
+		return testWindow.__headwaterSockets?.[0]?.closeCalled;
 	})).toBe(true);
 });
 
@@ -2550,7 +2550,7 @@ test('home timeline fallback backfills gaps behind streamed posts', async ({ pag
 
 	await emitStreamUpdate(page, statusWithText('status-3', 'streamed newest post'));
 	await expect(page.getByRole('button', { name: '1 new posts' })).toBeVisible();
-	await page.evaluate(() => window.dispatchEvent(new Event('deltanet:check-home-timeline')));
+	await page.evaluate(() => window.dispatchEvent(new Event('headwater:check-home-timeline')));
 	await expect.poll(() => requestedSinceIds).toEqual([null, 'status-1']);
 
 	await page.getByRole('button', { name: /\d+ new posts/ }).click();
@@ -2600,8 +2600,8 @@ test('home timeline stream errors run a fallback check without dropping loaded p
 	await page.getByRole('button', { name: '1 new posts' }).click();
 	await expect(list).toContainText('fresh post after stream error');
 	expect(await page.evaluate(() => {
-		const testWindow = window as typeof window & { __deltanetSockets?: Array<{ closeCalled: boolean }> };
-		return testWindow.__deltanetSockets?.[0]?.closeCalled;
+		const testWindow = window as typeof window & { __headwaterSockets?: Array<{ closeCalled: boolean }> };
+		return testWindow.__headwaterSockets?.[0]?.closeCalled;
 	})).toBe(true);
 });
 
@@ -2624,15 +2624,15 @@ test('home timeline ignores initial responses after leaving home while loading',
 	await page.getByRole('link', { name: 'Explore' }).first().click();
 	await expect(page.getByRole('heading', { name: 'Explore the network' })).toBeVisible();
 	const socketCountAfterNavigation = await page.evaluate(() => {
-		const testWindow = window as typeof window & { __deltanetSockets?: unknown[] };
-		return testWindow.__deltanetSockets?.length ?? 0;
+		const testWindow = window as typeof window & { __headwaterSockets?: unknown[] };
+		return testWindow.__headwaterSockets?.length ?? 0;
 	});
 
 	releaseRequest();
 	await expect.poll(() => responseFulfilled).toBe(true);
 	expect(await page.evaluate(() => {
-		const testWindow = window as typeof window & { __deltanetSockets?: unknown[] };
-		return testWindow.__deltanetSockets?.length ?? 0;
+		const testWindow = window as typeof window & { __headwaterSockets?: unknown[] };
+		return testWindow.__headwaterSockets?.length ?? 0;
 	})).toBe(socketCountAfterNavigation);
 });
 
@@ -2665,7 +2665,7 @@ test('home timeline empty-stream fallback refreshes without a stream-only cursor
 	const list = page.getByTestId('home-timeline-list');
 	await expect(list).toContainText('streamed empty newest post');
 
-	await page.evaluate(() => window.dispatchEvent(new Event('deltanet:check-home-timeline')));
+	await page.evaluate(() => window.dispatchEvent(new Event('headwater:check-home-timeline')));
 	await expect.poll(() => requestedSinceIds).toEqual([null, null]);
 	await expect(list).toContainText('missed empty gap post');
 	const renderedStatusIds = await page.locator('[data-status-id]').evaluateAll((nodes) => nodes.slice(0, 2).map((node) => node.getAttribute('data-status-id')));
@@ -2698,7 +2698,7 @@ test('home timeline fallback trigger shows new-post indicator, prepends on activ
 	const scrollBefore = await page.evaluate(() => window.scrollY);
 	expect(scrollBefore).toBeGreaterThan(0);
 
-	await page.evaluate(() => window.dispatchEvent(new Event('deltanet:check-home-timeline')));
+	await page.evaluate(() => window.dispatchEvent(new Event('headwater:check-home-timeline')));
 	const indicator = page.getByTestId('timeline-header-actions').getByRole('button', { name: '1 new posts' });
 	await expect(indicator).toBeVisible();
 	await expect(list).not.toContainText('fresh new post from fallback check');
@@ -2735,12 +2735,12 @@ test('home timeline new-post check errors keep the timeline usable and recover o
 	const list = page.getByTestId('home-timeline-list');
 	await expect(list).toContainText('stable existing post');
 
-	await page.evaluate(() => window.dispatchEvent(new Event('deltanet:check-home-timeline')));
+	await page.evaluate(() => window.dispatchEvent(new Event('headwater:check-home-timeline')));
 	await expect.poll(() => checkAttempts).toBe(1);
 	await expect(list).toContainText('stable existing post');
 	await expect(page.getByText('Pleroma server error')).toHaveCount(0);
 
-	await page.evaluate(() => window.dispatchEvent(new Event('deltanet:check-home-timeline')));
+	await page.evaluate(() => window.dispatchEvent(new Event('headwater:check-home-timeline')));
 	await expect(page.getByRole('button', { name: '1 new posts' })).toBeVisible();
 	await page.getByRole('button', { name: '1 new posts' }).click();
 	await expect(list).toContainText('fresh post after retry');
@@ -2776,14 +2776,14 @@ test('home timeline ignores auth errors from stale new-post checks after the ses
 	await page.evaluate(() => window.dispatchEvent(new Event('deltanet:check-home-timeline')));
 	await checkStarted;
 	await page.evaluate((storedSession) => {
-		window.localStorage.setItem('deltanet.session', JSON.stringify(storedSession));
+		window.localStorage.setItem('headwater.session', JSON.stringify(storedSession));
 	}, nextSession);
 	await page.getByRole('link', { name: 'Explore' }).first().click();
 	await expect(page.getByRole('heading', { name: 'Explore the network' })).toBeVisible();
 
 	releaseCheck();
 	await expect(page).toHaveURL('/app/explore');
-	expect(await page.evaluate(() => JSON.parse(window.localStorage.getItem('deltanet.session') ?? '{}').accessToken)).toBe('fresh-token');
+	expect(await page.evaluate(() => JSON.parse(window.localStorage.getItem('headwater.session') ?? '{}').accessToken)).toBe('fresh-token');
 });
 
 test('home timeline renders empty state from mocked API response', async ({ page }) => {
@@ -3265,7 +3265,7 @@ test('home timeline post menu copies the status link', async ({ page }) => {
 	await page.addInitScript(() => {
 		Object.defineProperty(navigator, 'clipboard', {
 			configurable: true,
-			value: { writeText: async (text: string) => { window.localStorage.setItem('deltanet.copied-link', text); } }
+			value: { writeText: async (text: string) => { window.localStorage.setItem('headwater.copied-link', text); } }
 		});
 	});
 	await mockHomeTimeline(page, async (route) => {
@@ -3280,7 +3280,7 @@ test('home timeline post menu copies the status link', async ({ page }) => {
 	await post.getByRole('menuitem', { name: 'Copy link to post' }).click();
 
 	await expect(page.getByTestId('post-control-toast')).toContainText('Link copied');
-	const copied = await page.evaluate(() => window.localStorage.getItem('deltanet.copied-link'));
+	const copied = await page.evaluate(() => window.localStorage.getItem('headwater.copied-link'));
 	expect(copied).toBe('https://pleroma.example/notice/status-link');
 });
 
@@ -3630,7 +3630,7 @@ test('home timeline post header renders auth name + petname chip for renamed con
 					// displayName prefers MY override (like core), so display_name
 					// arrives as the petname; auth_name carries their chosen name.
 					display_name: 'carol',
-					pleroma: { ...pleromaFixtures.account.pleroma, deltanet: { auth_name: 'Carol Sparkle', petname: 'carol' } }
+					pleroma: { ...pleromaFixtures.account.pleroma, headwater: { auth_name: 'Carol Sparkle', petname: 'carol' } }
 				}
 			}
 		]);
@@ -3663,7 +3663,7 @@ test('home timeline reply pill shows their name plus my petname chip', async ({ 
 				mentions: [
 					{
 						id: 'carol-account',
-						url: 'https://pleroma.example/deltanet/contact/12',
+						url: 'https://pleroma.example/headwater/contact/12',
 						username: 'zbie604yz',
 						acct: 'zbie604yz@nine.testrun.org',
 						display_name: 'carol',
@@ -3695,7 +3695,7 @@ test('body mention tokens render as names (petname-first) with the address as to
 				mentions: [
 					{
 						id: 'carol-account',
-						url: 'https://pleroma.example/deltanet/contact/12',
+						url: 'https://pleroma.example/headwater/contact/12',
 						username: 'zbie604yz',
 						acct: 'zbie604yz@nine.testrun.org',
 						display_name: 'carol',
@@ -3733,7 +3733,7 @@ test('composer autocomplete searches contacts and inserts a full-address mention
 				username: 'zbie604yz',
 				acct: 'zbie604yz@nine.testrun.org',
 				display_name: 'carol',
-				pleroma: { ...pleromaFixtures.account.pleroma, deltanet: { auth_name: 'Carol Sparkle', petname: 'carol' } }
+				pleroma: { ...pleromaFixtures.account.pleroma, headwater: { auth_name: 'Carol Sparkle', petname: 'carol' } }
 			}
 		]);
 	});
@@ -3773,7 +3773,7 @@ test('an unconfirmed-author status renders the unconfirmed chip', async ({ page 
 				pleroma: {
 					...pleromaFixtures.status.pleroma,
 					content: { 'text/plain': 'boosted stranger content' },
-					deltanet: { author_unconfirmed: true }
+					headwater: { author_unconfirmed: true }
 				}
 			},
 			{ ...statusWithText('status-confirmed', 'ordinary post') }

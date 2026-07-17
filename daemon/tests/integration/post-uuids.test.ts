@@ -18,7 +18,7 @@ import { parseWire, parseWireUuid } from '../../src/wire.js';
 /**
  * Acceptance topology from ../meta/issues/post-uuids.md, over real chatmail
  * (local podman relay by default, nine.testrun.org with
- * DELTANET_TEST_RELAY=testrun). This is the exact third-party case mid-based refs CANNOT
+ * HEADWATER_TEST_RELAY=testrun). This is the exact third-party case mid-based refs CANNOT
  * solve, and the reason for author-minted logical-post UUIDs (wire convention
  * v1):
  *

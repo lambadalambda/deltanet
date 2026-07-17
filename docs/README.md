@@ -1,4 +1,4 @@
-# deltanet docs
+# Headwater docs
 
 - [decisions.md](decisions.md) — standing design decisions (0001: hard cut from vanilla
   Delta Chat compatibility, wire v2 = JSON bodies; 0002: no synthesized
@@ -10,7 +10,7 @@
   core@v2.53.0.
 - [federation-comparison.md](federation-comparison.md) — the exploration:
   chatmail federation vs the fediverse — matches, clashes, UX
-  consequences, and what deltanet can do that ActivityPub can't.
+  consequences, and what Headwater can do that ActivityPub can't.
 
 - [design-sketches.md](design-sketches.md) — design rationale and current
   status for channel-based visibility, directory ideas, verifiable reaction

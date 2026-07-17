@@ -1,6 +1,6 @@
 export * from './auth';
 export * from './client';
-export * from './deltanet';
+export * from './headwater';
 export * from './fixtures';
 export * from './http';
 export * from './oauth';

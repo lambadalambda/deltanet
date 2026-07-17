@@ -2,7 +2,12 @@ import { existsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { serve, upgradeWebSocket } from '@hono/node-server';
 import { WebSocketServer } from 'ws';
-import { readAccounts, writeAccount } from './config.js';
+import {
+  readAccounts,
+  resolveDaemonConfig,
+  resolveDataFilePath,
+  writeAccount,
+} from './config.js';
 import { createApp, type AppContext } from './server.js';
 import { registerAccount } from './signup.js';
 import {
@@ -42,20 +47,15 @@ import { createPreparedRestore } from './restore-lifecycle.js';
 import { acquireProcessLifetimeInterprocessLock } from './interprocess-lock.js';
 
 const { hostname: HOSTNAME, port: PORT } = resolveListenerConfig(process.env);
-const ACCOUNT = process.env['DELTANET_ACCOUNT'] ?? 'main';
-const DATA_DIR = process.env['DELTANET_DATA'] ?? `data/${ACCOUNT}`;
-const BASE_URL = process.env['DELTANET_BASE_URL'] ?? `http://localhost:${PORT}`;
-const ACCOUNTS_FILE = process.env['DELTANET_ACCOUNTS'] ?? 'accounts.local.json';
-const AUTH_FILE = process.env['DELTANET_AUTH'] ?? `${DATA_DIR}.auth.json`;
-const ALLOWED_ORIGINS = (process.env['DELTANET_ALLOWED_ORIGINS'] ?? '')
-  .split(',')
-  .map((origin) => origin.trim())
-  .filter(Boolean);
-const SIGNUP_RELAYS = (process.env['DELTANET_SIGNUP_RELAYS'] ?? '')
-  .split(',')
-  .map((relay) => relay.trim())
-  .filter(Boolean);
-const STATIC_DIR_CONFIG = process.env['DELTANET_STATIC'] ?? '../frontend/build';
+const daemonConfig = resolveDaemonConfig(process.env, PORT);
+const ACCOUNT = daemonConfig.account;
+const DATA_DIR = daemonConfig.dataDir;
+const BASE_URL = daemonConfig.baseUrl;
+const ACCOUNTS_FILE = daemonConfig.accountsFile;
+const AUTH_FILE = daemonConfig.authFile;
+const ALLOWED_ORIGINS = daemonConfig.allowedOrigins;
+const SIGNUP_RELAYS = daemonConfig.signupRelays;
+const STATIC_DIR_CONFIG = daemonConfig.staticDir;
 const STATIC_DIR = resolve(process.cwd(), STATIC_DIR_CONFIG);
 const DATA_PATH = resolve(process.cwd(), DATA_DIR);
 const ACCOUNTS_PATH = resolve(process.cwd(), ACCOUNTS_FILE);
@@ -70,10 +70,14 @@ acquireProcessLifetimeInterprocessLock(DAEMON_LOCK);
 // credentials, or Delta Chat transport.
 recoverInterruptedSidecarRestore(RESTORE_JOURNAL);
 
-// One deltanet wire-convention store per account data dir, shared between
+// One Headwater wire-convention store per account data dir, shared between
 // the transport's ingestion hook (timeline loads + IncomingMsg events) and
 // the API layer's mapping/context assembly.
-const store = createStore(join(DATA_PATH, 'deltanet-store.json'), { lockPath: DAEMON_LOCK });
+const store = createStore(resolveDataFilePath(
+  DATA_PATH,
+  'headwater-store.json',
+  'deltanet-store.json',
+), { lockPath: DAEMON_LOCK });
 const auth = createAuthStore(AUTH_FILE);
 
 // Streaming websocket hub (see ./streaming.ts) + the same status/notification
@@ -84,7 +88,7 @@ const hub = createStreamingHub();
 const mapper = createStatusMapper(store, BASE_URL, {
   blobUrl: (msgId) => {
     const signed = auth.signBlobPath(msgId);
-    const url = new URL(`/deltanet/blob/${msgId}`, BASE_URL);
+    const url = new URL(`/headwater/blob/${msgId}`, BASE_URL);
     url.searchParams.set('expires', String(signed.expires));
     url.searchParams.set('signature', signed.signature);
     return url.toString();
@@ -380,7 +384,7 @@ const notifyFollower = async (contactId: number) => {
 const creds = readAccounts(ACCOUNTS_PATH)[ACCOUNT];
 const printEnrollmentCode = () => {
   const enrollment = auth.createEnrollmentCode();
-  console.log(`deltanet: one-time frontend enrollment code (10 minutes): ${enrollment.code}`);
+  console.log(`Headwater: one-time frontend enrollment code (10 minutes): ${enrollment.code}`);
 };
 auth.bindAccount(creds?.addr ?? null);
 printEnrollmentCode();
@@ -398,7 +402,7 @@ if (creds) {
   void flushBackfiller();
 } else {
   console.log(
-    `no account "${ACCOUNT}" configured yet — POST /api/deltanet/signup to create one`,
+    `no account "${ACCOUNT}" configured yet; POST /api/headwater/signup to create one`,
   );
 }
 
@@ -474,4 +478,4 @@ const app = createApp(ctx, {
 // `@hono/node-server/ws`/`createNodeWebSocket` API.
 const wss = new WebSocketServer({ noServer: true });
 serve({ fetch: app.fetch, hostname: HOSTNAME, port: PORT, websocket: { server: wss } });
-console.log(`deltanet: mastodon api on ${BASE_URL} (listening on ${HOSTNAME}:${PORT})`);
+console.log(`Headwater: Mastodon API on ${BASE_URL} (listening on ${HOSTNAME}:${PORT})`);

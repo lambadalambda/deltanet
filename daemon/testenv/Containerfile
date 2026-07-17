@@ -1,4 +1,4 @@
-# Ephemeral chatmail relay for DeltaNet integration tests.
+# Ephemeral chatmail relay for Headwater integration tests.
 #
 # Builds a real github.com/chatmail/relay via its own `cmdeploy` tool on a
 # Debian 12 + systemd base. Structure mirrors the upstream chatmail/docker

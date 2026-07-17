@@ -13,7 +13,7 @@ const session = {
 
 const authenticate = async (page: Page) => {
 	await page.addInitScript((storedSession) => {
-		window.localStorage.setItem('deltanet.session', JSON.stringify(storedSession));
+		window.localStorage.setItem('headwater.session', JSON.stringify(storedSession));
 	}, session);
 };
 
@@ -24,7 +24,7 @@ const mockHomeTimeline = async (page: Page) => {
 };
 
 const mockInvite = async (page: Page, invite = 'https://i.delta.chat/#abc123') => {
-	await page.route('https://pleroma.example/api/deltanet/invite', async (route) => {
+	await page.route('https://pleroma.example/api/headwater/invite', async (route) => {
 		expect(route.request().headers().authorization).toBe('Bearer access-token');
 		await fulfillJson(route, { invite });
 	});
@@ -56,7 +56,7 @@ test('share-your-feed card shows the invite link and copies it to the clipboard'
 test('share-your-feed card surfaces a failure state when the invite cannot be loaded', async ({ page }) => {
 	await authenticate(page);
 	await mockHomeTimeline(page);
-	await page.route('https://pleroma.example/api/deltanet/invite', async (route) => {
+	await page.route('https://pleroma.example/api/headwater/invite', async (route) => {
 		await fulfillJson(route, { error: 'not configured' }, 500);
 	});
 	await setViewport(page, 'desktop');
@@ -73,12 +73,12 @@ test('header search detects a feed invite link and offers to follow it', async (
 	await page.goto('/app/home');
 
 	let followBody: unknown;
-	await page.route('https://pleroma.example/api/deltanet/follow', async (route) => {
+	await page.route('https://pleroma.example/api/headwater/follow', async (route) => {
 		followBody = JSON.parse(route.request().postData() ?? '{}');
 		await fulfillJson(route, { chat_id: 42 });
 	});
 
-	const searchInput = page.getByRole('combobox', { name: 'Search DeltaNet' });
+	const searchInput = page.getByRole('combobox', { name: 'Search Headwater' });
 	await searchInput.fill('https://i.delta.chat/#invite-token');
 
 	const dropdown = page.getByTestId('header-search-dropdown');
@@ -95,11 +95,11 @@ test('header search detects an OPENPGP4FPR invite and surfaces a follow failure 
 	await setViewport(page, 'desktop');
 	await page.goto('/app/home');
 
-	await page.route('https://pleroma.example/api/deltanet/follow', async (route) => {
+	await page.route('https://pleroma.example/api/headwater/follow', async (route) => {
 		await fulfillJson(route, { error: 'invalid invite' }, 422);
 	});
 
-	const searchInput = page.getByRole('combobox', { name: 'Search DeltaNet' });
+	const searchInput = page.getByRole('combobox', { name: 'Search Headwater' });
 	await searchInput.fill('OPENPGP4FPR:deadbeef#a=example.org&n=Someone');
 
 	const dropdown = page.getByTestId('header-search-dropdown');
@@ -113,7 +113,7 @@ test('the followers-only invite is hidden behind an explicit reveal with a shari
 	await authenticate(page);
 	await mockHomeTimeline(page);
 	await mockInvite(page);
-	await page.route('https://pleroma.example/api/deltanet/invite?channel=locked', async (route) => {
+	await page.route('https://pleroma.example/api/headwater/invite?channel=locked', async (route) => {
 		await fulfillJson(route, { invite: 'https://i.delta.chat/#locked456' });
 	});
 	await setViewport(page, 'desktop');

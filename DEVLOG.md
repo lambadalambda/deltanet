@@ -1,4 +1,40 @@
-# deltanet devlog
+# Headwater devlog
+
+DeltaNet-era entries retained after the current entry preserve the former name
+and deployed identifiers as written. They document implementation history, not
+current naming.
+
+## 2026-07-17 - Headwater rebrand and migration compatibility
+
+The product is now Headwater. Repository metadata, active documentation,
+commands, API examples, capability contracts, and current issues prefer
+Headwater names (`meta/issues/rebrand-headwater.md`):
+
+- Fresh configuration uses `HEADWATER_*`; APIs and resources use
+  `/api/headwater/*` and `/headwater/*`; JSON metadata uses
+  `configuration.headwater` and `pleroma.headwater`.
+- Fresh durable files are `headwater-store.json` and
+  `headwater-signing-key.json`, while backup downloads use a Headwater filename.
+- Migration is deliberately non-destructive. Deployed DeltaNet-era environment
+  names, routes, JSON namespaces, browser/core keys, auth hash domains, and state
+  filenames remain legacy fallbacks or mirrors. Existing old-named state is
+  reused in place so startup cannot mint a replacement feed or signing identity.
+- The `.dnbk` extension and `DNBK1`, `dn: 2`, `dn2`, and `dn3` bytes remain
+  immutable legacy format/protocol identifiers. Old backups restore and signed
+  history continues to verify; these identifiers are not rebranded on disk or
+  wire.
+- Delta Chat and upstream package/transport names are unchanged. The checkout
+  directory and remote still use the former repository slug and require a
+  coordinated external rename after the source-tree migration.
+- State-file selection now treats only `ENOENT` as absence, so permission or I/O
+  failures cannot silently select a fresh store or signing identity. Delta Chat
+  compatibility writes persist the rollback-readable legacy key before the
+  preferred alias, and browser auth/notification state keeps rollback mirrors.
+- The supplied Headwater mark is integrated as a shared SVG and favicon and was
+  rendered at desktop and mobile breakpoints. Final verification passed 1,518
+  daemon unit tests, 353 frontend Playwright tests, TypeScript/Svelte checks, the
+  production build, `git diff --check`, and all 18 real-relay integration
+  scenarios. Independent final review found no remaining concrete regressions.
 
 ## 2026-07-11 - unified Node and pnpm toolchain
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Manage the ephemeral chatmail relay container for DeltaNet integration tests.
+# Manage the ephemeral chatmail relay container for Headwater integration tests.
 #
 #   relay.sh build   build the image (idempotent; podman layer cache)
 #   relay.sh up      (re)start a fresh relay, wait until healthy, print exports
@@ -11,22 +11,22 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-IMAGE="${DELTANET_RELAY_IMAGE:-deltanet-test-relay:latest}"
-CONTAINER="${DELTANET_RELAY_CONTAINER:-deltanet-test-relay}"
-MAIL_DOMAIN="${DELTANET_RELAY_MAIL_DOMAIN:-_chatmail.example}"
+IMAGE="${HEADWATER_RELAY_IMAGE:-${DELTANET_RELAY_IMAGE:-headwater-test-relay:latest}}"
+CONTAINER="${HEADWATER_RELAY_CONTAINER:-${DELTANET_RELAY_CONTAINER:-headwater-test-relay}}"
+MAIL_DOMAIN="${HEADWATER_RELAY_MAIL_DOMAIN:-${DELTANET_RELAY_MAIL_DOMAIN:-_chatmail.example}}"
 
 # Published host ports (localhost only). Non-privileged so no root needed.
-HOST="${DELTANET_TEST_RELAY_HOST:-127.0.0.1}"
-HTTPS_PORT="${DELTANET_TEST_RELAY_HTTPS_PORT:-8443}"
-IMAPS_PORT="${DELTANET_TEST_RELAY_IMAPS_PORT:-9993}"
-SMTPS_PORT="${DELTANET_TEST_RELAY_SMTPS_PORT:-9465}"
+HOST="${HEADWATER_TEST_RELAY_HOST:-${DELTANET_TEST_RELAY_HOST:-127.0.0.1}}"
+HTTPS_PORT="${HEADWATER_TEST_RELAY_HTTPS_PORT:-${DELTANET_TEST_RELAY_HTTPS_PORT:-8443}}"
+IMAPS_PORT="${HEADWATER_TEST_RELAY_IMAPS_PORT:-${DELTANET_TEST_RELAY_IMAPS_PORT:-9993}}"
+SMTPS_PORT="${HEADWATER_TEST_RELAY_SMTPS_PORT:-${DELTANET_TEST_RELAY_SMTPS_PORT:-9465}}"
 
 # Container-internal ports (chatmail defaults).
 C_HTTPS=443
 C_IMAPS=993
 C_SMTPS=465
 
-READY_TIMEOUT="${DELTANET_RELAY_READY_TIMEOUT:-300}"
+READY_TIMEOUT="${HEADWATER_RELAY_READY_TIMEOUT:-${DELTANET_RELAY_READY_TIMEOUT:-300}}"
 
 log() { echo "[relay.sh] $*" >&2; }
 
@@ -86,6 +86,11 @@ wait_ready() {
 
 print_exports() {
     cat <<EOF
+export HEADWATER_TEST_RELAY_URL=https://${HOST}:${HTTPS_PORT}
+export HEADWATER_TEST_RELAY_HOST=${HOST}
+export HEADWATER_TEST_RELAY_HTTPS_PORT=${HTTPS_PORT}
+export HEADWATER_TEST_RELAY_IMAPS_PORT=${IMAPS_PORT}
+export HEADWATER_TEST_RELAY_SMTPS_PORT=${SMTPS_PORT}
 export DELTANET_TEST_RELAY_URL=https://${HOST}:${HTTPS_PORT}
 export DELTANET_TEST_RELAY_HOST=${HOST}
 export DELTANET_TEST_RELAY_HTTPS_PORT=${HTTPS_PORT}

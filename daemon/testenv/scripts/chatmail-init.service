@@ -1,5 +1,5 @@
 [Unit]
-Description=DeltaNet test relay first-boot setup (cmdeploy configure+activate)
+Description=Headwater test relay first-boot setup (cmdeploy configure+activate)
 After=multi-user.target
 ConditionPathExists=/chatmail-init.sh
 

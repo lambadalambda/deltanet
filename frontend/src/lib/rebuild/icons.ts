@@ -1,6 +1,5 @@
 export const iconNames = [
 	'spark',
-	'sparkBig',
 	'search',
 	'bell',
 	'home',
@@ -69,14 +68,6 @@ export const icons: Record<IconName, IconDefinition> = {
 		fill: 'none',
 		nodes: [
 			{ tag: 'path', d: 'M12 2v6M12 16v6M2 12h6M16 12h6M5 5l4 4M15 15l4 4M19 5l-4 4M9 15l-4 4', stroke: 'currentColor', strokeWidth: '1.4', strokeLinecap: 'round' }
-		]
-	},
-	sparkBig: {
-		viewBox: '0 0 32 32',
-		fill: 'none',
-		nodes: [
-			{ tag: 'path', d: 'M16 3v9M16 20v9M3 16h9M20 16h9M7 7l5 5M20 20l5 5M25 7l-5 5M12 20l-5 5', stroke: '#dcd1f0', strokeWidth: '1.4', strokeLinecap: 'round' },
-			{ tag: 'circle', cx: '16', cy: '16', r: '2', fill: '#dcd1f0' }
 		]
 	},
 	search: {

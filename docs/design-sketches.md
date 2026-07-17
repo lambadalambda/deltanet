@@ -24,7 +24,7 @@ multi-use (with withdraw/revive support in core). So:
   followers to manage two contacts.
 
 Discovery ("announce the invite somewhere") = a **directory node**: a
-well-known deltanet account that auto-grants follows, accepts listing
+well-known Headwater account that auto-grants follows, accepts listing
 submissions as DMs (profile card + public-channel invite), republishes the
 directory as a feed — and, being an ordinary server, can also serve an
 HTTPS listing site (web presence without violating the relay's
@@ -126,8 +126,8 @@ budget), not a free outbox read like AP.
 > sidecar. Kept for the carrier analysis.
 
 Posts stay human-readable text (the vanilla-Delta-Chat interop property is
-load-bearing: followers don't need deltanet, and every post degrades to a
-legible message). But line-grammar markers don't scale to polls, CWs, alt
+load-bearing: followers don't need the original client, and every post degrades
+to a legible message). But line-grammar markers don't scale to polls, CWs, alt
 text, receipts, thread directives — so add ONE versioned JSON envelope
 alongside the text rather than converting bodies:
 
@@ -136,8 +136,9 @@ alongside the text rather than converting bodies:
 - Carrier considered and deferred: `MessageData.html`
   (multipart/alternative — invisible to vanilla users, but HTML messages
   cannot be edited via Chat-Edit, and "show full message" chrome).
-- Carrier endgame: a protected header (`Chat-Deltanet:`-style), pending
-  upstream RPC support for custom headers — idiomatic per chatmail spec.
+- Carrier endgame: a protected header (historically proposed with the
+  former-name `Chat-Deltanet:` spelling), pending upstream RPC support for
+  custom headers — idiomatic per chatmail spec.
 
 Schema discipline regardless of carrier: version field, unknown fields
 must-ignore, keys never repurposed — so moving carriers is a transport
@@ -155,7 +156,7 @@ but republished content (boost embeds and thread-channel republication) was
 only attested by the republisher, so a host could fabricate or alter an embed.
 No RPC path exists to carry the original PGP signature along.
 
-The implemented DeltaNet-layer fix, enabled by wire v2 (decision 0001), uses a
+The implemented Headwater-layer fix, enabled by wire v2 (decision 0001), uses a
 daemon-held per-account ed25519 signing key. Every post envelope carries
 `{pubkey, sig}` over canonical fields (uuid, author addr, text, refs,
 timestamp and media hash). Republished posts become offline-verifiable by anyone

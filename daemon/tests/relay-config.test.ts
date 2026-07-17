@@ -8,13 +8,28 @@ import {
 import { buildEnteredLoginParam } from '../src/transport/deltachat.js';
 
 describe('resolveTestRelayConfig', () => {
-  it('uses the testrun.org autoconfig path when DELTANET_TEST_RELAY=testrun', () => {
-    const cfg = resolveTestRelayConfig({ DELTANET_TEST_RELAY: 'testrun' });
+  it('prefers HEADWATER relay variables over DELTANET fallbacks', () => {
+    const cfg = resolveTestRelayConfig({
+      HEADWATER_TEST_RELAY_URL: 'https://headwater.local:8443',
+      DELTANET_TEST_RELAY_URL: 'https://legacy.local:8443',
+      HEADWATER_TEST_RELAY_HOST: 'headwater.local',
+      DELTANET_TEST_RELAY_HOST: 'legacy.local',
+    });
+    expect(cfg.relayUrl).toBe('https://headwater.local:8443');
+    expect(cfg.transportParams?.imapHost).toBe('headwater.local');
+  });
+
+  it('uses the testrun.org autoconfig path when HEADWATER_TEST_RELAY=testrun', () => {
+    const cfg = resolveTestRelayConfig({ HEADWATER_TEST_RELAY: 'testrun' });
     expect(cfg).toEqual({
       relayUrl: 'https://nine.testrun.org',
       transportParams: null,
       isTestrun: true,
     });
+  });
+
+  it('retains DELTANET_TEST_RELAY as a legacy fallback', () => {
+    expect(resolveTestRelayConfig({ DELTANET_TEST_RELAY: 'testrun' }).isTestrun).toBe(true);
   });
 
   it('defaults to a local relay with explicit params and cert acceptance', () => {

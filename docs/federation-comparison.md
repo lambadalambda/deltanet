@@ -3,7 +3,7 @@
 An extended exploration: where email-substrate federation matches
 ActivityPub-style federation, where it clashes, what UX has to change, and
 what becomes possible that the fediverse can't do. Written after building
-and QA-ing deltanet v0 (2026-07-06); hard facts in
+and QA-ing the former DeltaNet v0 (2026-07-06); hard facts in
 [substrate-audit.md](substrate-audit.md). Nothing here is a work order —
 it's the map.
 
@@ -23,13 +23,13 @@ by default). Everything below is a consequence of that inversion.
   follows: they are mutual key verifications, so every follow edge doubles as
   an authenticated channel (which reply and reaction control DMs then reuse).
 - **Store-and-forward beats inbox-POST-with-retries.** An AP server must be
-  up to receive; a deltanet node can be a laptop. The relay holds undelivered
+  up to receive; a Headwater node can be a laptop. The relay holds undelivered
   mail for up to 20 days (7 days over 200 KiB, also subject to quota eviction).
   Push via IMAP IDLE gives ~seconds end-to-end latency — our streaming UI
   measures ~6s post-to-render across nodes.
 - **The substrate has strong deletion/edit primitives.** `Chat-Delete` and
   `Chat-Edit` propagate to recipients and compliant clients honor them; we use
-  deletion narrowly for operations such as cross-node unboost. DeltaNet status
+  deletion narrowly for operations such as cross-node unboost. Headwater status
   editing and federated status retraction/tombstones are not implemented yet,
   and must account for embeds, backfill, and recipients retaining prior bytes.
 - **Fan-out economics are fine at human scale.** One post = one body
@@ -52,7 +52,7 @@ The deepest clash. Outbound cleartext is **impossible** on chatmail relays
 crawler or link-preview target, and no portable "look at this thread" URL for
 a non-user. A running node can expose sanitized anonymous projections of the
 content it locally holds, but that is the node's view rather than a global
-object. "Public" in DeltaNet means *anyone may subscribe without approval* —
+object. "Public" in Headwater means *anyone may subscribe without approval* —
 subscription-scoped visibility, not world-readable documents.
 Our early idea of a plaintext mailing-list + public-inbox web archive
 cannot run on chatmail infrastructure; it would need a classic mail host
@@ -79,7 +79,7 @@ affordance is capped at the 10-message join backfill.
 bios, QR codes, directories; search must be reframed as "resolve" (address
 or invite in, profile out); profile pages of remote users are inherently
 sparse until you've followed them a while. A community-run directory (a
-deltanet node that aggregates opt-in profile cards and serves them as a
+Headwater node that aggregates opt-in profile cards and serves them as a
 feed) is the natural, substrate-compatible answer.
 
 ### 3.3 Interaction visibility is point-to-point
@@ -88,7 +88,7 @@ Reactions and reply-notifications travel as DMs to the author. Counts are
 authoritative **only on the author's node**; a follower sees a post's true
 reply count only for replies that also traveled the feed. The fediverse has
 a soft version of this problem (remote counts are routinely wrong) but
-deltanet has it structurally. Fixable-by-convention: the author's node
+Headwater has it structurally. Fixable-by-convention: the author's node
 could periodically gossip tally digests into the feed ("reaction gossip"),
 trading a little feed noise for eventually-consistent counts.
 
@@ -96,16 +96,19 @@ trading a little feed noise for eventually-consistent counts.
 
 Up to 20-day retention (7 days over 200 KiB), 500 MB quota, oldest-first
 eviction. Durable state is client-side: the Delta Chat database holds mail
-history and the OpenPGP identity; `deltanet-store.json` holds non-derivable
-protocol state; and `deltanet-signing-key.json` holds the attestation identity.
-Fediverse instances are archives; a DeltaNet node that loses its disk without a
+history and the OpenPGP identity; `headwater-store.json` holds non-derivable
+protocol state; and `headwater-signing-key.json` holds the attestation identity.
+Migrated nodes deliberately keep using existing legacy `deltanet-store.json`
+and `deltanet-signing-key.json` files to avoid splitting identity or state.
+Fediverse instances are archives; a Headwater node that loses its disk without a
 backup is gone as an identity, not just as data. A node that merely sleeps 90
 days loses its relay account entirely.
 
-**Current UX:** encrypted `.dnbk` export/restore preserves core identity,
-history, the DeltaNet store, and the attestation key, and onboarding warns
+**Current UX:** encrypted backup/restore preserves core identity, history, the
+Headwater store, and the attestation key. The legacy-compatible `.dnbk`
+extension and `DNBK1` marker remain readable, and onboarding warns
 about 90-day expiry. Live device-to-device transfer remains open because
-core's transfer does not carry DeltaNet's signing-key/store sidecar; see
+core's transfer does not carry Headwater's signing-key/store sidecar; see
 `meta/issues/second-device-pairing.md`.
 
 ### 3.5 Identity is a key, and keys are sharp
@@ -133,11 +136,11 @@ collective moderation here.
 
 Chatmail has a real spec (spec.md) with header-based conventions: reactions
 are RFC 9078, edits/deletes are Chat-* headers, all inside protected headers.
-DeltaNet now emits signed structured JSON bodies (wire v2); the original
+Headwater now emits signed structured JSON bodies (wire v2); the original
 `↳re`/`♻`/`⚑` text grammar remains read-side only for historical data.
-Reaction control DMs remain a parallel DeltaNet convention because read-only
+Reaction control DMs remain a parallel Headwater convention because read-only
 channels block members' native reactions and JSON-RPC cannot set custom
-headers. If DeltaNet's convention becomes a spec others implement, the
+headers. If Headwater's convention becomes a spec others implement, the
 idiomatic end state is Chat-*-style protected headers, which requires an
 upstream core RPC. Vanilla-client rendering is not a current product goal,
 but protected headers would still improve protocol composition and integrity.
@@ -149,7 +152,7 @@ changed and old channels broke. Our feed primitive is the least-stable
 part of core, and there's no spec for it yet. Pin core versions
 deliberately; expect migrations.
 
-## 4. What deltanet can do that the fediverse can't
+## 4. What Headwater can do that the fediverse can't
 
 - **E2EE social by default.** Followers-only means *cryptographically*
   followers-only. No instance admin reads your posts; a subpoena to the
@@ -159,9 +162,9 @@ deliberately; expect migrations.
   queue at the relay; the node catches up on wake (our backfill handles
   ingestion). No fediverse software survives its server sleeping.
 - **Messenger substrate.** *(Vanilla-client rendering compatibility was retired
-  by decision 0001.)* DeltaNet and Delta Chat still share encrypted mail,
+  by decision 0001.)* Headwater and Delta Chat still share encrypted mail,
   securejoin, channels, chats, and store-and-forward transport, but wire-v2
-  social content is DeltaNet-specific and is not promised to render usefully in
+  social content is Headwater-specific and is not promised to render usefully in
   a vanilla client. Future human chats use the same transport rather than a
   bolted-on messaging service.
 - **Posts that are programs (webxdc).** A sandboxed HTML app as a post,
@@ -169,7 +172,7 @@ deliberately; expect migrations.
   optional sub-second P2P realtime channel (iroh, 128 KB msgs, no server).
   Concretely: real polls (not Mastodon's fake-consistency polls),
   collaborative posts, embedded games, live blogs, presence. This is the
-  single biggest capability gap *in deltanet's favor* — nothing in
+  single biggest capability gap *in Headwater's favor* — nothing in
   ActivityPub is even shaped like it. Caveat: webxdc doesn't ride the
   join backfill, so app-posts are invisible to brand-new followers until
   they receive an update.

@@ -20,7 +20,7 @@ const bodyOf = (m: T.Message): string => parseWire(m.text).body;
 /**
  * QA scenario from ../meta/issues/canonical-mid-unification.md acceptance
  * criteria, over real chatmail (local podman relay by default,
- * nine.testrun.org with DELTANET_TEST_RELAY=testrun):
+ * nine.testrun.org with HEADWATER_TEST_RELAY=testrun):
  *
  *   B follows A (A does NOT follow back). A posts; B replies; A reacts ❤ and
  *   replies to B's reply — but A only ever holds the DM copy of B's reply (A

@@ -2,7 +2,8 @@
 
 ## Summary
 
-Define poll creation and voting over the DeltaNet transport before enabling poll controls.
+Define poll creation and voting over the Headwater transport before enabling
+poll controls.
 
 ## Requirements
 

@@ -16,7 +16,7 @@ const authenticate = async (page: Page) => {
 	await mockRightRailApis(page);
 	await page.route('https://pleroma.example/api/v1/notifications**', async (route) => fulfillJson(route, []));
 	await page.addInitScript((storedSession) => {
-		window.localStorage.setItem('deltanet.session', JSON.stringify(storedSession));
+		window.localStorage.setItem('headwater.session', JSON.stringify(storedSession));
 	}, session);
 };
 

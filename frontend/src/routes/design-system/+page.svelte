@@ -8,6 +8,7 @@
 	import ComposerPollPanel from '$lib/rebuild/ComposerPollPanel.svelte';
 	import FocusedPost from '$lib/rebuild/FocusedPost.svelte';
 	import Icon from '$lib/rebuild/Icon.svelte';
+	import HeadwaterLogo from '$lib/rebuild/HeadwaterLogo.svelte';
 	import InlineReplyComposer, { type InlineReplyComposerProps } from '$lib/rebuild/InlineReplyComposer.svelte';
 	import Pill from '$lib/rebuild/Pill.svelte';
 	import Post from '$lib/rebuild/Post.svelte';
@@ -185,7 +186,7 @@
 	const typeRows: TypeRow[] = [
 		{ family: 'var(--serif)', sample: 'Soft hertz, slow web', meta: '--serif · Cormorant Garamond · headings, brand wordmark' },
 		{ family: 'var(--sans)', sample: 'The quick brown fox jumps over the lazy dog.', meta: '--sans · Inter · body, UI' },
-		{ family: 'var(--mono)', sample: 'DELTANET / v2.4.58 / @dreambyte@deltanet.example', meta: '--mono · JetBrains Mono · captions, eyebrows, technical' }
+		{ family: 'var(--mono)', sample: 'HEADWATER / v2.4.58 / @dreambyte@headwater.example', meta: '--mono · JetBrains Mono · captions, eyebrows, technical' }
 	];
 	const SAMPLE_AUDIO_SRC = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA=';
 
@@ -248,7 +249,7 @@
 		{ shortcode: 'blobcat', url: 'samples/cat-door.webp', pack: 'blobcats' },
 		{ shortcode: 'blobfox', url: 'samples/cats-pair.webp', pack: 'blobcats' },
 		{ shortcode: 'blobmoon', url: 'samples/cat-bank.webp', pack: 'blobcats' },
-		{ shortcode: 'slowweb', url: 'samples/falco.png', pack: 'deltanet' }
+		{ shortcode: 'slowweb', url: 'samples/falco.png', pack: 'headwater' }
 	];
 	const DS_SHORTCODE_QUERY = 'bl';
 	const DS_SHORTCODE_EMOJI = DS_CUSTOM_EMOJI.filter((emoji) => emoji.shortcode.startsWith(DS_SHORTCODE_QUERY));
@@ -273,7 +274,7 @@
 	const PHOTOS3_POST: DemoPostData = {
 		...SAMPLE_POST, id: '3', name: 'sysadmin', handle: '@root@pleroma.social',
 		avClass: 'av-pc-old',
-		body: "Backup your data. Hug your cat. Update DeltaNet™.",
+		body: "Backup your data. Hug your cat. Update Headwater™.",
 		attachments: [
 			{ kind: 'photo', src: 'samples/cat-door.webp', alt: '' },
 			{ kind: 'photo', src: 'samples/cat-bank.webp', alt: '' },
@@ -293,7 +294,7 @@
 		attachments: [{ kind: 'audio', title: 'after the storm (demo)', byline: 'kestrel · live take · 2026', duration: '4:18', start: 0.28, cover: 'samples/encardia-99.png' }],
 	};
 	const BANNER_POST: DemoPostData = {
-		...SAMPLE_POST, id: '6', name: 'dreambyte', handle: '@dreambyte@deltanet.example',
+		...SAMPLE_POST, id: '6', name: 'dreambyte', handle: '@dreambyte@headwater.example',
 		avClass: '', avBanner: 'sunset',
 		body: "🤍",
 	};
@@ -346,7 +347,7 @@
 			...SAMPLE_POST,
 			id: 'focused',
 			fullTime: '4:18 PM · May 11, 2026',
-			source: 'DeltaNet™ Web',
+			source: 'Headwater™ Web',
 			views: '12.4K',
 			bookmarks: 24,
 		},
@@ -505,7 +506,7 @@
 </script>
 
 <svelte:head>
-	<title>DeltaNet · Design System</title>
+	<title>Headwater · Design System</title>
 </svelte:head>
 
 <AttachmentLightboxHost />
@@ -513,14 +514,9 @@
 	<header class="ds-header">
 		<div class="ds-header-l">
 			<div class="brand">
-				<div class="brand-mark" aria-hidden="true">
-					<svg viewBox="0 0 32 32" fill="none">
-						<path d="M16 3v9M16 20v9M3 16h9M20 16h9M7 7l5 5M20 20l5 5M25 7l-5 5M12 20l-5 5" stroke="#dcd1f0" stroke-width="1.4" stroke-linecap="round" />
-						<circle cx="16" cy="16" r="2" fill="#dcd1f0" />
-					</svg>
-				</div>
+				<div class="brand-mark"><HeadwaterLogo /></div>
 				<div>
-					<div class="brand-name ds-brand-title">DeltaNet<sup>™</sup></div>
+					<div class="brand-name ds-brand-title">Headwater<sup>™</sup></div>
 					<div class="ds-brand-subtitle">Design system · v2.4.58</div>
 				</div>
 			</div>
@@ -543,7 +539,7 @@
 					</button>
 				{/each}
 			</div>
-			<a class="ds-app-link" href="DeltaNet.html">Open app →</a>
+			<a class="ds-app-link" href="/app/home">Open app →</a>
 		</div>
 	</header>
 
@@ -777,7 +773,7 @@
 						<div class="ds-spec">
 							<div class="ds-spec-stage padded">
 								<select class="select">
-									<option>@deltanet.example</option>
+									<option>@headwater.example</option>
 									<option>@kolektiva.social</option>
 								</select>
 							</div>
@@ -790,7 +786,7 @@
 							<div class="ds-spec-stage padded">
 								<div class="split-row">
 									<input class="input" value="dreambyte" />
-									<select class="select"><option>@deltanet.example</option></select>
+									<select class="select"><option>@headwater.example</option></select>
 								</div>
 							</div>
 							<div class="ds-spec-foot">
@@ -2252,7 +2248,7 @@
 
 			<footer class="ds-foot">
 				<div>End of system · everything else is composed from what's above.</div>
-				<div>DeltaNet™ Design System · v2.4.58 · {new Date().getFullYear()}</div>
+				<div>Headwater™ Design System · v2.4.58 · {new Date().getFullYear()}</div>
 			</footer>
 		</main>
 	</div>
@@ -2288,16 +2284,16 @@
 	.brand-mark {
 		width: 48px;
 		height: 48px;
-		background: #1c2046;
 		border-radius: 4px;
+		overflow: hidden;
 		display: grid;
 		place-items: center;
 		flex-shrink: 0;
 	}
 
-	.brand-mark svg {
-		width: 30px;
-		height: 30px;
+	.brand-mark :global(svg) {
+		width: 100%;
+		height: 100%;
 	}
 
 	.brand-name {
@@ -2325,9 +2321,9 @@
 		height: 44px;
 	}
 
-	.ds-header .brand-mark svg {
-		width: 28px;
-		height: 28px;
+	.ds-header .brand-mark :global(svg) {
+		width: 100%;
+		height: 100%;
 	}
 
 	.ds-brand-title {
@@ -3003,16 +2999,16 @@
 	:global(.ds-mobile-app .brand-mark) {
 		width: 36px;
 		height: 36px;
-		background: #1c2046;
 		border-radius: 4px;
 		display: grid;
 		place-items: center;
 		flex-shrink: 0;
+		overflow: hidden;
 	}
 
 	:global(.ds-mobile-app .brand-mark svg) {
-		width: 22px;
-		height: 22px;
+		width: 100%;
+		height: 100%;
 	}
 
 	:global(.ds-mobile-feed) {

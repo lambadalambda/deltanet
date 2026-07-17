@@ -216,7 +216,7 @@
 			{/if}
 		{:else}
 			<div>
-				<div class="status-row"><span class="l">deltanet.example</span><Pill>All systems normal</Pill></div>
+				<div class="status-row"><span class="l">headwater.example</span><Pill>All systems normal</Pill></div>
 				<div class="status-row"><span class="l">Uptime</span><span class="r">30d 12h 42m</span></div>
 				<div class="status-row"><span class="l">Users</span><span class="r">2,487</span></div>
 			</div>
@@ -239,8 +239,8 @@
 	</div>
 {:else if kind === 'footer'}
 	<div class="card surface-card footer-card">
-		<div><span class="v">DELTANET™ 2.4.58</span></div>
-		<div class="footer-copy">© 2024 DeltaNet™ Contributors</div>
+		<div><span class="v">HEADWATER™ 2.4.58</span></div>
+		<div class="footer-copy">© 2024 Headwater™ Contributors</div>
 		<div class="footer-links">
 			<a href="#surfaces">Docs</a>
 			<span>·</span>
@@ -265,7 +265,7 @@
 		</div>
 		<div class="surface-preview-body">
 			<div class="surface-preview-name">dreambyte</div>
-			<div class="surface-preview-handle">@dreambyte@deltanet.example</div>
+			<div class="surface-preview-handle">@dreambyte@headwater.example</div>
 			<div class="surface-preview-bio">living in a soft world</div>
 			<div class="stat-row">
 				{#each profileStats as stat}

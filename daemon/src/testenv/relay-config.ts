@@ -4,9 +4,9 @@
  *
  * - `testrun` — the historical behavior: register accounts on the real
  *   production relay `nine.testrun.org` over autoconfig, no explicit
- *   transport params. Opt in with `DELTANET_TEST_RELAY=testrun`.
+ *   transport params. Opt in with `HEADWATER_TEST_RELAY=testrun`.
  * - local (the default) — a throwaway podman-hosted chatmail relay reachable
- *   at `DELTANET_TEST_RELAY_URL` (an `https://host:port` base). Transports use
+ *   at `HEADWATER_TEST_RELAY_URL` (an `https://host:port` base). Transports use
  *   explicit IMAP/SMTP host+port with self-signed-certificate acceptance, so
  *   no DNS autoconfig or valid TLS chain is needed.
  *
@@ -51,30 +51,35 @@ const toPort = (value: string | undefined, fallback: number): number => {
   return Number.isInteger(n) && n > 0 ? n : fallback;
 };
 
+const relayEnv = (env: Record<string, string | undefined>, name: string): string | undefined =>
+  env[`HEADWATER_${name}`] ?? env[`DELTANET_${name}`];
+
 /**
  * Resolve the relay config from an env-like record (defaults to `process.env`
  * shape). Recognized keys:
  *
- * - `DELTANET_TEST_RELAY` — `testrun` selects the real-network path.
- * - `DELTANET_TEST_RELAY_URL` — base URL for `POST /new` (local path).
- * - `DELTANET_TEST_RELAY_HOST` — host the transport connects to (IMAP/SMTP);
- *   defaults to the host of `DELTANET_TEST_RELAY_URL`, else `127.0.0.1`.
- * - `DELTANET_TEST_RELAY_IMAPS_PORT` / `_SMTPS_PORT` / `_HTTPS_PORT` — ports.
+ * - `HEADWATER_TEST_RELAY` — `testrun` selects the real-network path.
+ * - `HEADWATER_TEST_RELAY_URL` — base URL for `POST /new` (local path).
+ * - `HEADWATER_TEST_RELAY_HOST` — host the transport connects to (IMAP/SMTP);
+ *   defaults to the host of `HEADWATER_TEST_RELAY_URL`, else `127.0.0.1`.
+ * - `HEADWATER_TEST_RELAY_IMAPS_PORT` / `_SMTPS_PORT` / `_HTTPS_PORT` — ports.
+ * Legacy `DELTANET_*` forms remain fallbacks for deployed test automation.
  */
 export const resolveTestRelayConfig = (
   env: Record<string, string | undefined>,
 ): TestRelayConfig => {
-  if (env.DELTANET_TEST_RELAY === 'testrun') {
+  if (relayEnv(env, 'TEST_RELAY') === 'testrun') {
     return { relayUrl: TESTRUN_URL, transportParams: null, isTestrun: true };
   }
 
-  const httpsPort = toPort(env.DELTANET_TEST_RELAY_HTTPS_PORT, DEFAULT_HTTPS_PORT);
+  const httpsPort = toPort(relayEnv(env, 'TEST_RELAY_HTTPS_PORT'), DEFAULT_HTTPS_PORT);
+  const configuredRelayUrl = relayEnv(env, 'TEST_RELAY_URL');
   const relayUrl =
-    env.DELTANET_TEST_RELAY_URL && env.DELTANET_TEST_RELAY_URL.trim() !== ''
-      ? env.DELTANET_TEST_RELAY_URL
+    configuredRelayUrl && configuredRelayUrl.trim() !== ''
+      ? configuredRelayUrl
       : `https://${DEFAULT_LOCAL_HOST}:${httpsPort}`;
 
-  let host = env.DELTANET_TEST_RELAY_HOST;
+  let host = relayEnv(env, 'TEST_RELAY_HOST');
   if (!host || host.trim() === '') {
     try {
       host = new URL(relayUrl).hostname;
@@ -83,8 +88,8 @@ export const resolveTestRelayConfig = (
     }
   }
 
-  const imapPort = toPort(env.DELTANET_TEST_RELAY_IMAPS_PORT, DEFAULT_IMAPS_PORT);
-  const smtpPort = toPort(env.DELTANET_TEST_RELAY_SMTPS_PORT, DEFAULT_SMTPS_PORT);
+  const imapPort = toPort(relayEnv(env, 'TEST_RELAY_IMAPS_PORT'), DEFAULT_IMAPS_PORT);
+  const smtpPort = toPort(relayEnv(env, 'TEST_RELAY_SMTPS_PORT'), DEFAULT_SMTPS_PORT);
 
   return {
     relayUrl,

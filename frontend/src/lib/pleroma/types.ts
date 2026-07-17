@@ -16,6 +16,33 @@ export type PleromaCustomEmoji = {
 	[key: string]: unknown;
 };
 
+type HeadwaterAccountMetadata = {
+	auth_name?: string;
+	petname?: string;
+	[key: string]: unknown;
+};
+
+type HeadwaterStatusMetadata = {
+	placeholder?: 'boost' | 'boost-unverified';
+	ref?: { key: string; addr: string };
+	/** True iff this status is a thread root the user is subscribed to. */
+	thread_subscribed?: boolean;
+	/** Key confirmation: signature verified but NO pinned key for the author yet. */
+	author_unconfirmed?: boolean;
+};
+
+type HeadwaterCapabilities = {
+	bookmarks?: boolean;
+	status_deletion?: boolean;
+	account_moderation?: boolean;
+	media_description?: boolean;
+	chats?: boolean;
+	polls?: boolean;
+	unlisted_visibility?: boolean;
+	content_warnings?: boolean;
+	extended_profile?: boolean;
+};
+
 export type PleromaMediaAttachment = {
 	id: string;
 	type: string;
@@ -73,12 +100,10 @@ export type PleromaAccount = {
 		is_moderator?: boolean;
 		relationship?: PleromaRelationship;
 		tags?: string[];
-		/** deltanet petnames (meta/issues/petnames.md): their chosen name + my local override. */
-		deltanet?: {
-			auth_name?: string;
-			petname?: string;
-			[key: string]: unknown;
-		};
+		/** Headwater petnames: their chosen name + my local override. */
+		headwater?: HeadwaterAccountMetadata;
+		/** Legacy wire-format fallback for paired DeltaNet daemons. */
+		deltanet?: HeadwaterAccountMetadata;
 		[key: string]: unknown;
 	};
 	[key: string]: unknown;
@@ -123,15 +148,10 @@ export type PleromaStatus = {
 		quote_visible?: boolean;
 		quotes_count?: number;
 		spoiler_text?: Record<string, string>;
-		/** deltanet-specific markers (boost placeholder, thread subscription). */
-		deltanet?: {
-			placeholder?: 'boost' | 'boost-unverified';
-			ref?: { key: string; addr: string };
-			/** True iff this status is a thread root the user is subscribed to. */
-			thread_subscribed?: boolean;
-			/** Key confirmation: signature verified but NO pinned key for the author yet. */
-			author_unconfirmed?: boolean;
-		};
+		/** Headwater-specific markers (boost placeholder, thread subscription). */
+		headwater?: HeadwaterStatusMetadata;
+		/** Legacy wire-format fallback for paired DeltaNet daemons. */
+		deltanet?: HeadwaterStatusMetadata;
 		[key: string]: unknown;
 	};
 	reblog: PleromaStatus | null;
@@ -195,18 +215,13 @@ export type PleromaInstance = {
 			supported_mime_types?: string[];
 			[key: string]: unknown;
 		};
+		headwater?: {
+			capabilities?: HeadwaterCapabilities;
+			[key: string]: unknown;
+		};
+		/** Legacy configuration fallback for paired DeltaNet daemons. */
 		deltanet?: {
-			capabilities?: {
-				bookmarks?: boolean;
-				status_deletion?: boolean;
-				account_moderation?: boolean;
-				media_description?: boolean;
-				chats?: boolean;
-				polls?: boolean;
-				unlisted_visibility?: boolean;
-				content_warnings?: boolean;
-				extended_profile?: boolean;
-			};
+			capabilities?: HeadwaterCapabilities;
 			[key: string]: unknown;
 		};
 		[key: string]: unknown;

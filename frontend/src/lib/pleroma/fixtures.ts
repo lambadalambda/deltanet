@@ -242,8 +242,8 @@ export const pleromaFixtures = {
 	},
 	oauthApp: {
 		id: 'app-1',
-		name: 'DeltaNet',
-		website: 'https://deltanet.example',
+		name: 'Headwater',
+		website: 'https://headwater.example',
 		redirect_uri: 'http://localhost:4173/auth/callback',
 		client_id: 'client-id',
 		client_secret: 'client-secret',

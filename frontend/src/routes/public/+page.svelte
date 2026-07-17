@@ -132,14 +132,14 @@
 </script>
 
 <svelte:head>
-	<title>DeltaNet · Public Timeline</title>
+	<title>Headwater · Public Timeline</title>
 </svelte:head>
 
 <AttachmentLightboxHost />
 
 <main class="public-route-shell">
 	<section class="card public-panel">
-		<div class="app-page-kicker">DeltaNet public</div>
+		<div class="app-page-kicker">Headwater public</div>
 		<h1>Public timeline</h1>
 		<p>Read the public feed without signing in.</p>
 

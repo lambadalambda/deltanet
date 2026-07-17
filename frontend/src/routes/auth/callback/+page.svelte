@@ -88,7 +88,7 @@
 		} catch (error) {
 			callbackState = {
 				status: 'error',
-				message: error instanceof Error ? error.message : 'DeltaNet could not finish OAuth sign-in.'
+				message: error instanceof Error ? error.message : 'Headwater could not finish OAuth sign-in.'
 			};
 		}
 	};
@@ -99,7 +99,7 @@
 </script>
 
 <svelte:head>
-	<title>DeltaNet · OAuth Callback</title>
+	<title>Headwater · OAuth Callback</title>
 </svelte:head>
 
 <main class="auth-callback-page">
@@ -108,8 +108,8 @@
 			<div role="status" aria-label="Request status">Completing Pleroma authorization...</div>
 		{:else if callbackState.status === 'success'}
 			<h1>Signed in to {callbackState.instanceHost}</h1>
-			<p>DeltaNet stored an OAuth token from your server.</p>
-			<a class="auth-callback-link" href="/app/home">Open DeltaNet</a>
+			<p>Headwater stored an OAuth token from your server.</p>
+			<a class="auth-callback-link" href="/app/home">Open Headwater</a>
 		{:else if callbackState.status === 'cancelled'}
 			<h1>Authorization was cancelled</h1>
 			<p>{callbackState.description}</p>

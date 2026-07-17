@@ -4,9 +4,9 @@
 
 	type Props = {
 		addressees?: string[];
-		/** Addressee handle (lowercased) -> their chosen name (deltanet mentions). */
+		/** Addressee handle (lowercased) -> their chosen name (Headwater mentions). */
 		addresseeNames?: Record<string, string>;
-		/** Addressee handle (lowercased) -> my local petname (deltanet mentions). */
+		/** Addressee handle (lowercased) -> my local petname (Headwater mentions). */
 		addresseePetnames?: Record<string, string>;
 		focused?: boolean;
 	};

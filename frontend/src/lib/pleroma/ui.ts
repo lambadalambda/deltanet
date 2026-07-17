@@ -8,9 +8,9 @@ export type PleromaAccountView = {
 	id: string;
 	username: string;
 	displayName: string;
-	/** The name THEY chose (deltanet); null on fediverse accounts without the extension. */
+	/** The name THEY chose (Headwater); null on fediverse accounts without the extension. */
 	authName: string | null;
-	/** MY local key-bound petname (deltanet); null when unset. */
+	/** MY local key-bound petname (Headwater); null when unset. */
 	petname: string | null;
 	acct: string;
 	handle: string;
@@ -98,7 +98,7 @@ export type PleromaStatusView = TimelinePost & {
 	reactions: PleromaReactionView[];
 	bookmarked: boolean;
 	rebloggedBy?: PleromaAccountView;
-	/** deltanet thread-subscribe: true iff this status is a thread root the user subscribes to. */
+	/** Headwater thread-subscribe: true iff this status is a thread root the user subscribes to. */
 	threadSubscribed: boolean;
 	/** Key confirmation: the author's signature verified but no key is pinned yet. */
 	authorUnconfirmed: boolean;
@@ -232,7 +232,7 @@ const mentionAcctMap = (status: PleromaStatus): Record<string, string> => {
 
 /**
  * Handle (lowercased, both `@username` and full `@user@host` forms) → the
- * author's chosen display name, from the deltanet-specific `display_name`
+ * author's chosen display name, from the Headwater-specific `display_name`
  * field on mentions. Chatmail local parts are random registration strings,
  * so the "Replying to" pill renders these names instead of handles; empty
  * for fediverse statuses whose mentions carry no display names.
@@ -265,7 +265,7 @@ const mentionMapFor = (
 const mentionNameMap = (status: PleromaStatus): Record<string, string> =>
 	mentionMapFor(status, (values) => mentionField(values, 'auth_name') || mentionField(values, 'display_name'));
 
-/** Handle -> my local petname, when the mention carries one (deltanet). */
+/** Handle -> my local petname, when the mention carries one (Headwater). */
 const mentionPetnameMap = (status: PleromaStatus): Record<string, string> =>
 	mentionMapFor(status, (values) => mentionField(values, 'petname'));
 
@@ -690,12 +690,19 @@ const timelineMembership = (status: PleromaStatus, options: AdaptPleromaStatusOp
 
 const countBeforeViewerAction = (count: number, active: boolean) => Math.max(0, count - (active ? 1 : 0));
 
+const headwaterAccountMetadata = (account: PleromaAccount) => account.pleroma.headwater ?? account.pleroma.deltanet;
+const headwaterStatusMetadata = (status: PleromaStatus) => status.pleroma.headwater ?? status.pleroma.deltanet;
+const headwaterAccountValue = (account: PleromaAccount, key: 'auth_name' | 'petname') => {
+	const value = headwaterAccountMetadata(account)?.[key];
+	return typeof value === 'string' ? value : null;
+};
+
 export const adaptPleromaAccount = (account: PleromaAccount): PleromaAccountView => ({
 	id: account.id,
 	username: account.username,
 	displayName: displayName(account),
-	authName: typeof account.pleroma.deltanet?.auth_name === 'string' ? account.pleroma.deltanet.auth_name : null,
-	petname: typeof account.pleroma.deltanet?.petname === 'string' ? account.pleroma.deltanet.petname : null,
+	authName: headwaterAccountValue(account, 'auth_name'),
+	petname: headwaterAccountValue(account, 'petname'),
 	acct: account.acct,
 	handle: handle(account.acct),
 	url: account.url,
@@ -743,8 +750,8 @@ export const adaptPleromaProfile = (account: PleromaAccount, options: { instance
 	username: account.username,
 	displayName: displayName(account),
 	displayNameEmojis: adaptCustomEmojis(account.emojis),
-	authName: typeof account.pleroma.deltanet?.auth_name === 'string' ? account.pleroma.deltanet.auth_name : null,
-	petname: typeof account.pleroma.deltanet?.petname === 'string' ? account.pleroma.deltanet.petname : null,
+	authName: headwaterAccountValue(account, 'auth_name'),
+	petname: headwaterAccountValue(account, 'petname'),
 	acct: account.acct,
 	handle: handle(account.acct),
 	url: account.url,
@@ -913,8 +920,8 @@ export const adaptPleromaStatus = (status: PleromaStatus, options: AdaptPleromaS
 		reactions: adaptStatusReactions(source),
 		bookmarked: source.bookmarked === true,
 		rebloggedBy: booster,
-		threadSubscribed: source.pleroma.deltanet?.thread_subscribed === true,
-		authorUnconfirmed: source.pleroma.deltanet?.author_unconfirmed === true,
+		threadSubscribed: headwaterStatusMetadata(source)?.thread_subscribed === true,
+		authorUnconfirmed: headwaterStatusMetadata(source)?.author_unconfirmed === true,
 		pleroma: {
 			conversationId: source.pleroma.conversation_id,
 			local: source.pleroma.local,
@@ -1031,7 +1038,7 @@ export const normalizePleromaRequestError = (error: unknown): PleromaRequestErro
 		return {
 			kind: 'request',
 			title: 'Request failed',
-			message: error instanceof Error ? error.message : 'DeltaNet could not complete this request.',
+			message: error instanceof Error ? error.message : 'Headwater could not complete this request.',
 			retryable: true,
 			reauthRequired: false
 		};

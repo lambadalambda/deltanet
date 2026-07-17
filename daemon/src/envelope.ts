@@ -1,5 +1,5 @@
 /**
- * deltanet wire convention v2 (see ../DEVLOG.md "wire convention v2 — JSON
+ * Headwater wire convention v2 (see ../DEVLOG.md "wire convention v2 - JSON
  * envelope" + docs/decisions.md 0001/0002). The ENTIRE message body is a single
  * JSON object — a versioned envelope with an explicit `type`, the human text as
  * a *field*, refs/uuids/extensions as fields. This kills the in-band ambiguity

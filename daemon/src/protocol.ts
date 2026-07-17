@@ -1,6 +1,6 @@
 /**
- * deltanet wire convention v0 (see ../DEVLOG.md "experiment findings" +
- * "deltanet wire convention v0"). Replies and boosts are plain-text
+ * Legacy DeltaNet wire convention v0 (see ../DEVLOG.md "experiment findings" +
+ * "wire convention v0"). Replies and boosts are plain-text
  * conventions over the global email Message-ID (`rfc724Mid`), since native
  * cross-chat quotes/reactions are rejected by the chatmail core. These are
  * pure functions: no transport, no store, just text in/text out.

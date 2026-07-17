@@ -1,3 +1,14 @@
+## 2026-07-17 - Headwater frontend rebrand
+
+- Replaced the frontend's user-visible DeltaNet identity with Headwater across
+  routes, metadata, accessibility labels, fixtures, tests, and current docs.
+- Added the neon-green and navy fountain mark as a reusable Svelte SVG and the
+  favicon, replacing every spark used as a product mark.
+- New requests, storage keys, and browser events use `headwater`; valid legacy
+  session, OAuth client/pending state, and notification timestamps migrate on
+  read. Legacy event listeners and Pleroma extension fallbacks remain temporary
+  compatibility seams for existing paired browsers and daemons.
+
 ## 2026-07-10 - local daemon enrollment and stream tickets
 
 - The landing flow requires the daemon's one-use enrollment code only when this

@@ -13,7 +13,7 @@
 - [ ] [Implement content warnings](issues/content-warnings.md)
 - [ ] [Implement extended profile fields](issues/extended-profile-fields.md)
 - [ ] [Implement audio and video uploads](issues/rich-media-types.md)
-- [ ] [Epic: Package DeltaNet as a desktop application](issues/desktop-application.md)
+- [ ] [Epic: Package Headwater as a desktop application](issues/desktop-application.md)
 - [ ] [Build a production daemon runtime and lifecycle](issues/daemon-production-runtime.md)
 - [ ] [Ship a one-platform Electron desktop alpha](issues/electron-desktop-alpha.md)
 - [ ] [Epic: Build cross-platform desktop release infrastructure](issues/desktop-release-engineering.md)

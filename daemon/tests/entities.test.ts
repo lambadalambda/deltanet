@@ -106,8 +106,8 @@ describe('contactToAccount', () => {
     expect(account.acct).toBe('p6yalimhl@nine.testrun.org');
     expect(account.display_name).toBe('alice');
     expect(account.note).toBe('<p>just testing</p>');
-    expect(account.avatar).toBe(`${BASE}/deltanet/avatar/1`);
-    expect(account.url).toBe(`${BASE}/deltanet/contact/1`);
+    expect(account.avatar).toBe(`${BASE}/headwater/avatar/1`);
+    expect(account.url).toBe(`${BASE}/headwater/contact/1`);
     // fields the frontend reads must exist
     expect(account.followers_count).toBe(0);
     expect(account.statuses_count).toBe(0);
@@ -126,7 +126,7 @@ describe('contactToAccount', () => {
     expect((account.pleroma as any).relationship).toBeUndefined();
   });
 
-  it('ships auth_name + petname in pleroma.deltanet when a local name override exists', () => {
+  it('dual-emits auth_name + petname with Headwater preferred', () => {
     // Petnames (meta/issues/petnames.md): `name` is MY local override,
     // `authName` is THEIR self-chosen name; displayName prefers mine.
     const carol = makeContact({
@@ -138,7 +138,8 @@ describe('contactToAccount', () => {
     });
     const account = contactToAccount(carol, BASE);
     expect(account.display_name).toBe('carol');
-    expect(account.pleroma.deltanet).toEqual({ auth_name: 'Carol Sparkle', petname: 'carol' });
+    expect(account.pleroma.headwater).toEqual({ auth_name: 'Carol Sparkle', petname: 'carol' });
+    expect(account.pleroma.deltanet).toEqual(account.pleroma.headwater);
   });
 
   it('ships auth_name without a petname when no local override exists', () => {
@@ -150,14 +151,16 @@ describe('contactToAccount', () => {
       displayName: 'Carol Sparkle',
     });
     const account = contactToAccount(carol, BASE);
-    expect(account.pleroma.deltanet).toEqual({ auth_name: 'Carol Sparkle' });
+    expect(account.pleroma.headwater).toEqual({ auth_name: 'Carol Sparkle' });
+    expect(account.pleroma.deltanet).toEqual(account.pleroma.headwater);
   });
 
   it('never ships a petname for SELF', () => {
     // SELF's `name` is the account's own configured displayname, not a petname.
     const self = makeContact({ id: 1, name: 'alice', authName: '' });
     const account = contactToAccount(self, BASE);
-    expect(account.pleroma.deltanet).toEqual({ auth_name: '' });
+    expect(account.pleroma.headwater).toEqual({ auth_name: '' });
+    expect(account.pleroma.deltanet).toEqual(account.pleroma.headwater);
   });
 
   it('carries an optional relationship into pleroma.relationship', () => {
@@ -189,13 +192,14 @@ describe('messageToStatus', () => {
     expect(status.created_at).toBe('2025-07-06T11:06:40.000Z');
     expect(status.account.id).toBe('1');
     expect(status.visibility).toBe('public');
-    expect(status.uri).toBe(`${BASE}/deltanet/message/42`);
+    expect(status.uri).toBe(`${BASE}/headwater/message/42`);
     expect(status.media_attachments).toEqual([]);
     expect(status.reblog).toBeNull();
     expect(status.in_reply_to_id).toBeNull();
     expect(status.favourites_count).toBe(0);
     expect(status.pleroma.emoji_reactions).toEqual([]);
     expect(status.pleroma.local).toBe(true); // sender id 1 = DC self
+    expect(status.application.name).toBe('Headwater');
   });
 
   it('marks messages from other contacts as remote', () => {
@@ -223,8 +227,8 @@ describe('messageToStatus', () => {
       {
         id: '42',
         type: 'image',
-        url: `${BASE}/deltanet/blob/42`,
-        preview_url: `${BASE}/deltanet/blob/42`,
+        url: `${BASE}/headwater/blob/42`,
+        preview_url: `${BASE}/headwater/blob/42`,
         remote_url: null,
         description: null,
       },
@@ -304,7 +308,7 @@ describe('messageToStatus: reply markers', () => {
         id: '21',
         username: 'parentauthor',
         acct: 'parentauthor@example.org',
-        url: `${BASE}/deltanet/contact/21`,
+        url: `${BASE}/headwater/contact/21`,
         // Non-standard additive fields: chatmail local parts are random
         // registration strings, so the "Replying to" pill needs names
         // (see meta/issues/reply-pill-display-name.md + petnames.md).
@@ -350,7 +354,7 @@ describe('messageToStatus: reply markers', () => {
         id: '1',
         username: 'p6yalimhl',
         acct: 'p6yalimhl@nine.testrun.org',
-        url: `${BASE}/deltanet/contact/1`,
+        url: `${BASE}/headwater/contact/1`,
         display_name: 'alice',
         auth_name: 'alice',
       },
@@ -410,11 +414,12 @@ describe('messageToStatus: boost markers', () => {
     // 0002: never synthesized/attributed content.
     expect(status.reblog).toBeNull();
     expect(status.content).toBe('<p>[boosted post unavailable]</p>');
-    // The booster's OWN status; frontend distinguishes via pleroma.deltanet.
-    expect(status.pleroma.deltanet).toEqual({
+    // The booster's OWN status; frontend distinguishes via pleroma.headwater.
+    expect(status.pleroma.headwater).toEqual({
       placeholder: 'boost',
       ref: { key: originalRef.keyString, addr: originalRef.addr },
     });
+    expect(status.pleroma.deltanet).toEqual(status.pleroma.headwater);
   });
 
   it('an unresolvable boost renders the placeholder text as content', () => {

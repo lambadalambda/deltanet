@@ -8,7 +8,8 @@ Add real bookmark mutation and listing semantics before enabling saved-post UI.
 
 - Persist bookmarks across restarts and define behavior for unavailable posts.
 - Implement bookmark, unbookmark, and paginated bookmark-list endpoints.
-- Advertise `configuration.deltanet.capabilities.bookmarks: true` only with the complete contract.
+- Advertise `configuration.headwater.capabilities.bookmarks: true` only with the
+  complete contract.
 
 ## Acceptance Criteria
 

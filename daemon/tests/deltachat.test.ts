@@ -5,7 +5,9 @@ import {
   credsFromConfig,
   isFeedChat,
   matchesSelfAddr,
+  readCompatibleConfig,
   shouldIngest,
+  writeCompatibleConfig,
 } from '../src/transport/deltachat.js';
 import { makeContact, makeMessage } from './entities.test.js';
 
@@ -135,5 +137,51 @@ describe('credsFromConfig (backup restore)', () => {
   it('is null without any address (unusable backup)', () => {
     expect(credsFromConfig({ password: 'pw', displayName: 'X' })).toBeNull();
     expect(credsFromConfig({ configuredAddr: null, addr: '' })).toBeNull();
+  });
+});
+
+describe('compatible Delta Chat config', () => {
+  it('prefers the Headwater key and falls back without creating replacement state', async () => {
+    const values = new Map([
+      ['ui.headwater.feed_chat_id', '41'],
+      ['ui.deltanet.feed_chat_id', '12'],
+    ]);
+    const get = async (key: string) => values.get(key) ?? null;
+    const set = async (key: string, value: string) => { values.set(key, value); };
+
+    expect(await readCompatibleConfig(get, set, 'ui.headwater.feed_chat_id', 'ui.deltanet.feed_chat_id')).toBe('41');
+    values.delete('ui.headwater.feed_chat_id');
+    expect(await readCompatibleConfig(get, set, 'ui.headwater.feed_chat_id', 'ui.deltanet.feed_chat_id')).toBe('12');
+    expect(values.get('ui.headwater.feed_chat_id')).toBe('12');
+  });
+
+  it('dual-writes Headwater and legacy keys during compatibility', async () => {
+    const writes: [string, string][] = [];
+    await writeCompatibleConfig(
+      async (key, value) => { writes.push([key, value]); },
+      'ui.headwater.last_backup_at',
+      'ui.deltanet.last_backup_at',
+      '123',
+    );
+    expect(writes).toEqual([
+      ['ui.deltanet.last_backup_at', '123'],
+      ['ui.headwater.last_backup_at', '123'],
+    ]);
+  });
+
+  it('leaves the legacy key usable when the preferred alias write fails', async () => {
+    const values = new Map<string, string>();
+    await expect(writeCompatibleConfig(
+      async (key, value) => {
+        if (key === 'ui.headwater.feed_chat_id') throw new Error('preferred write failed');
+        values.set(key, value);
+      },
+      'ui.headwater.feed_chat_id',
+      'ui.deltanet.feed_chat_id',
+      '41',
+    )).rejects.toThrow('preferred write failed');
+
+    expect(values.get('ui.deltanet.feed_chat_id')).toBe('41');
+    expect(values.has('ui.headwater.feed_chat_id')).toBe(false);
   });
 });

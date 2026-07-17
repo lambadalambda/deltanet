@@ -40,7 +40,8 @@ background operation without yet solving the full release matrix.
 - Define close-window versus Quit behavior, add tray/menu status and an opt-in
   launch-at-login/start-hidden setting, and perform graceful daemon shutdown on
   explicit Quit.
-- Use native `.dnbk` open/save dialogs and provide actionable UI for startup,
+- Use native open/save dialogs for the legacy-compatible `.dnbk` backup format
+  and provide actionable UI for startup,
   data-lock, core-connectivity, and port-conflict failures.
 - Contain the Electron-main, daemon, and `deltachat-rpc-server` process tree so
   abrupt main-process death cannot leave a listener, native helper, or live lock

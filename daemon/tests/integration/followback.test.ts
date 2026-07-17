@@ -20,7 +20,7 @@ import {
 
 /**
  * Real follow-back over chatmail (local podman relay by default,
- * nine.testrun.org with DELTANET_TEST_RELAY=testrun), driven the way `main.ts` wires
+ * nine.testrun.org with HEADWATER_TEST_RELAY=testrun), driven the way `main.ts` wires
  * ingestion — no test shortcuts: the invite-request travels over the real
  * network, B's auto-grant comes from B's own ingest handling, and A joins
  * B's feed off the grant B DMs back.

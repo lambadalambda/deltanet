@@ -1,8 +1,8 @@
-# Epic: Package DeltaNet as a desktop application
+# Epic: Package Headwater as a desktop application
 
 ## Summary
 
-Coordinate the work required to ship DeltaNet as an installable Electron
+Coordinate the work required to ship Headwater as an installable Electron
 application that owns the daemon lifecycle, requires no terminal, and can
 remain running in the background. Keep the existing same-origin loopback
 HTTP/WebSocket boundary between the static SvelteKit frontend and daemon rather
@@ -20,7 +20,7 @@ than replacing the tested API with broad renderer IPC.
 ## Acceptance Criteria
 
 - All three child issues satisfy their acceptance criteria and are archived.
-- A nontechnical user can install DeltaNet on every supported platform, create
+- A nontechnical user can install Headwater on every supported platform, create
   or restore an identity without a terminal, leave it running according to the
   documented background policy, receive updates, and recover actionable
   diagnostics when startup fails.

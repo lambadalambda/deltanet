@@ -1,5 +1,9 @@
 # Decisions
 
+Headwater was formerly named DeltaNet. The dated decisions below preserve the
+former product name verbatim as protocol history; current product surfaces and
+new identifiers use Headwater.
+
 ## 0001 — Hard cut from vanilla Delta Chat compatibility (2026-07-07)
 
 **Decision (project owner):** deltanet is a distinct system on the chatmail

@@ -54,7 +54,7 @@ type RevokeOAuthTokenInput = {
 };
 
 const scopeString = (scopes: readonly PleromaScope[]) => scopes.join(' ');
-export const DELTANET_OAUTH_SCOPES = ['read', 'write', 'follow', 'push'] as const satisfies readonly PleromaScope[];
+export const HEADWATER_OAUTH_SCOPES = ['read', 'write', 'follow', 'push'] as const satisfies readonly PleromaScope[];
 
 const mapOAuthApp = (app: RawOAuthApp): PleromaOAuthApp => ({
 	id: app.id,
