@@ -10,3 +10,5 @@ accounts.local.json
 .env.*
 !**/.env.example
 test-results/
+.cache/
+desktop/resources/

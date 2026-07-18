@@ -9,12 +9,12 @@
     "pnpm": "11.5.2"
   },
   "scripts": {
-    "setup": "pnpm --dir daemon install && pnpm --dir frontend install",
-    "build": "pnpm --dir frontend build && pnpm --dir daemon build",
+    "setup": "pnpm --dir daemon install && pnpm --dir frontend install && electron_config_cache=desktop/.cache/electron pnpm --dir desktop install",
+    "build": "pnpm --dir frontend build && pnpm --dir daemon build && pnpm --dir desktop build && pnpm --dir desktop run stage:resources",
     "start": "pnpm --dir daemon start",
     "dev:daemon": "pnpm --dir daemon dev",
     "dev:frontend": "pnpm --dir frontend dev",
-    "test": "pnpm --dir daemon test && pnpm --dir frontend test",
-    "check": "pnpm --dir daemon check && pnpm --dir frontend check"
+    "test": "pnpm --dir daemon test && pnpm --dir frontend test && pnpm --dir desktop test",
+    "check": "pnpm --dir daemon check && pnpm --dir frontend check && pnpm --dir desktop check"
   }
 }

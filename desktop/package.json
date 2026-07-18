@@ -1,0 +1,35 @@
+{
+  "name": "headwater-desktop",
+  "productName": "Headwater",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "dist/main.js",
+  "packageManager": "pnpm@11.5.2",
+  "engines": {
+    "node": ">=24 <25",
+    "pnpm": "11.5.2"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "node --input-type=module -e \"import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.build.json",
+    "stage:resources": "node scripts/stage-resources.mjs",
+    "dev": "electron .",
+    "test:smoke": "pnpm --dir ../frontend build && pnpm --dir ../daemon build && pnpm build && pnpm run stage:resources && node scripts/smoke.mjs"
+  },
+  "dependencies": {
+    "@deltachat/jsonrpc-client": "2.53.0",
+    "@deltachat/stdio-rpc-server": "2.53.0",
+    "@hono/node-server": "2.0.8",
+    "hono": "4.12.27",
+    "ws": "8.21.0"
+  },
+  "devDependencies": {
+    "@electron/packager": "20.0.3",
+    "@types/node": "24.13.3",
+    "electron": "43.1.1",
+    "typescript": "6.0.3",
+    "vitest": "4.1.9"
+  }
+}

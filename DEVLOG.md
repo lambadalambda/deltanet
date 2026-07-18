@@ -4,6 +4,41 @@ DeltaNet-era entries retained after the current entry preserve the former name
 and deployed identifiers as written. They document implementation history, not
 current naming.
 
+## 2026-07-18 - secure Electron desktop bootstrap (smoke pending)
+
+The first macOS-arm64 desktop slice now has an independent pinned Electron 43
+package and a narrow supervised boundary around the compiled daemon
+(`meta/issues/electron-secure-bootstrap.md`):
+
+- Electron starts the daemon in a utility process, validates every private-port
+  message in both directions, waits for the actual loopback origin before
+  creating a window, and exposes only a frozen status call through the sandboxed
+  CommonJS preload. Enrollment codes remain confined to the private lifecycle
+  channel and are not placed in argv, logs, renderer globals, or desktop files.
+- The renderer uses context isolation, sandboxing, disabled Node integration,
+  denied permissions/downloads, same-origin navigation, denied child windows,
+  validated external HTTP(S) links, and IPC sender validation. The application
+  also owns a single-instance lock.
+- Readiness has a 30-second deadline. Graceful daemon shutdown retains its
+  10-second budget under a 15-second parent watchdog; repeated quit requests
+  remain prevented until cleanup settles, close failures produce a nonzero exit,
+  and utility exits or malformed/oversized messages cannot strand startup.
+- Root setup/build/check/test orchestration includes the desktop package.
+  Resource staging copies the compiled daemon, current static frontend, utility
+  worker, and pinned native helper through a rollback/recovery-safe replacement;
+  generated resources and the local Electron cache remain ignored.
+- The macOS smoke builds and stages fresh inputs, launches the actual Electron
+  process group twice against one isolated data directory, requires shutdown
+  completion, checks the listener with raw TCP, and thereby proves utility,
+  listener, and daemon-lock release. This restricted session denies Electron at
+  Mach-service registration before application code (`Permission denied 1100`),
+  so that one smoke must still run from an unrestricted macOS login session and
+  the issue remains open.
+- Verification passed all root checks, 1,533 daemon tests, 353 frontend browser
+  tests, 23 desktop tests, the full frontend/daemon/desktop build and staging,
+  both production artifact tests, `git diff --check`, and independent lifecycle
+  review with no blocking findings.
+
 ## 2026-07-18 - compiled production daemon and owned lifecycle
 
 The daemon is now an import-safe, embeddable service instead of a program that

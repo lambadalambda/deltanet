@@ -3,17 +3,17 @@ node = "24"
 pnpm = "11.5.2"
 
 [tasks.setup]
-description = "Install Headwater daemon and frontend dependencies"
+description = "Install Headwater daemon, frontend, and desktop dependencies"
 run = "pnpm setup"
 
 [tasks.check]
-description = "Run Headwater daemon and frontend type checks"
+description = "Run all Headwater type checks"
 run = "pnpm check"
 
 [tasks.test]
-description = "Run Headwater daemon and frontend tests"
+description = "Run all Headwater unit tests"
 run = "pnpm test"
 
 [tasks.build]
-description = "Build the Headwater frontend and production daemon"
+description = "Build the Headwater frontend, production daemon, and desktop host"
 run = "pnpm build"

@@ -15,6 +15,7 @@
 - [ ] [Implement audio and video uploads](issues/rich-media-types.md)
 - [ ] [Epic: Package Headwater as a desktop application](issues/desktop-application.md)
 - [ ] [Ship a one-platform Electron desktop alpha](issues/electron-desktop-alpha.md)
+- [ ] [Bootstrap the secure macOS Electron host](issues/electron-secure-bootstrap.md)
 - [ ] [Epic: Build cross-platform desktop release infrastructure](issues/desktop-release-engineering.md)
 - [ ] [Package and sign desktop applications across platforms](issues/desktop-platform-packaging.md)
 - [ ] [Implement signed desktop updates and data migrations](issues/desktop-updates-migrations.md)
