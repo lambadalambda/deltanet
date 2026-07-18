@@ -50,6 +50,8 @@ linux:
   target:
     - target: flatpak
       arch: x64
+    - target: AppImage
+      arch: x64
 flatpak:
   runtime: org.freedesktop.Platform
   sdk: org.freedesktop.Sdk

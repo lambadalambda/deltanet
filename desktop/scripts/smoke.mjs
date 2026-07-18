@@ -4,13 +4,12 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createConnection } from 'node:net';
-import electron from 'electron';
 import { electronSmokeArguments, electronSmokeEnvironment } from '../dist/smoke.js';
 
 const root = mkdtempSync(join(tmpdir(), 'headwater-desktop-smoke-'));
 const appDir = fileURLToPath(new URL('..', import.meta.url));
 const packagedExecutable = process.env['HEADWATER_DESKTOP_SMOKE_EXECUTABLE'];
-const executable = packagedExecutable ? resolve(packagedExecutable) : electron;
+const executable = packagedExecutable ? resolve(packagedExecutable) : (await import('electron')).default;
 
 const stopProcessGroup = (child) => {
   if (!child.pid) return;

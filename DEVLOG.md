@@ -9,12 +9,12 @@ current naming.
 Headwater now has the packaging and CI foundation for rolling unsigned desktop
 nightlies (`meta/issues/nightly-desktop-releases.md`):
 
-- Native GitHub jobs build a Linux x64 Flatpak, Windows x64 NSIS installer, and
-  macOS arm64 DMG after a separate root check/test gate. SHA-qualified job
-  artifacts are merged only after every platform succeeds, checksummed, and
-  published to the rolling `nightly` prerelease when the commit is still the
-  current `main` head. Non-canceling event/ref concurrency prevents interrupted
-  release replacement and manual runs never publish.
+- Native GitHub jobs build Linux x64 Flatpak and AppImage variants, a Windows x64
+  NSIS installer, and a macOS arm64 DMG after a separate root check/test gate.
+  SHA-qualified job artifacts are merged only after every platform succeeds,
+  checksummed, and published to the rolling `nightly` prerelease when the commit
+  is still the current `main` head. Non-canceling event/ref concurrency prevents
+  interrupted release replacement, and manual runs never publish.
 - electron-builder 26.15.3 is pinned beside Electron 43.1.1. Packaging uses a
   stable application/desktop identity, Headwater icons, explicit external
   resources, platform-native helper names, and post-pack assertions for the
@@ -27,6 +27,11 @@ nightlies (`meta/issues/nightly-desktop-releases.md`):
   and exports a 512 px icon. A privileged disposable NAS container built the
   111 MB bundle without warnings; installing it confirmed the expected app ID,
   runtime, architecture, and commit.
+- The 163 MB Linux x64 AppImage provides an unsandboxed single-file alternative.
+  A native NAS build passed the packaged two-launch daemon/helper/listener smoke
+  in extraction mode, and CI runs the same smoke before upload. Release notes
+  explain format selection, installation, sandbox and update limitations,
+  per-platform data paths, and checksum verification.
 - Credential-free macOS nightlies are ad-hoc sealed rather than left with a
   structurally invalid bundle. The hardened runtime receives Electron's JIT,
   unsigned-executable-memory, and library-validation entitlements; strict deep
@@ -37,8 +42,9 @@ nightlies (`meta/issues/nightly-desktop-releases.md`):
   browser tests, 28 desktop tests, both daemon production-artifact tests, the
   full build/resource staging and import verification, workflow YAML parsing,
   `git diff --check`, Flatpak build/install, and macOS strict signature checks.
-  The issue remains open until native CI proves NSIS creation, final DMG creation,
-  packaged macOS smoke, checksums, and rolling GitHub publication.
+  The first native workflow subsequently produced every original artifact and
+  published the rolling release successfully; the issue remains open until the
+  AppImage and expanded guidance complete the same path.
 
 ## 2026-07-18 - secure Electron desktop bootstrap
 

@@ -79,6 +79,10 @@ background operation without yet solving the full release matrix.
 
 - The first implementation slice is tracked in
   [Bootstrap the secure macOS Electron host](electron-secure-bootstrap.md).
+- The first packaged nightly confirmed that signup succeeds but then asks for a
+  newly rotated enrollment code that Electron does not expose. Complete the
+  private daemon-to-main enrollment bridge and app-only onboarding operation
+  before treating packaged account creation or restore as usable.
 - Target macOS arm64 first unless the product owner selects another development
   platform. Cross-platform signing, updates, and broad installer coverage belong
   to the release-infrastructure issue.

@@ -49,7 +49,7 @@ jobs:
         run: pnpm test
 
   linux:
-    name: Linux x64 Flatpak
+    name: Linux x64 packages
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -73,7 +73,7 @@ jobs:
       - name: Install Flatpak toolchain and runtime
         run: |
           sudo apt-get update
-          sudo apt-get install -y flatpak flatpak-builder
+          sudo apt-get install -y dbus-x11 flatpak flatpak-builder xvfb
           sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
           sudo flatpak install -y flathub \
             org.freedesktop.Platform//24.08 \
@@ -81,14 +81,27 @@ jobs:
             org.electronjs.Electron2.BaseApp//24.08
       - name: Build and verify staged resources
         run: pnpm build && pnpm --dir desktop verify:resources
-      - name: Build Flatpak bundle
+      - name: Build Flatpak and AppImage
         run: pnpm --dir desktop package:linux --config.extraMetadata.version=${NIGHTLY_VERSION}
-      - name: Verify Flatpak output
-        run: test -x desktop/resources/native/deltachat-rpc-server && test -n "$(find desktop/release -maxdepth 1 -name '*.flatpak' -print -quit)"
+      - name: Smoke AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          appimage="$(find desktop/release -maxdepth 1 -name '*.AppImage' -print -quit)"
+          test -n "${appimage}"
+          export HEADWATER_DESKTOP_SMOKE_EXECUTABLE="${appimage}"
+          dbus-run-session -- xvfb-run -a node desktop/scripts/smoke.mjs
+      - name: Verify Linux outputs
+        run: |
+          test -x desktop/resources/native/deltachat-rpc-server
+          test -n "$(find desktop/release -maxdepth 1 -name '*.flatpak' -print -quit)"
+          test -n "$(find desktop/release -maxdepth 1 -name '*.AppImage' -print -quit)"
       - uses: actions/upload-artifact@v4
         with:
           name: nightly-linux-${{ github.sha }}
-          path: desktop/release/*.flatpak
+          path: |
+            desktop/release/*.flatpak
+            desktop/release/*.AppImage
           if-no-files-found: error
           retention-days: 7
 
@@ -194,15 +207,64 @@ jobs:
         run: test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)" = "${GITHUB_SHA}"
       - name: Generate checksums
         working-directory: nightly-artifacts
-        run: sha256sum *.flatpak *.exe *.dmg > SHA256SUMS.txt
+        run: sha256sum *.flatpak *.AppImage *.exe *.dmg > SHA256SUMS.txt
       - name: Replace nightly prerelease
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_NOTES: |
+            Unsigned development builds from commit `${{ github.sha }}`. These artifacts are not notarized or signed by a trusted developer certificate and may trigger operating-system security warnings.
+
+            ## Known limitation
+
+            Packaged signup and restore currently create the account but cannot complete sign-in because the app does not yet display the newly rotated one-time enrollment code. Do not use these builds to create or restore an identity you need to access. The fix is tracked and will follow; do not try to recover the private code from logs, command-line arguments, or files.
+
+            ## Choose a download
+
+            ### Linux x64 Flatpak (`.flatpak`) - recommended
+
+            Use this on Linux when Flatpak is available and you want Headwater isolated from the rest of your home directory. It requires the Freedesktop 24.08 runtime; Flatpak downloads that shared runtime during the first installation if necessary.
+
+            Install and run it with:
+
+            ```sh
+            flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+            flatpak install --user ./Headwater-*.flatpak
+            flatpak run social.pleroma.Headwater
+            ```
+
+            Data is stored separately from the AppImage build under `~/.var/app/social.pleroma.Headwater/config/Headwater/`. The daemon identity and account state are inside its `daemon/` directory. This sideloaded bundle has no update remote, so download and reinstall a newer nightly manually.
+
+            ### Linux x64 AppImage (`.AppImage`)
+
+            Use this when you want a single executable or do not have Flatpak. It is not sandboxed and has the same access as any program you run. The AppImage file is portable, but your Headwater identity and settings are not stored inside it.
+
+            Run it with:
+
+            ```sh
+            chmod +x ./Headwater-*.AppImage
+            ./Headwater-*.AppImage
+            ```
+
+            Data is stored under `$XDG_CONFIG_HOME/Headwater/` when that variable is set, or `~/.config/Headwater/` by default, with daemon identity and account state in `daemon/`. Some distributions require FUSE to launch AppImages; `./Headwater-*.AppImage --appimage-extract-and-run` is a fallback. AppImage nightlies do not update automatically.
+
+            ### Windows x64 installer (`.exe`)
+
+            Run the NSIS installer and choose an installation directory. Windows SmartScreen may warn because the installer is unsigned. Data is stored under `%APPDATA%\Headwater\`, with daemon identity and account state in `daemon\`. Install newer nightlies manually over the existing application; uninstalling the application may leave this data in place.
+
+            ### macOS Apple silicon (`.dmg`)
+
+            This build requires an arm64 Apple silicon Mac. Open the DMG and drag Headwater into Applications. The app is ad-hoc sealed for bundle integrity but is not Developer ID signed or notarized, so macOS may require explicit approval before its first launch. Data is stored under `~/Library/Application Support/Headwater/`, with daemon identity and account state in `daemon/`. Replace the application manually to update; application data remains separate from the app bundle.
+
+            ## Data and verification
+
+            The data directories contain your local identity, account database, and authentication secrets. Do not treat a nightly artifact as a backup, and do not delete its data directory unless you intend to remove that identity. Flatpak and AppImage use different data locations and do not automatically share or migrate identities.
+
+            Compute the selected download's hash with `sha256sum "Headwater-...AppImage"` or `sha256sum "Headwater-...flatpak"` on Linux, `shasum -a 256 "Headwater-...dmg"` on macOS, or `Get-FileHash -Algorithm SHA256 .\Headwater-...exe` in PowerShell. Replace the abbreviated name with the exact downloaded filename and compare the result with that file's line in `SHA256SUMS.txt`. Checksums detect download corruption; because they are published beside unsigned artifacts, they are not proof of publisher identity.
         run: |
           gh release delete nightly --repo "${GITHUB_REPOSITORY}" --cleanup-tag --yes || true
           gh release create nightly nightly-artifacts/* \
             --repo "${GITHUB_REPOSITORY}" \
             --target "${GITHUB_SHA}" \
             --title "Headwater Nightly ${GITHUB_SHA::7}" \
-            --notes "Unsigned development builds from commit ${GITHUB_SHA}. These artifacts are not notarized or signed by a trusted developer certificate and may trigger operating-system security warnings." \
+            --notes "${RELEASE_NOTES}" \
             --prerelease

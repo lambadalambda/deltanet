@@ -22,7 +22,7 @@
     "package:dir": "electron-builder --dir",
     "package:mac": "electron-builder --mac dmg --arm64",
     "package:win": "electron-builder --win nsis --x64",
-    "package:linux": "electron-builder --linux flatpak --x64",
+    "package:linux": "electron-builder --linux --x64",
     "dev": "electron .",
     "test:smoke": "pnpm --dir ../frontend build && pnpm --dir ../daemon build && pnpm build && pnpm run stage:resources && node scripts/smoke.mjs"
   },
