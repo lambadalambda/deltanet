@@ -54,3 +54,4 @@
 - [x] [Refresh README and project status documentation](issues/readme-status-audit.md)
 - [x] [Rebrand DeltaNet to Headwater](issues/rebrand-headwater.md)
 - [x] [Build a production daemon runtime and lifecycle](issues/daemon-production-runtime.md)
+- [x] [Bootstrap the secure macOS Electron host](issues/electron-secure-bootstrap.md)

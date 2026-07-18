@@ -4,7 +4,7 @@ DeltaNet-era entries retained after the current entry preserve the former name
 and deployed identifiers as written. They document implementation history, not
 current naming.
 
-## 2026-07-18 - secure Electron desktop bootstrap (smoke pending)
+## 2026-07-18 - secure Electron desktop bootstrap
 
 The first macOS-arm64 desktop slice now has an independent pinned Electron 43
 package and a narrow supervised boundary around the compiled daemon
@@ -30,16 +30,14 @@ package and a narrow supervised boundary around the compiled daemon
 - The macOS smoke builds and stages fresh inputs, launches the actual Electron
   process group twice against one isolated data directory, requires shutdown
   completion, checks the listener with raw TCP, and thereby proves utility,
-  listener, and daemon-lock reuse. This restricted session denies Electron at
-  Mach-service registration before application code (`Permission denied 1100`),
-  so that one smoke must still run from an unrestricted macOS login session and
-  the issue remains open.
+  listener, and daemon-lock reuse. The final unrestricted macOS-arm64 run passed
+  both launches and satisfied the platform acceptance criterion.
 - A repeatable pinned-Node-24/Xvfb container smoke passes both launches on the NAS
   Linux-amd64 Podman worker. This independently proves the Electron host and
-  utility/daemon lifecycle while macOS verification is pending. The launcher
-  now also passes an explicit development-only smoke root and sets Electron's
-  user-data path before acquiring the single-instance lock, avoiding
-  platform-specific command-line path initialization.
+  utility/daemon lifecycle. The launcher also passes an explicit
+  development-only smoke root and sets Electron's user-data path before
+  acquiring the single-instance lock, avoiding platform-specific command-line
+  path initialization.
 - Verification passed all root checks, 1,533 daemon tests, 353 frontend browser
   tests, 26 desktop tests, the full frontend/daemon/desktop build and staging,
   both production artifact tests, `git diff --check`, and independent lifecycle
