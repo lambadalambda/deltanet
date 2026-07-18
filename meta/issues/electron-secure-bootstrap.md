@@ -46,8 +46,15 @@ native backup dialogs, launch-at-login, or signed packaging yet.
 - Reuse `startDaemon(config)` and the loopback HTTP/WebSocket API. Do not move
   ordinary application traffic onto IPC.
 - Implementation is complete through unit/type/build verification. The
-  development smoke harness assembles and launches an ephemeral app bundle, but
-  this restricted session cannot start Electron GUI processes: direct launch is
-  denied at Mach-service registration and LaunchServices never enters app code.
+  development smoke harness launches the pinned Electron binary against an
+  isolated user-data directory, but this restricted session cannot start
+  Electron GUI processes: direct launch is denied at Mach-service registration.
   Run `pnpm --dir desktop test:smoke` from an unrestricted macOS login session
   before closing this issue.
+- The same two-launch smoke passes under Linux amd64 with Xvfb in
+  `desktop/Containerfile.smoke`, proving utility-process readiness, SPA loading,
+  graceful shutdown, process-group exit, listener closure, and daemon-lock
+  reuse independently of the macOS launcher. The macOS harness now sets its
+  isolated user-data path explicitly before taking the single-instance lock;
+  an unrestricted macOS rerun remains required by the platform-specific
+  acceptance criterion.

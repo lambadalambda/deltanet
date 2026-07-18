@@ -1,4 +1,4 @@
-import { dirname, resolve } from 'node:path';
+import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeFileSync } from 'node:fs';
 import {
@@ -21,7 +21,17 @@ import {
   isExpectedStatusSender,
 } from './security.js';
 import { createUtilitySupervisor } from './supervisor.js';
+import { validateDesktopSmokePaths } from './smoke.js';
 
+const requestedSmokeMarker = app.commandLine.getSwitchValue('headwater-desktop-smoke-marker')
+  || process.env['HEADWATER_DESKTOP_SMOKE_MARKER']
+  || '';
+const smokePaths = validateDesktopSmokePaths({
+  isPackaged: app.isPackaged,
+  root: process.env['HEADWATER_DESKTOP_SMOKE_ROOT'] || '',
+  marker: requestedSmokeMarker,
+});
+if (smokePaths) app.setPath('userData', smokePaths.root);
 app.enableSandbox();
 const ownsInstance = app.requestSingleInstanceLock();
 if (!ownsInstance) app.quit();
@@ -29,13 +39,7 @@ if (!ownsInstance) app.quit();
 let window: BrowserWindow | null = null;
 let shutdownUtility: (() => Promise<void>) | null = null;
 let smokeOrigin: string | null = null;
-const requestedSmokeMarker = app.commandLine.getSwitchValue('headwater-desktop-smoke-marker')
-  || process.env['HEADWATER_DESKTOP_SMOKE_MARKER']
-  || '';
-const smokeMarker = requestedSmokeMarker
-  && dirname(resolve(requestedSmokeMarker)) === resolve(app.getPath('userData'))
-  ? requestedSmokeMarker
-  : '';
+const smokeMarker = smokePaths?.marker ?? '';
 const reportSmoke = (state: 'starting' | 'ready' | 'closed' | 'failed', detail?: string): void => {
   if (smokeMarker) {
     writeFileSync(smokeMarker, `${JSON.stringify({ state, origin: smokeOrigin, ...(detail ? { detail } : {}) })}\n`, { mode: 0o600 });
