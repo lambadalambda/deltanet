@@ -1,7 +1,8 @@
+import { spawn } from 'node:child_process';
 import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { startDeltaChat } from '@deltachat/stdio-rpc-server';
-import type { T } from '@deltachat/jsonrpc-client';
+import { getRPCServerPath } from '@deltachat/stdio-rpc-server';
+import { StdioDeltaChat, type T } from '@deltachat/jsonrpc-client';
 import type { PostOptions, ProfileUpdate, TimelineQuery, Transport } from './types.js';
 import { initialOf } from '../mastodon/entities.js';
 
@@ -10,6 +11,109 @@ const FEED_CHAT_ID_KEY = 'ui.headwater.feed_chat_id';
 const LEGACY_FEED_CHAT_ID_KEY = 'ui.deltanet.feed_chat_id';
 const LOCKED_CHAT_ID_KEY = 'ui.headwater.locked_chat_id';
 const LEGACY_LOCKED_CHAT_ID_KEY = 'ui.deltanet.locked_chat_id';
+
+export type NativeCoreExit = {
+  expected: boolean;
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  error?: Error;
+};
+
+type ManagedDeltaChat = Omit<StdioDeltaChat, 'close'> & {
+  close(): Promise<void>;
+  forceClose(): Promise<void>;
+  exited: Promise<NativeCoreExit>;
+};
+
+type StartCore = (dataDir: string, rpcServerPath?: string) => ManagedDeltaChat;
+
+const startCore: StartCore = (dataDir, rpcServerPath) => {
+  const server = spawn(rpcServerPath ?? getRPCServerPath(), {
+    env: {
+      RUST_LOG: process.env['RUST_LOG'],
+      DC_ACCOUNTS_PATH: dataDir,
+    },
+    stdio: ['pipe', 'pipe', 'ignore'],
+  });
+  server.stdin.on('error', () => {});
+  server.stdout.on('error', () => {});
+  let expected = false;
+  const exited = new Promise<NativeCoreExit>((resolve) => {
+    server.once('error', (error) => resolve({
+      expected,
+      code: server.exitCode,
+      signal: server.signalCode,
+      error,
+    }));
+    server.once('exit', (code, signal) => resolve({ expected, code, signal }));
+  });
+  const dc = new StdioDeltaChat(server.stdin, server.stdout, true);
+  let closePromise: Promise<void> | null = null;
+  let forceClosePromise: Promise<void> | null = null;
+  const waitForExit = async (timeoutMs: number): Promise<boolean> => {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        exited.then(() => true),
+        new Promise<boolean>((resolve) => { timeout = setTimeout(() => resolve(false), timeoutMs); }),
+      ]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
+  };
+  const forceClose = (): Promise<void> => {
+    if (forceClosePromise) return forceClosePromise;
+    forceClosePromise = (async () => {
+      expected = true;
+      if (server.exitCode === null && server.signalCode === null) server.kill('SIGKILL');
+      if (!await waitForExit(1_000)) {
+        throw new Error('deltachat-rpc-server did not exit after SIGKILL');
+      }
+    })();
+    return forceClosePromise;
+  };
+  const close = (): Promise<void> => {
+    if (closePromise) return closePromise;
+    closePromise = (async () => {
+      expected = true;
+      if (server.exitCode === null && server.signalCode === null) server.kill('SIGTERM');
+      if (!await waitForExit(3_000)) {
+        await forceClose();
+      }
+    })();
+    return closePromise;
+  };
+  return Object.assign(dc, { close, forceClose, exited }) as unknown as ManagedDeltaChat;
+};
+
+const coreExitError = (exit: NativeCoreExit): Error =>
+  new Error(
+    exit.error?.message ??
+    `deltachat-rpc-server exited during startup (${exit.code ?? exit.signal ?? 'unknown'})`,
+    exit.error ? { cause: exit.error } : undefined,
+  );
+
+const whileCoreRunning = async <TValue>(
+  dc: ManagedDeltaChat,
+  operation: () => Promise<TValue>,
+  signal?: AbortSignal,
+): Promise<TValue> => {
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(new Error('Delta Chat startup aborted'));
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+  });
+  try {
+    return await Promise.race([
+      operation(),
+      dc.exited.then((exit) => Promise.reject(coreExitError(exit))),
+      aborted,
+    ]);
+  } finally {
+    if (onAbort) signal?.removeEventListener('abort', onAbort);
+  }
+};
 
 export const readCompatibleConfig = async (
   get: (key: string) => Promise<string | null>,
@@ -155,7 +259,9 @@ export const buildEnteredLoginParam = (
 });
 
 export type DeltaChatTransport = Transport & {
-  close(): void;
+  close(): Promise<void>;
+  forceClose(): Promise<void>;
+  exited: Promise<NativeCoreExit>;
   accountId: number;
   /** Resolve when a core event of `kind` matching `predicate` arrives. */
   waitForEvent<K extends T.EventType['kind']>(
@@ -231,6 +337,12 @@ export type OpenTransportOptions = {
   beginExternalMutation?: () => () => void;
   /** Restore-only: return an inert transport plus an explicit start handle. */
   deferStart?: boolean;
+  /** Absolute packaged helper path; defaults to the pinned platform package. */
+  rpcServerPath?: string;
+  /** Native-core launcher seam for lifecycle tests. */
+  startCore?: StartCore;
+  /** Cancels native-core startup while preserving cleanup ownership. */
+  signal?: AbortSignal;
 };
 
 type DeferredBackground = { start?: () => void };
@@ -247,30 +359,37 @@ export const openTransport = async (
    */
   transportParams?: ExplicitTransportParams,
 ): Promise<DeltaChatTransport> => {
-  const dc = startDeltaChat(dataDir, { muteStdErr: true });
+  const dc = (options.startCore ?? startCore)(dataDir, options.rpcServerPath);
   const rpc = dc.rpc;
-  const accountIds = await rpc.getAllAccountIds();
-  const accountId = accountIds[0] ?? (await rpc.addAccount());
+  try {
+    return await whileCoreRunning(dc, async () => {
+      const accountIds = await rpc.getAllAccountIds();
+      const accountId = accountIds[0] ?? (await rpc.addAccount());
 
-  if (!(await rpc.isConfigured(accountId))) {
-    // Display name is a UI-only config value carried on the account regardless
-    // of how the transport is configured; set it up front either way.
-    await rpc.setConfig(accountId, 'displayname', creds.displayName);
-    if (transportParams) {
-      // Explicit-server path: no autoconfig, accept the relay's self-signed
-      // cert. `addTransport` both stores the login params and configures the
-      // account, so no separate `configure()` call is needed.
-      await rpc.addTransport(accountId, buildEnteredLoginParam(creds, transportParams));
-    } else {
-      await rpc.batchSetConfig(accountId, {
-        addr: creds.addr,
-        mail_pw: creds.password,
-      });
-      await rpc.configure(accountId);
-    }
+      if (!(await rpc.isConfigured(accountId))) {
+        // Display name is a UI-only config value carried on the account regardless
+        // of how the transport is configured; set it up front either way.
+        await rpc.setConfig(accountId, 'displayname', creds.displayName);
+        if (transportParams) {
+          // Explicit-server path: no autoconfig, accept the relay's self-signed
+          // cert. `addTransport` both stores the login params and configures the
+          // account, so no separate `configure()` call is needed.
+          await rpc.addTransport(accountId, buildEnteredLoginParam(creds, transportParams));
+        } else {
+          await rpc.batchSetConfig(accountId, {
+            addr: creds.addr,
+            mail_pw: creds.password,
+          });
+          await rpc.configure(accountId);
+        }
+      }
+      await rpc.startIo(accountId);
+      return buildTransport(dc, accountId, creds, options);
+    }, options.signal);
+  } catch (error) {
+    await dc.close();
+    throw error;
   }
-  await rpc.startIo(accountId);
-  return buildTransport(dc, accountId, creds, options);
 };
 
 /** Config key stamped after the API validates a complete downloadable backup. */
@@ -329,9 +448,10 @@ export const restoreTransport = async (
   creds: ChatmailCredentials;
   start(): Promise<void>;
 }> => {
-  const dc = startDeltaChat(dataDir, { muteStdErr: true });
+  const dc = (options.startCore ?? startCore)(dataDir, options.rpcServerPath);
   const rpc = dc.rpc;
   try {
+    return await whileCoreRunning(dc, async () => {
     const accountIds = await rpc.getAllAccountIds();
     const accountId = accountIds[0] ?? (await rpc.addAccount());
     if (await rpc.isConfigured(accountId)) {
@@ -363,14 +483,15 @@ export const restoreTransport = async (
     let started = false;
     const start = async (): Promise<void> => {
       if (started) return;
-      await rpc.startIo(accountId);
+      await whileCoreRunning(dc, () => rpc.startIo(accountId), options.signal);
       started = true;
       deferred.start?.();
     };
     if (!options.deferStart) await start();
     return { transport, creds, start };
+    }, options.signal);
   } catch (err) {
-    dc.close();
+    await dc.close();
     throw err;
   }
 };
@@ -381,7 +502,7 @@ export const restoreTransport = async (
  * event wiring, ingestion machinery, and the whole Transport surface.
  */
 const buildTransport = (
-  dc: ReturnType<typeof startDeltaChat>,
+  dc: ManagedDeltaChat,
   accountId: number,
   creds: ChatmailCredentials,
   options: OpenTransportOptions,
@@ -696,18 +817,33 @@ const buildTransport = (
 
   return {
     accountId,
-    close: () => {
-      // The jsonrpc client's event loop has no stop mechanism: after the core
-      // process is killed it issues one more getNextEventBatch, whose write to
-      // the dead child's stdin raises an UNHANDLED 'error' (EPIPE) that would
-      // crash the caller. Swallow errors on the pipe before killing. Reaches
-      // into the (exact-version-pinned) client's transport internals.
-      (dc as { transport?: { input?: NodeJS.WritableStream } }).transport?.input?.on?.(
-        'error',
-        () => {},
-      );
-      dc.close();
+    exited: dc.exited,
+    forceClose: async () => {
+      ingestionActive = false;
+      followerHandlers.clear();
+      await dc.forceClose();
     },
+    close: (() => {
+      let closePromise: Promise<void> | null = null;
+      return (): Promise<void> => {
+        if (closePromise) return closePromise;
+        closePromise = (async () => {
+          ingestionActive = false;
+          followerHandlers.clear();
+          let timeout: ReturnType<typeof setTimeout> | undefined;
+          await Promise.race([
+            rpc.stopIo(accountId).catch(() => {}),
+            new Promise<void>((resolve) => {
+              timeout = setTimeout(resolve, 3_000);
+              timeout.unref();
+            }),
+          ]);
+          if (timeout) clearTimeout(timeout);
+          await dc.close();
+        })();
+        return closePromise;
+      };
+    })(),
 
     waitForEvent: <K extends T.EventType['kind']>(
       kind: K,

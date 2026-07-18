@@ -1,7 +1,7 @@
 /**
  * Thread auto-backfill — the INGEST-side wiring (design-sketch #3,
  * meta/issues/thread-auto-backfill.md): the three things that happen when
- * messages flow through the daemon's ingest hook, factored out of main.ts so
+ * messages flow through the daemon's ingest hook, factored out of daemon.ts so
  * they're unit-testable against a fake transport + a plain store + a fake
  * backfiller:
  *
@@ -236,7 +236,7 @@ export const handleBackfillControlDm = async (
  * large store doesn't flood the queue at once (the flush's global rate cap then
  * paces the actual sends). Pure decision + enqueue. The dangling refs of LOCAL
  * messages are seeded by the existing startup re-index pass, which runs
- * `enqueueDangling` on each backfilled message (wired in main.ts).
+ * `enqueueDangling` on each backfilled message (wired in daemon.ts).
  */
 export const seedBackfillQueue = (store: Store, backfiller: Backfiller, maxSeed = 200): void => {
   let seeded = 0;

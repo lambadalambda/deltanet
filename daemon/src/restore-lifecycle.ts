@@ -4,7 +4,7 @@ import type { ChatmailCredentials } from './transport/deltachat.js';
 export type PreparedRestore = {
   transport: Transport;
   commit(persistCredentials: (credentials: ChatmailCredentials) => void): Promise<void>;
-  abort(): void;
+  abort(): void | Promise<void>;
 };
 
 type PreparedRestoreOptions = {
@@ -12,7 +12,7 @@ type PreparedRestoreOptions = {
   prepareCommit(persistCredentials: (credentials: ChatmailCredentials) => void): Promise<void>;
   publish(): void;
   rollback(): void;
-  close(): void;
+  close(): void | Promise<void>;
   afterPublish?(): void;
 };
 
@@ -20,10 +20,10 @@ type PreparedRestoreOptions = {
 export const createPreparedRestore = (options: PreparedRestoreOptions): PreparedRestore => {
   let state: 'prepared' | 'published' | 'closed' = 'prepared';
 
-  const closePrepared = (): void => {
+  const closePrepared = async (): Promise<void> => {
     if (state !== 'prepared') return;
     state = 'closed';
-    options.close();
+    await options.close();
   };
 
   return {
@@ -45,7 +45,7 @@ export const createPreparedRestore = (options: PreparedRestoreOptions): Prepared
         try {
           options.rollback();
         } finally {
-          closePrepared();
+          await closePrepared();
         }
         throw error;
       }

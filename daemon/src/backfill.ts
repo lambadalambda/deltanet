@@ -182,7 +182,7 @@ export type Backfiller = {
 /**
  * Build the auto-fetch loop. Injected seams keep it testable:
  *  - `store`: the negative-cache (attempt count + backoff).
- *  - `send`: emits one request DM (the transport wiring lives in main.ts).
+ *  - `send`: emits one request DM (the transport wiring lives in daemon.ts).
  *  - `now`: the clock (tests pass a controllable one).
  *  - `schedule`/`cancel`: timer seam (defaults to setTimeout; tests drive flush
  *    directly and pass no-ops).

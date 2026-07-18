@@ -39,8 +39,8 @@ const bodyOf = (m: T.Message): string => parseWire(m.text).body;
 describe('thread auto-backfill: C heals A\'s half by asking B (no boost)', () => {
   const transports: DeltaChatTransport[] = [];
 
-  afterAll(() => {
-    for (const t of transports) t.close();
+  afterAll(async () => {
+    await Promise.all(transports.map((transport) => transport.close()));
   });
 
   /**

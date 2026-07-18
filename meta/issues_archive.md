@@ -53,3 +53,4 @@
 - [x] [Align pnpm versions across the workspace and CI](issues/pnpm-version-alignment.md)
 - [x] [Refresh README and project status documentation](issues/readme-status-audit.md)
 - [x] [Rebrand DeltaNet to Headwater](issues/rebrand-headwater.md)
+- [x] [Build a production daemon runtime and lifecycle](issues/daemon-production-runtime.md)

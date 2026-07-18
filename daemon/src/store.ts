@@ -738,7 +738,7 @@ export type Store = {
    * reach the ingest hook several times (IncomingMsg + the MsgsChanged
    * safety net + repeat MsgsChanged on state changes — see deltachat.ts),
    * so callers gate execute-once side effects (e.g. follow-back
-   * grant/accept actions in main.ts) on this return value.
+   * grant/accept actions in daemon.ts) on this return value.
    */
   ingestMessage(msg: T.Message, mid: string, isFeedMessage?: boolean): boolean;
   /** Was this local message positively observed in a feed chat? */

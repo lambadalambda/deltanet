@@ -10,7 +10,7 @@
   },
   "scripts": {
     "setup": "pnpm --dir daemon install && pnpm --dir frontend install",
-    "build": "pnpm --dir frontend build",
+    "build": "pnpm --dir frontend build && pnpm --dir daemon build",
     "start": "pnpm --dir daemon start",
     "dev:daemon": "pnpm --dir daemon dev",
     "dev:frontend": "pnpm --dir frontend dev",

@@ -36,8 +36,8 @@ describe('canonical-mid unification over chatmail', () => {
   const transports: DeltaChatTransport[] = [];
   const BASE = 'http://localhost:4030';
 
-  afterAll(() => {
-    for (const transport of transports) transport.close();
+  afterAll(async () => {
+    await Promise.all(transports.map((transport) => transport.close()));
   });
 
   const scratchStore = (): Store =>

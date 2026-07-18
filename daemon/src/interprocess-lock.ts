@@ -47,6 +47,7 @@ export type InterprocessLockRelease = () => void;
 
 export type ProcessLifetimeInterprocessLock = Readonly<{
   queuePath: string;
+  release: InterprocessLockRelease;
 }>;
 
 export class InterprocessLockError extends Error {
@@ -442,7 +443,19 @@ export const acquireProcessLifetimeInterprocessLock = (
   if (existing) return existing.handle;
 
   const release = acquireInterprocessLock(queuePath);
-  const acquired = Object.freeze({ queuePath });
+  let released = false;
+  let acquired: ProcessLifetimeInterprocessLock;
+  acquired = Object.freeze({
+    queuePath,
+    release: () => {
+      if (released) return;
+      release();
+      released = true;
+      if (processLifetimeLocks.get(queuePath)?.handle === acquired) {
+        processLifetimeLocks.delete(queuePath);
+      }
+    },
+  });
   processLifetimeLocks.set(queuePath, { handle: acquired, release });
   return acquired;
 };

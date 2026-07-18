@@ -19,7 +19,7 @@ describe('createPreparedRestore', () => {
     expect(publish).not.toHaveBeenCalled();
     expect(rollback).toHaveBeenCalledOnce();
     expect(close).toHaveBeenCalledOnce();
-    prepared.abort();
+    await prepared.abort();
     expect(close).toHaveBeenCalledOnce();
   });
 
@@ -36,7 +36,7 @@ describe('createPreparedRestore', () => {
       close: () => { order.push('close'); },
     });
     await prepared.commit(() => { order.push('journal'); });
-    prepared.abort();
+    await prepared.abort();
     expect(order).toEqual(['prepare', 'journal', 'publish']);
   });
 });

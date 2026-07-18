@@ -1,6 +1,6 @@
 /**
  * Message/notification -> Mastodon JSON mapping, factored out of
- * `server.ts` so the live-ingestion path (`main.ts`) can map a freshly
+ * `server.ts` so the live-ingestion path (`daemon.ts`) can map a freshly
  * ingested message/notification to exactly the same JSON shape the REST
  * endpoints (`GET /api/v1/timelines/*`, `GET /api/v1/notifications`) return,
  * for streaming over the websocket hub (`streaming.ts`). No divergent
@@ -55,7 +55,7 @@ export type StatusMapper = {
 
 /**
  * Builds the `{ resolver, ownAddr, toStatus }` trio `server.ts`'s REST
- * handlers and `main.ts`'s live-ingestion path both need, backed by the same
+ * handlers and `daemon.ts`'s live-ingestion path both need, backed by the same
  * `Store` instance and a fixed `baseUrl`. `ownAddr` is memoized across calls
  * (per mapper instance) exactly as `server.ts`'s previous inline
  * `ownAddrCache` was.

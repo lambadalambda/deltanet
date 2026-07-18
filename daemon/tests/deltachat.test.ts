@@ -5,9 +5,11 @@ import {
   credsFromConfig,
   isFeedChat,
   matchesSelfAddr,
+  openTransport,
   readCompatibleConfig,
   shouldIngest,
   writeCompatibleConfig,
+  type OpenTransportOptions,
 } from '../src/transport/deltachat.js';
 import { makeContact, makeMessage } from './entities.test.js';
 
@@ -183,5 +185,45 @@ describe('compatible Delta Chat config', () => {
 
     expect(values.get('ui.deltanet.feed_chat_id')).toBe('41');
     expect(values.has('ui.headwater.feed_chat_id')).toBe(false);
+  });
+});
+
+describe('Delta Chat core lifecycle', () => {
+  it('closes a spawned core when transport initialization fails', async () => {
+    let closes = 0;
+    const fakeCore = {
+      rpc: {
+        getAllAccountIds: async () => { throw new Error('rpc initialization failed'); },
+      },
+      close: async () => { closes += 1; },
+      exited: new Promise(() => {}),
+    };
+    const startCore = (() => fakeCore) as unknown as NonNullable<OpenTransportOptions['startCore']>;
+
+    await expect(openTransport('unused', {
+      addr: 'alice@example.org',
+      password: 'secret',
+      displayName: 'Alice',
+    }, { startCore })).rejects.toThrow('rpc initialization failed');
+    expect(closes).toBe(1);
+  });
+
+  it('closes a core that exits while an initialization RPC is pending', async () => {
+    let closes = 0;
+    const fakeCore = {
+      rpc: {
+        getAllAccountIds: () => new Promise<number[]>(() => {}),
+      },
+      close: async () => { closes += 1; },
+      exited: Promise.resolve({ expected: false, code: 9, signal: null }),
+    };
+    const startCore = (() => fakeCore) as unknown as NonNullable<OpenTransportOptions['startCore']>;
+
+    await expect(openTransport('unused', {
+      addr: 'alice@example.org',
+      password: 'secret',
+      displayName: 'Alice',
+    }, { startCore })).rejects.toThrow(/exited during startup \(9\)/);
+    expect(closes).toBe(1);
   });
 });

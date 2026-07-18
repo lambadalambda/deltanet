@@ -10,9 +10,11 @@
   },
   "scripts": {
     "dev": "tsx watch src/main.ts",
-    "start": "tsx src/main.ts",
-    "test": "vitest run --exclude 'tests/integration/**'",
-    "test:watch": "vitest --exclude 'tests/integration/**'",
+    "build": "node --input-type=module -e \"import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.build.json",
+    "start": "node dist/main.js",
+    "test": "vitest run --exclude 'tests/integration/**' --exclude 'tests/artifact/**'",
+    "test:watch": "vitest --exclude 'tests/integration/**' --exclude 'tests/artifact/**'",
+    "test:artifact": "pnpm build && vitest run tests/artifact/production-runtime.test.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "check": "tsc --noEmit",
     "setup-account": "tsx scripts/setup-account.ts"

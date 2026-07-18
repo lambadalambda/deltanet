@@ -40,8 +40,8 @@ describe('non-follower thread rendering + own-reaction re-index over chatmail', 
   const transports: DeltaChatTransport[] = [];
   const BASE = 'http://localhost:4030';
 
-  afterAll(() => {
-    for (const transport of transports) transport.close();
+  afterAll(async () => {
+    await Promise.all(transports.map((transport) => transport.close()));
   });
 
   /** main.ts-style ingest wiring: index (capturing freshness), then derive with ownAddr. */
@@ -214,7 +214,7 @@ describe('non-follower thread rendering + own-reaction re-index over chatmail', 
     // Close A's transport, delete ONLY the test's own store file, reopen: the
     // startup backfill re-indexes every message (reply edges from the DM copy,
     // own reaction from the SELF react control DM) with no data surgery.
-    a.close();
+    await a.close();
     transports.splice(transports.indexOf(a), 1);
     expect(existsSync(A_STORE)).toBe(true);
     rmSync(A_STORE, { force: true }); // the test's own store dir only

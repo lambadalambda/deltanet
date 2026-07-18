@@ -15,5 +15,5 @@ description = "Run Headwater daemon and frontend tests"
 run = "pnpm test"
 
 [tasks.build]
-description = "Build the Headwater frontend"
+description = "Build the Headwater frontend and production daemon"
 run = "pnpm build"

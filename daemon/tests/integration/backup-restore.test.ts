@@ -27,8 +27,8 @@ const bodyOf = (m: T.Message): string => parseWire(m.text).body;
  */
 describe('backup & restore over the relay', () => {
   const transports: DeltaChatTransport[] = [];
-  afterAll(() => {
-    for (const t of transports) t.close();
+  afterAll(async () => {
+    await Promise.all(transports.map((transport) => transport.close()));
   });
 
   /** Minimal main.ts-style ingest: index + derive (enough for pins/notifications). */
@@ -140,7 +140,7 @@ describe('backup & restore over the relay', () => {
     expect(typeof info.last_backup_at).toBe('number');
 
     // THE WIPE: kill A's core and delete the whole data dir — the disk is gone.
-    a.close();
+    await a.close();
     transports.splice(transports.indexOf(a), 1);
     refs.a = null;
     rmSync(A_DATA, { recursive: true, force: true });
@@ -171,7 +171,7 @@ describe('backup & restore over the relay', () => {
             committed = true;
           },
           abort: () => {
-            if (!committed) transport.close();
+            if (!committed) void transport.close();
           },
         };
       },

@@ -37,8 +37,8 @@ const bodyOf = (m: T.Message): string => parseWire(m.text).body;
  */
 describe('embed-only interactions over the relay', () => {
   const transports: DeltaChatTransport[] = [];
-  afterAll(() => {
-    for (const t of transports) t.close();
+  afterAll(async () => {
+    await Promise.all(transports.map((transport) => transport.close()));
   });
 
   const serveGuardFor = () => {

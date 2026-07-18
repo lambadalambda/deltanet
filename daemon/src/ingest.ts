@@ -48,7 +48,7 @@ const refKey = (store: Store, ref: RefToken): string =>
  *   with `ownAddr`), so a re-index (migration) restores reactions we made —
  *   the endpoints only ever applied them directly, so without this a fresh
  *   store loses them (see ../meta/issues/non-follower-thread-rendering.md).
- *   `ownAddr` is threaded in from the caller (main.ts/server/integration
+ *   `ownAddr` is threaded in from the caller (daemon.ts/server/integration
  *   ingest) since a SELF message's `sender.address` is not reliably our own
  *   canonical address. Requires `ownAddr` to be present; when it's undefined
  *   (a caller that can't know it yet) SELF derivation is skipped.
@@ -65,7 +65,7 @@ const refKey = (store: Store, ref: RefToken): string =>
  * Returns the notifications actually created (i.e. not dedupe no-ops) —
  * `Store.addNotification` already reports this per-call via its `| null`
  * return, so this just collects the non-null results. Live ingestion
- * (`main.ts`) uses this to broadcast exactly the newly-derived notifications
+ * (`daemon.ts`) uses this to broadcast exactly the newly-derived notifications
  * over the streaming hub without a separate before/after diff against
  * `listNotifications`. SELF re-derivation never produces notifications, so it
  * doesn't affect the return value.
@@ -205,7 +205,7 @@ export const deriveOnIngest = (
  * work (replying with our invite, or joining a feed), but `deriveOnIngest`
  * (and the whole store-derivation path) is sync. Rather than force async into
  * it, `deriveFollowbackActions` is a pure, sync function that inspects a
- * message and returns the typed action(s) it implies; the caller (main.ts's
+ * message and returns the typed action(s) it implies; the caller (daemon.ts's
  * ingest hook) executes them against the live `Transport` via
  * `executeFollowbackAction`, and only for *live* (`'combined'`) messages — so
  * a daemon restart replaying old requests never re-answers or re-joins.
@@ -248,7 +248,7 @@ export const deriveFollowbackActions = (
   const text = msg.text;
 
   // A THREAD-scoped invite-request/grant is NOT a feed follow-back — it belongs
-  // to the thread-subscribe path (handled separately in main.ts). Skip it here so
+  // to the thread-subscribe path (handled separately in daemon.ts). Skip it here so
   // a "subscribe to your thread" DM never makes us grant a FEED follow-back, and a
   // scoped grant never joins us to a feed. Unscoped requests/grants (the existing
   // follow-back flow) are unchanged.
@@ -279,7 +279,7 @@ export const deriveFollowbackActions = (
 
 /**
  * Execute a follow-back action against the live transport. Called ONLY for
- * live (`'combined'`) messages by main.ts's ingest hook.
+ * live (`'combined'`) messages by daemon.ts's ingest hook.
  *
  * - `grant-invite`: fetch our feed invite and DM it back to the requester.
  * - `accept-grant`: securejoin the feed via `follow()` (which also unblocks a
@@ -337,7 +337,7 @@ export const cleanupFollowbackAction = (store: Store, action: FollowbackAction):
 };
 
 /**
- * The complete follow-back half of the ingest hook, extracted from `main.ts`
+ * The complete follow-back half of the ingest hook, extracted from `daemon.ts`
  * so the wiring itself is unit-testable (see tests/followback.test.ts):
  *
  * - `'index'` phase: nothing (follow-back is derive-side work).
@@ -350,7 +350,7 @@ export const cleanupFollowbackAction = (store: Store, action: FollowbackAction):
  *   times (IncomingMsg + the MsgsChanged safety net + repeat MsgsChanged on
  *   state changes), and without this gate a single invite-request would send
  *   one grant DM per delivery. Also skipped when no transport is available
- *   yet (the same startup race main.ts tolerates for streaming): the message
+ *   yet (the same startup race daemon.ts tolerates for streaming): the message
  *   is left un-actioned rather than crashing.
  */
 export const runFollowbackOnIngest = async (

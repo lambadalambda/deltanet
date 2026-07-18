@@ -105,6 +105,8 @@ export type ServerOptions = {
         auth: AuthStore;
         /** Additional browser origins trusted alongside baseUrl's own origin. */
         trustedOrigins?: string[];
+        /** Receives replacement enrollment secrets without requiring log parsing. */
+        onEnrollmentCode?: (enrollment: { code: string; expiresAt: number }) => void;
       }
     | { unsafeTestOnly: true };
   /** Absolute path to a built frontend SPA to serve as static files; skipped if unset/missing. */
@@ -120,7 +122,7 @@ export type ServerOptions = {
   /**
    * Enables `GET /api/v1/streaming` (+ trailing-slash alias) when both this
    * and `hub` are provided. Hono's node-server `upgradeWebSocket` helper
-   * (see `main.ts`, which also wires the `ws.WebSocketServer` into `serve`'s
+   * (see `daemon.ts`, which also wires the `ws.WebSocketServer` into `serve`'s
    * `websocket.server` option — that half lives outside `createApp` since it
    * needs the real HTTP server instance `serve()` returns). Optional so
    * `createApp` stays usable in tests/contexts with no real websocket
@@ -543,7 +545,7 @@ export const createApp = (
 
   // Shared status/notification JSON mapping (see ./mapping.ts) — the same
   // instance's `toStatus`/`ownAddr` (with its request-lifetime cache) backs
-  // every REST handler below, and `main.ts`'s live-ingestion path builds its
+  // every REST handler below, and `daemon.ts`'s live-ingestion path builds its
   // own instance over the same `store` so streamed frames use identical
   // mapping logic.
   const mapper = createStatusMapper(store, baseUrl, {
@@ -1285,7 +1287,7 @@ export const createApp = (
         } else {
           if (!committed) {
             try {
-              prepared?.abort();
+              await prepared?.abort();
             } finally {
               rollbackSidecarFiles();
             }
@@ -1450,7 +1452,8 @@ export const createApp = (
       return c.json({ error: 'invalid_token' }, 401);
     }
     const enrollment = enabledSecurity.auth.createEnrollmentCode();
-    console.log(`Headwater: one-time frontend enrollment code (10 minutes): ${enrollment.code}`);
+    if (enabledSecurity.onEnrollmentCode) enabledSecurity.onEnrollmentCode(enrollment);
+    else console.log(`Headwater: one-time frontend enrollment code (10 minutes): ${enrollment.code}`);
     return c.json({});
   });
 

@@ -6,7 +6,7 @@
  * through a minimal structural interface (`StreamingSocket`) so unit tests
  * can register plain fakes (`{ send() {}, readyState: 1 }`) without spinning
  * up a real websocket server. The actual `ws`-backed adapter lives at the
- * route-registration call site (see `main.ts`/`server.ts`), which only needs
+ * route-registration call site (see `daemon.ts`/`server.ts`), which only needs
  * to satisfy this interface.
  */
 

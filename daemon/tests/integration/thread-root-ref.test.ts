@@ -35,8 +35,8 @@ describe('thread-root ref + cold root DM copy over chatmail', () => {
   const transports: DeltaChatTransport[] = [];
   const BASE = 'http://localhost:4030';
 
-  afterAll(() => {
-    for (const transport of transports) transport.close();
+  afterAll(async () => {
+    await Promise.all(transports.map((transport) => transport.close()));
   });
 
   /** main.ts-style ingest wiring: index (capturing freshness), then derive with ownAddr. */

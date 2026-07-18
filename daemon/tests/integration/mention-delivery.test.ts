@@ -22,8 +22,8 @@ const bodyOf = (m: T.Message): string => parseWire(m.text).body;
  */
 describe('mention addressing over the relay', () => {
   const transports: DeltaChatTransport[] = [];
-  afterAll(() => {
-    for (const t of transports) t.close();
+  afterAll(async () => {
+    await Promise.all(transports.map((transport) => transport.close()));
   });
 
   const wireIngest = (store: Store, transportRef: () => Transport | null) =>

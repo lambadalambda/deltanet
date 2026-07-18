@@ -41,6 +41,9 @@ jobs:
         # a systemd podman relay + several minutes to build the image), keeping
         # this job the fast hermetic check.
 
+      - name: Production artifact (plain Node 24 runtime)
+        run: pnpm test:artifact
+
   frontend:
     name: frontend (typecheck + Playwright)
     runs-on: ubuntu-latest

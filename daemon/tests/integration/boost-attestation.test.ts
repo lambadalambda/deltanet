@@ -29,8 +29,8 @@ import { parseWire } from '../../src/wire.js';
  */
 describe('post-attestations: verified boost embed with media across a third-party hop', () => {
   const transports: DeltaChatTransport[] = [];
-  afterAll(() => {
-    for (const transport of transports) transport.close();
+  afterAll(async () => {
+    await Promise.all(transports.map((transport) => transport.close()));
   });
 
   /** main.ts-style ingest wiring: index (feed/DM classification), then derive with ownAddr. */

@@ -39,8 +39,8 @@ import { parseWire, parseWireUuid } from '../../src/wire.js';
 describe('post-uuid third-party thread resolution over chatmail', () => {
   const transports: DeltaChatTransport[] = [];
 
-  afterAll(() => {
-    for (const transport of transports) transport.close();
+  afterAll(async () => {
+    await Promise.all(transports.map((transport) => transport.close()));
   });
 
   /** main.ts-style ingest wiring: index (per-message feed/DM classification), then derive with ownAddr. */

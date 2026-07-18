@@ -31,7 +31,7 @@ match package metadata and CI.
 ```sh
 mise install
 mise run setup     # install daemon + frontend deps
-mise run build     # build the frontend
+mise run build     # build the frontend and compiled production daemon
 mise exec -- pnpm start  # daemon on http://localhost:4030, serving the UI
 ```
 
@@ -42,6 +42,21 @@ even though dependencies are installed only in the two packages. Root scripts
 invoke each package with the same pinned pnpm version; run them through
 `mise exec -- pnpm`, or use the equivalent root tasks (`mise run setup`,
 `check`, `test`, and `build`).
+
+`pnpm start` runs `daemon/dist/main.js` directly under Node 24; it does not load
+TypeScript or `tsx`. Run `mise run build` first after source changes. For daemon
+development with watch-mode TypeScript execution, use
+`mise exec -- pnpm --dir daemon dev` instead.
+
+The reusable lifecycle is exported from `daemon/dist/daemon.js` as
+`startDaemon(config)`. Managed callers pass absolute state, credential, auth,
+static-asset, lock, restore-journal, and optional native-helper paths. Readiness
+reports the actual bound loopback origin; structured events carry enrollment
+replacement, diagnostics, and fatal failures. `close()` is asynchronous,
+idempotent, and bounded to 10 seconds by default, closing HTTP/WebSocket clients,
+background work, Delta Chat I/O/native process, and the daemon lock. The CLI is
+a thin adapter that preserves existing environment defaults and performs this
+shutdown on `SIGINT` or `SIGTERM`.
 
 Open http://localhost:4030 and keep the daemon terminal visible. For an existing
 account, enter the one-time enrollment code printed at startup the first time a

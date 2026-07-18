@@ -12,8 +12,8 @@ import { openRelayTransport, register } from './relay.js';
 describe('federation over chatmail', () => {
   const transports: DeltaChatTransport[] = [];
 
-  afterAll(() => {
-    for (const transport of transports) transport.close();
+  afterAll(async () => {
+    await Promise.all(transports.map((transport) => transport.close()));
   });
 
   /**

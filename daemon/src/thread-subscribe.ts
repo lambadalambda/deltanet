@@ -1,7 +1,7 @@
 /**
  * Thread subscribe — per-thread broadcast channel hosted by the root author
  * (design-sketch #3, layers 2–3; meta/issues/thread-subscribe.md). The INGEST-
- * side wiring + pure helpers, factored out of main.ts so the whole surface is
+ * side wiring + pure helpers, factored out of daemon.ts so the whole surface is
  * unit-testable against a fake transport + a plain store, mirroring
  * backfill-ingest.ts.
  *

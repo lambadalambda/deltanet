@@ -88,7 +88,7 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-const fixture = () => {
+const fixture = (onEnrollmentCode?: (enrollment: { code: string; expiresAt: number }) => void) => {
   const dir = mkdtempSync(join(tmpdir(), 'deltanet-security-test-'));
   dirs.push(dir);
   const publicBlob = join(dir, 'public.png');
@@ -171,7 +171,7 @@ const fixture = () => {
   const app = createApp(ctx, {
     baseUrl: BASE,
     store,
-    security: { auth, trustedOrigins: [TRUSTED] },
+    security: { auth, trustedOrigins: [TRUSTED], onEnrollmentCode },
   });
   return { app, auth, ctx, dir, store, transport };
 };
@@ -532,7 +532,8 @@ describe('OAuth security contract', () => {
   });
 
   it('requires its bearer and unpairs the client so retained credentials and sessions are unusable', async () => {
-    const { app, auth } = fixture();
+    const enrollmentCodes: string[] = [];
+    const { app, auth } = fixture((enrollment) => enrollmentCodes.push(enrollment.code));
     const authenticated = await authenticate(app, auth);
     const secondCode = auth.issueAuthorizationCode({
       clientId: authenticated.client.client_id,
@@ -561,6 +562,7 @@ describe('OAuth security contract', () => {
       body: new URLSearchParams({ token: authenticated.access_token }),
     });
     expect(revoke.status).toBe(200);
+    expect(enrollmentCodes).toHaveLength(1);
     expect(auth.validateAccessToken(authenticated.access_token)).toBeNull();
     expect(auth.validateAccessToken(secondSession.accessToken)).toBeNull();
     expect((await app.request('/api/v1/accounts/verify_credentials', {

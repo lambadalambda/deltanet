@@ -161,4 +161,17 @@ describe('interprocess filesystem lock', () => {
     expect(ticketNames()).toHaveLength(1);
     expect(() => acquireInterprocessLock(queuePath)).toThrow(InterprocessLockBusyError);
   });
+
+  it('explicitly releases a process-lifetime lock so it can be reacquired', () => {
+    const first = acquireProcessLifetimeInterprocessLock(queuePath);
+
+    first.release();
+    first.release();
+    const second = acquireProcessLifetimeInterprocessLock(queuePath);
+
+    expect(second).not.toBe(first);
+    expect(ticketNames()).toHaveLength(2);
+    expect(() => acquireInterprocessLock(queuePath)).toThrow(InterprocessLockBusyError);
+    second.release();
+  });
 });

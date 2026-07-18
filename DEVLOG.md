@@ -4,6 +4,40 @@ DeltaNet-era entries retained after the current entry preserve the former name
 and deployed identifiers as written. They document implementation history, not
 current naming.
 
+## 2026-07-18 - compiled production daemon and owned lifecycle
+
+The daemon is now an import-safe, embeddable service instead of a program that
+starts during `main.ts` module evaluation
+(`meta/issues/daemon-production-runtime.md`):
+
+- `startDaemon(config)` accepts absolute managed paths and returns the actual
+  bound origin, readiness data, a completion promise, and one idempotent bounded
+  `close()` operation. Structured events report enrollment-code replacement,
+  readiness, recoverable diagnostics, and startup/runtime fatal failures without
+  requiring a desktop parent to parse logs.
+- Listener binding now confirms the real address before readiness. Port `0`
+  adopts and trusts the OS-selected same-origin URL, occupied ports unwind
+  cleanly, and canonical same-path runtimes are rejected in-process before they
+  can share and prematurely release a process lock.
+- Shutdown owns HTTP, WebSocket clients/server, backfill timers, in-flight
+  signup/restore work, provisional and published transports, Delta Chat I/O,
+  the native helper, and the daemon lock under one deadline. Timed-out graceful
+  transport closure escalates to confirmed `SIGKILL`; the lock is never released
+  while a helper or lifecycle operation may still own the data path.
+- The pinned `deltachat-rpc-server` executable is now spawned under local
+  supervision using the same JSON-RPC client. Spawn failures and unexpected
+  exits become typed failures instead of exceptions thrown from child-process
+  handlers; startup races close the helper, while runtime exits close the daemon.
+- `main.ts` is a thin compatibility adapter for environment defaults, console
+  rendering, and pre-readiness `SIGINT`/`SIGTERM` cancellation. Production start
+  runs compiled `dist/main.js` directly under Node 24; `tsx` remains development
+  only. CI builds and launches that artifact, serves a static SPA fallback,
+  exercises both signals, and proves the listener can be rebound afterward.
+- Final verification passed 1,533 daemon unit tests, both compiled-artifact
+  smoke tests, root TypeScript/Svelte checks, the production frontend+daemon
+  build, `git diff --check`, and all 18 real-relay integration scenarios. Final
+  adversarial lifecycle review found no blocking issues.
+
 ## 2026-07-17 - Headwater rebrand and migration compatibility
 
 The product is now Headwater. Repository metadata, active documentation,
