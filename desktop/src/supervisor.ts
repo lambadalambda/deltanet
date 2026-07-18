@@ -8,6 +8,7 @@ type SupervisorEffects = {
   shutdownTimeoutMs?: number;
   readinessTimeoutMs?: number | false;
   onRuntimeFailure?: (error: Error) => void;
+  onEnrollmentCode?: (value: Readonly<{ code: string; expiresAt: number }>) => void;
 };
 
 export const createUtilitySupervisor = (effects: SupervisorEffects) => {
@@ -74,6 +75,10 @@ export const createUtilitySupervisor = (effects: SupervisorEffects) => {
       return;
     }
     const event = message.event;
+    if (event.type === 'enrollment-code') {
+      effects.onEnrollmentCode?.({ code: event.code, expiresAt: event.expiresAt });
+      return;
+    }
     if (event.type === 'ready') {
       if (state !== 'starting') throw new Error('duplicate readiness from utility process');
       state = 'ready';

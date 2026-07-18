@@ -18,7 +18,7 @@
 		storePleromaOAuthClient,
 		storePendingOAuth
 	} from '$lib/pleroma';
-	import type { PendingPleromaOAuth } from '$lib/pleroma';
+	import type { PendingPleromaOAuth, PleromaOAuthClientRegistration } from '$lib/pleroma';
 	import Icon from '$lib/rebuild/Icon.svelte';
 	import HeadwaterLogo from '$lib/rebuild/HeadwaterLogo.svelte';
 	import { env } from '$env/dynamic/public';
@@ -39,6 +39,8 @@
 	let enrollmentCode = $state('');
 	let storageReady = $state(false);
 	let reusableClient = $state(false);
+	let desktopOrigin = $state('');
+	let desktopEnrollmentRevision: Promise<number | null> | null = null;
 	let authAttempt = 0;
 
 	let displayName = $state('');
@@ -58,7 +60,15 @@
 		const trimmed = instance.trim().replace(/\/$/, '');
 		return /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
 	})());
-	const continueDisabled = $derived(!instance.trim() || (!reusableClient && !enrollmentCode.trim()));
+	const desktopBridgeAvailable = $derived((() => {
+		if (!desktopOrigin) return false;
+		try {
+			return normalizeInstanceUrl(selectedInstanceUrl) === desktopOrigin;
+		} catch {
+			return false;
+		}
+	})());
+	const continueDisabled = $derived(!instance.trim() || (!reusableClient && !enrollmentCode.trim() && !desktopBridgeAvailable));
 	const isDefaultRelay = (value: string) => {
 		if (!value.trim()) return true;
 		try {
@@ -69,7 +79,22 @@
 		}
 	};
 	const customRelaySelected = $derived(!isDefaultRelay(relay));
-	const signupDisabled = $derived(!displayName.trim() || signupPending || (customRelaySelected && !enrollmentCode.trim()));
+	const signupDisabled = $derived(!displayName.trim() || signupPending || (customRelaySelected && (desktopBridgeAvailable || !enrollmentCode.trim())));
+	const getDesktopEnrollmentRevision = async (): Promise<number | null> => {
+		try {
+			return await window.headwaterDesktop?.getEnrollmentRevision() ?? null;
+		} catch {
+			return null;
+		}
+	};
+	const registerDesktopOAuthClient = async (afterRevision?: number, operationOrigin?: string) => {
+		if (!desktopOrigin || (operationOrigin ?? normalizeInstanceUrl(selectedInstanceUrl)) !== desktopOrigin) return null;
+		try {
+			return await window.headwaterDesktop?.registerOAuthClient(afterRevision) ?? null;
+		} catch {
+			return null;
+		}
+	};
 
 	const selectMode = (nextMode: AuthMode) => {
 		mode = nextMode;
@@ -87,7 +112,7 @@
 		authorizationUrl = '';
 		clearPendingOAuth(sessionStorage);
 	};
-	const startOAuth = async () => {
+	const startOAuth = async (providedDesktopClient?: Readonly<{ origin: string; clientId: string; clientSecret: string }>) => {
 		if (!instance.trim()) return;
 
 		const attempt = authAttempt + 1;
@@ -99,19 +124,36 @@
 		const redirectUri = `${window.location.origin}/auth/callback`;
 		try {
 			const instanceUrl = normalizeInstanceUrl(selectedInstanceUrl);
+			if (providedDesktopClient && (providedDesktopClient.origin !== instanceUrl || providedDesktopClient.origin !== desktopOrigin)) {
+				throw new Error('The desktop OAuth client does not match the selected home server.');
+			}
 			const code = enrollmentCode.trim();
-			let app = code ? null : readPleromaOAuthClient(localStorage, { instanceUrl, redirectUri, scopes });
-			if (!app) {
-				if (!code) throw new Error('Enter the one-time enrollment code printed by the daemon.');
-				const registered = await registerOAuthApp({
+			let desktopClient = providedDesktopClient;
+			let app: PleromaOAuthClientRegistration | null = providedDesktopClient
+				? {
 					instanceUrl,
-					clientName: 'Headwater',
+					clientId: providedDesktopClient.clientId,
+					clientSecret: providedDesktopClient.clientSecret,
 					redirectUri,
 					scopes,
-					enrollmentCode: code,
-					website: window.location.origin,
-					fetch: window.fetch.bind(window)
-				});
+					createdAt: Date.now()
+				}
+				: code ? null : readPleromaOAuthClient(localStorage, { instanceUrl, redirectUri, scopes });
+			if (!app) {
+				const registered = code
+					? await registerOAuthApp({
+						instanceUrl,
+						clientName: 'Headwater',
+						redirectUri,
+						scopes,
+						enrollmentCode: code,
+						website: window.location.origin,
+						fetch: window.fetch.bind(window)
+					})
+					: await registerDesktopOAuthClient();
+				if (!registered) throw new Error(desktopBridgeAvailable
+					? 'No current enrollment code is available from the desktop app. Try again or restart Headwater.'
+					: 'Enter the one-time enrollment code printed by the daemon.');
 				app = {
 					instanceUrl,
 					clientId: registered.clientId,
@@ -120,9 +162,19 @@
 					scopes,
 					createdAt: Date.now()
 				};
+				if (!code) desktopClient = { origin: instanceUrl, clientId: registered.clientId, clientSecret: registered.clientSecret };
 				storePleromaOAuthClient(localStorage, app);
 				reusableClient = true;
 				enrollmentCode = '';
+			}
+			if (desktopClient) {
+				storePleromaOAuthClient(localStorage, app);
+				reusableClient = true;
+				try {
+					await window.headwaterDesktop?.acknowledgeOAuthClient(desktopClient.clientId);
+				} catch {
+					// The stored client remains usable; main retains a retry copy until acknowledgement.
+				}
 			}
 
 			if (attempt !== authAttempt || authStep !== 'redirect') return;
@@ -161,16 +213,32 @@
 		restorePending = true;
 		restoreError = '';
 		try {
+			const operationOrigin = normalizeInstanceUrl(selectedInstanceUrl);
+			const operationFile = restoreFile;
+			const operationPassphrase = restorePassphrase;
+			const desktopOperation = operationOrigin === desktopOrigin;
+			const enrollmentBaseline = desktopOperation
+				? await (desktopEnrollmentRevision ??= getDesktopEnrollmentRevision())
+				: null;
 			const result = await restoreHeadwater({
-				instanceUrl: selectedInstanceUrl,
-				file: restoreFile,
-				passphrase: restorePassphrase,
+				instanceUrl: operationOrigin,
+				file: operationFile,
+				passphrase: operationPassphrase,
 				fetch: window.fetch.bind(window)
 			});
 			restoredAddress = result.acct;
-			removePleromaOAuthClient(localStorage, selectedInstanceUrl);
+			instance = operationOrigin;
+			removePleromaOAuthClient(localStorage, operationOrigin);
 			reusableClient = false;
 			enrollmentCode = '';
+			const replacement = enrollmentBaseline !== null
+				? await registerDesktopOAuthClient(enrollmentBaseline, operationOrigin)
+				: null;
+			if (replacement) {
+				restorePending = false;
+				await startOAuth(replacement);
+				return;
+			}
 			authStep = 'restore-success';
 			restorePending = false;
 		} catch (error) {
@@ -197,17 +265,38 @@
 		signupPending = true;
 		signupError = '';
 		try {
+			const operationOrigin = normalizeInstanceUrl(selectedInstanceUrl);
+			const operationDisplayName = displayName.trim();
+			const operationRelay = relay.trim() || undefined;
+			const operationUsesCustomRelay = customRelaySelected;
+			const relayEnrollmentCode = enrollmentCode.trim();
+			const desktopOperation = operationOrigin === desktopOrigin;
+			const enrollmentBaseline = desktopOperation
+				? await (desktopEnrollmentRevision ??= getDesktopEnrollmentRevision())
+				: null;
+			if (operationUsesCustomRelay && !relayEnrollmentCode) {
+				throw new Error('No current enrollment code is available for the custom relay request.');
+			}
 			const result = await signupHeadwater({
-				instanceUrl: selectedInstanceUrl,
-				displayName: displayName.trim(),
-				relay: relay.trim() || undefined,
-				enrollmentCode: customRelaySelected ? enrollmentCode.trim() : undefined,
+				instanceUrl: operationOrigin,
+				displayName: operationDisplayName,
+				relay: operationRelay,
+				enrollmentCode: operationUsesCustomRelay ? relayEnrollmentCode : undefined,
 				fetch: window.fetch.bind(window)
 			});
 			signupAddress = result.acct;
-			removePleromaOAuthClient(localStorage, selectedInstanceUrl);
+			instance = operationOrigin;
+			removePleromaOAuthClient(localStorage, operationOrigin);
 			reusableClient = false;
 			enrollmentCode = '';
+			const replacement = enrollmentBaseline !== null
+				? await registerDesktopOAuthClient(enrollmentBaseline, operationOrigin)
+				: null;
+			if (replacement) {
+				signupPending = false;
+				await startOAuth(replacement);
+				return;
+			}
 			authStep = 'signup-success';
 			signupPending = false;
 		} catch (error) {
@@ -230,6 +319,13 @@
 	};
 
 	onMount(() => {
+		const desktop = window.headwaterDesktop;
+		if (desktop) {
+			void desktop.getStatus().then((status) => {
+				desktopOrigin = status.origin;
+				desktopEnrollmentRevision = getDesktopEnrollmentRevision();
+			}).catch(() => {});
+		}
 		if (readPleromaSession(localStorage)) {
 			goto('/app/home');
 			return;
@@ -309,13 +405,17 @@
 						{#if authError}
 							<p class="so-error">{authError}</p>
 						{/if}
-						<div class="so-field">
-							<label for="enrollment-code">One-time enrollment code</label>
-							<div class="so-input-wrap">
-								<input id="enrollment-code" aria-label="One-time enrollment code" autocomplete="one-time-code" spellcheck="false" value={enrollmentCode} oninput={(event) => (enrollmentCode = event.currentTarget.value)} placeholder={reusableClient ? 'Optional: replace this client' : 'Printed in the daemon terminal'} />
+						{#if !desktopBridgeAvailable}
+							<div class="so-field">
+								<label for="enrollment-code">One-time enrollment code</label>
+								<div class="so-input-wrap">
+									<input id="enrollment-code" aria-label="One-time enrollment code" autocomplete="one-time-code" spellcheck="false" value={enrollmentCode} oninput={(event) => (enrollmentCode = event.currentTarget.value)} placeholder={reusableClient ? 'Optional: replace this client' : 'Printed in the daemon terminal'} />
+								</div>
+								<p class="so-hint">{reusableClient ? "Continue to reuse this browser's registered client. Enter a fresh code only after resetting or changing the daemon account." : 'The daemon prints a single-use code valid for 10 minutes. It is used only to register this browser.'}</p>
 							</div>
-							<p class="so-hint">{reusableClient ? "Continue to reuse this browser's registered client. Enter a fresh code only after resetting or changing the daemon account." : 'The daemon prints a single-use code valid for 10 minutes. It is used only to register this browser.'}</p>
-						</div>
+						{:else if !reusableClient}
+							<p class="so-hint">The desktop app will provide its current one-time enrollment code privately.</p>
+						{/if}
 						<button type="button" class="so-advanced-toggle" aria-expanded={showAdvanced} onclick={() => (showAdvanced = !showAdvanced)}>{showAdvanced ? 'Hide advanced' : 'Advanced: change home server'}</button>
 						{#if showAdvanced}
 							<div class="so-field">
@@ -325,7 +425,7 @@
 								</div>
 							</div>
 						{/if}
-						<button type="button" class="so-cta" disabled={continueDisabled} onclick={startOAuth}>Continue</button>
+						<button type="button" class="so-cta" disabled={continueDisabled} onclick={() => void startOAuth()}>Continue</button>
 						<p class="so-footnote">Headwater never sees your password. Authorization is granted by your node via OAuth.</p>
 					</div>
 				{:else if authStep === 'enter' && mode === 'signup' && signupView === 'restore'}
@@ -370,7 +470,9 @@
 								</div>
 								<p class="so-hint">This is the mail relay hosting your address.</p>
 							</div>
-							{#if customRelaySelected}
+							{#if customRelaySelected && desktopBridgeAvailable}
+								<p class="so-hint">Custom relay selection is not yet available during desktop account creation. Use the default relay for now.</p>
+							{:else if customRelaySelected}
 								<div class="so-field">
 									<label for="signup-relay-enrollment-code">One-time enrollment code</label>
 									<div class="so-input-wrap">
@@ -394,23 +496,33 @@
 					<div class="so-auth-body so-redirect">
 						<h2>Node restored</h2>
 						<p>Welcome back, <strong>{restoredAddress}</strong>.</p>
-						<p>Enter the new one-time enrollment code printed by the daemon after restore.</p>
-						<div class="so-field">
-							<label for="restore-enrollment-code">One-time enrollment code</label>
-							<div class="so-input-wrap"><input id="restore-enrollment-code" aria-label="One-time enrollment code" autocomplete="one-time-code" spellcheck="false" value={enrollmentCode} oninput={(event) => (enrollmentCode = event.currentTarget.value)} /></div>
-						</div>
-						<button type="button" class="so-cta" disabled={!enrollmentCode.trim()} onclick={startOAuth}>Continue to sign in</button>
+						{#if desktopBridgeAvailable}
+							<p>The desktop app did not receive the replacement enrollment code in time. Retry now, or restart Headwater and choose Sign in.</p>
+							<button type="button" class="so-cta" onclick={() => void startOAuth()}>Retry sign in</button>
+						{:else}
+							<p>Enter the new one-time enrollment code printed by the daemon after restore.</p>
+							<div class="so-field">
+								<label for="restore-enrollment-code">One-time enrollment code</label>
+								<div class="so-input-wrap"><input id="restore-enrollment-code" aria-label="One-time enrollment code" autocomplete="one-time-code" spellcheck="false" value={enrollmentCode} oninput={(event) => (enrollmentCode = event.currentTarget.value)} /></div>
+							</div>
+							<button type="button" class="so-cta" disabled={!enrollmentCode.trim()} onclick={() => void startOAuth()}>Continue to sign in</button>
+						{/if}
 					</div>
 				{:else if authStep === 'signup-success'}
 					<div class="so-auth-body so-redirect">
 						<h2>Account created</h2>
 						<p>Your address is <strong>{signupAddress}</strong>.</p>
-						<p>Enter the new one-time enrollment code printed by the daemon after account creation.</p>
-						<div class="so-field">
-							<label for="signup-enrollment-code">One-time enrollment code</label>
-							<div class="so-input-wrap"><input id="signup-enrollment-code" aria-label="One-time enrollment code" autocomplete="one-time-code" spellcheck="false" value={enrollmentCode} oninput={(event) => (enrollmentCode = event.currentTarget.value)} /></div>
-						</div>
-						<button type="button" class="so-cta" disabled={!enrollmentCode.trim()} onclick={startOAuth}>Continue to sign in</button>
+						{#if desktopBridgeAvailable}
+							<p>The desktop app did not receive the replacement enrollment code in time. Retry now, or restart Headwater and choose Sign in.</p>
+							<button type="button" class="so-cta" onclick={() => void startOAuth()}>Retry sign in</button>
+						{:else}
+							<p>Enter the new one-time enrollment code printed by the daemon after account creation.</p>
+							<div class="so-field">
+								<label for="signup-enrollment-code">One-time enrollment code</label>
+								<div class="so-input-wrap"><input id="signup-enrollment-code" aria-label="One-time enrollment code" autocomplete="one-time-code" spellcheck="false" value={enrollmentCode} oninput={(event) => (enrollmentCode = event.currentTarget.value)} /></div>
+							</div>
+							<button type="button" class="so-cta" disabled={!enrollmentCode.trim()} onclick={() => void startOAuth()}>Continue to sign in</button>
+						{/if}
 					</div>
 				{:else}
 					<div class="so-auth-body so-redirect">

@@ -25,7 +25,15 @@ export const browserWindowOptions = (
 export const isAllowedInternalNavigation = (raw: string, expectedOrigin: string): boolean => {
   try {
     const url = new URL(raw);
-    return url.origin === expectedOrigin && url.username === '' && url.password === '';
+    const path = url.pathname.endsWith('/') && url.pathname !== '/' ? url.pathname.slice(0, -1) : url.pathname;
+    const applicationPath = path === '/'
+      || path === '/public'
+      || path === '/design-system'
+      || path === '/auth/callback'
+      || path === '/oauth/authorize'
+      || path === '/app'
+      || path.startsWith('/app/');
+    return url.origin === expectedOrigin && url.username === '' && url.password === '' && applicationPath;
   } catch {
     return false;
   }
@@ -54,6 +62,20 @@ export const isExpectedStatusSender = (
   if (event.sender !== expectedContents || event.senderFrame !== expectedContents.mainFrame) return false;
   try {
     return new URL(event.senderFrame.url).origin === expectedOrigin;
+  } catch {
+    return false;
+  }
+};
+
+export const isExpectedEnrollmentSender = (
+  event: { sender: unknown; senderFrame: SenderFrame | null },
+  expectedContents: SenderContents,
+  expectedOrigin: string,
+): boolean => {
+  if (!isExpectedStatusSender(event, expectedContents, expectedOrigin) || !event.senderFrame) return false;
+  try {
+    const url = new URL(event.senderFrame.url);
+    return url.pathname === '/' && url.username === '' && url.password === '';
   } catch {
     return false;
   }

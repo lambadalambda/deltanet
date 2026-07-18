@@ -2,6 +2,26 @@ import { describe, expect, it } from 'vitest';
 import { createUtilitySupervisor } from '../src/supervisor.js';
 
 describe('utility-process supervisor', () => {
+  it('forwards validated enrollment rotations without resolving readiness', () => {
+    const codes: Array<{ code: string; expiresAt: number }> = [];
+    const supervisor = createUtilitySupervisor({
+      post: () => {},
+      kill: () => {},
+      readinessTimeoutMs: false,
+      onEnrollmentCode: (value) => codes.push(value),
+    });
+    supervisor.accept({ version: 1, type: 'daemon-event', event: {
+      type: 'enrollment-code', code: 'a'.repeat(43), expiresAt: 1_800_000_000_000,
+    } });
+    supervisor.accept({ version: 1, type: 'daemon-event', event: {
+      type: 'enrollment-code', code: 'b'.repeat(43), expiresAt: 1_800_000_001_000,
+    } });
+    expect(codes).toEqual([
+      { code: 'a'.repeat(43), expiresAt: 1_800_000_000_000 },
+      { code: 'b'.repeat(43), expiresAt: 1_800_000_001_000 },
+    ]);
+  });
+
   it('becomes ready exactly once and rejects duplicate readiness', async () => {
     const posted: unknown[] = [];
     const supervisor = createUtilitySupervisor({ post: (message) => posted.push(message), kill: () => {} });

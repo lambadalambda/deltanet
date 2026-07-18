@@ -214,9 +214,9 @@ jobs:
           RELEASE_NOTES: |
             Unsigned development builds from commit `${{ github.sha }}`. These artifacts are not notarized or signed by a trusted developer certificate and may trigger operating-system security warnings.
 
-            ## Known limitation
+            ## Security status
 
-            Packaged signup and restore currently create the account but cannot complete sign-in because the app does not yet display the newly rotated one-time enrollment code. Do not use these builds to create or restore an identity you need to access. The fix is tracked and will follow; do not try to recover the private code from logs, command-line arguments, or files.
+            Desktop signup and restore privately redeem the daemon's rotated one-time enrollment code and continue into sign-in without terminal input; the raw code is never exposed to the renderer, logs, command-line arguments, or files. The main-generated bootstrap proof that prevents another local process from racing unconfigured signup, restore, or initial client registration is not implemented yet. Treat identities created with these alpha builds as disposable until that security work is complete.
 
             ## Choose a download
 

@@ -50,6 +50,27 @@ describe('desktop private protocol', () => {
     });
   });
 
+  it('accepts only exact enrollment-code events', () => {
+    const code = 'a'.repeat(43);
+    expect(parseWorkerToMain({
+      version: 1,
+      type: 'daemon-event',
+      event: { type: 'enrollment-code', code, expiresAt: 1_800_000_000_000 },
+    })).toEqual({
+      version: 1,
+      type: 'daemon-event',
+      event: { type: 'enrollment-code', code, expiresAt: 1_800_000_000_000 },
+    });
+    for (const event of [
+      { type: 'enrollment-code', code: 'not-base64url', expiresAt: 1_800_000_000_000 },
+      { type: 'enrollment-code', code, expiresAt: Number.NaN },
+      { type: 'enrollment-code', code, expiresAt: 1.5 },
+      { type: 'enrollment-code', code, expiresAt: 1_800_000_000_000, extra: true },
+    ]) {
+      expect(() => parseWorkerToMain({ version: 1, type: 'daemon-event', event })).toThrow(/desktop protocol/i);
+    }
+  });
+
   it('normalizes errors without serializing arbitrary properties', () => {
     const error = Object.assign(new Error('failed'), { code: 'EFAIL', secret: 'nope' });
     expect(toSafeError(error)).toEqual({ name: 'Error', message: 'failed', code: 'EFAIL' });

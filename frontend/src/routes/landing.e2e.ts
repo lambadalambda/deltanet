@@ -28,6 +28,29 @@ const mockOAuthAppRegistration = async (page: Page, origin: string) => {
 	return () => body;
 };
 
+const mockDesktopEnrollment = async (page: Page, options: { revisionDelayMs?: number } = {}) => {
+	await page.addInitScript(({ revisionDelayMs }) => {
+		const calls = { revisions: 0, registrations: [] as Array<number | null>, acknowledgements: [] as string[] };
+		Object.defineProperty(window, '__headwaterEnrollmentCalls', { value: calls });
+		Object.defineProperty(window, 'headwaterDesktop', {
+			value: Object.freeze({
+				getStatus: async () => ({ state: 'ready', origin: window.location.origin }),
+				getEnrollmentRevision: async () => {
+					calls.revisions += 1;
+					if (revisionDelayMs) await new Promise((resolve) => setTimeout(resolve, revisionDelayMs));
+					return 1;
+				},
+				registerOAuthClient: async (afterRevision?: number) => {
+					calls.registrations.push(afterRevision ?? null);
+					await new Promise((resolve) => setTimeout(resolve, 25));
+					return { origin: window.location.origin, clientId: 'desktop-client', clientSecret: 'desktop-secret' };
+				},
+				acknowledgeOAuthClient: async (clientId: string) => { calls.acknowledgements.push(clientId); }
+			})
+		});
+	}, { revisionDelayMs: options.revisionDelayMs ?? 0 });
+};
+
 test('signed-out landing explains the encrypted-email federation model and avoids passwords', async ({ page }) => {
 	await setViewport(page, 'desktop');
 	await mockHeadwaterStatus(page, { configured: true, address: null });
@@ -123,6 +146,56 @@ test('normal sign-in migrates and reuses a legacy paired client without consumin
 	expect(registrationRequests).toBe(0);
 });
 
+test('desktop sign-in reuses a paired client before requesting another enrollment registration', async ({ page }) => {
+	await setViewport(page, 'desktop');
+	await mockDesktopEnrollment(page);
+	await mockHeadwaterStatus(page, { configured: true, address: null });
+	await page.goto('/');
+	const origin = new URL(page.url()).origin;
+	await page.evaluate(({ key, client }) => localStorage.setItem(key, JSON.stringify(client)), {
+		key: `headwater.oauth.client.${encodeURIComponent(origin)}`,
+		client: {
+			instanceUrl: origin,
+			clientId: 'persisted-client',
+			clientSecret: 'persisted-secret',
+			redirectUri: `${origin}/auth/callback`,
+			scopes: ['read', 'write', 'follow', 'push'],
+			createdAt: Date.now()
+		}
+	});
+	await page.reload();
+
+	await page.getByRole('button', { name: 'Continue' }).click();
+	await expect(page.getByRole('link', { name: /Open .*authorization/ })).toHaveAttribute('href', /client_id=persisted-client/);
+	const calls = await page.evaluate(() => (window as unknown as { __headwaterEnrollmentCalls: { registrations: number[] } }).__headwaterEnrollmentCalls);
+	expect(calls.registrations).toEqual([]);
+});
+
+test('desktop sign-in stores and acknowledges a fresh main-registered client', async ({ page }) => {
+	await setViewport(page, 'desktop');
+	await mockDesktopEnrollment(page);
+	await mockHeadwaterStatus(page, { configured: true, address: null });
+	await page.goto('/');
+
+	await page.getByRole('button', { name: 'Continue' }).click();
+	await expect(page.getByRole('link', { name: /Open .*authorization/ })).toHaveAttribute('href', /client_id=desktop-client/);
+	expect(await page.evaluate(() => (window as unknown as { __headwaterEnrollmentCalls: unknown }).__headwaterEnrollmentCalls)).toEqual({ revisions: 1, registrations: [null], acknowledgements: ['desktop-client'] });
+});
+
+test('desktop enrollment authority is disabled when a remote home server is selected', async ({ page }) => {
+	await setViewport(page, 'desktop');
+	await mockDesktopEnrollment(page);
+	await mockHeadwaterStatus(page, { configured: true, address: null });
+	await page.goto('/');
+	await page.getByRole('button', { name: /advanced/i }).click();
+	await page.getByRole('textbox', { name: 'Your home server' }).fill('https://remote.example');
+
+	await expect(page.getByRole('textbox', { name: 'One-time enrollment code' })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Continue' })).toBeDisabled();
+	const calls = await page.evaluate(() => (window as unknown as { __headwaterEnrollmentCalls: { registrations: number[] } }).__headwaterEnrollmentCalls);
+	expect(calls.registrations).toEqual([]);
+});
+
 test('status configured:false defaults to the create-account tab', async ({ page }) => {
 	await setViewport(page, 'desktop');
 	await mockHeadwaterStatus(page, { configured: false, address: null });
@@ -158,6 +231,59 @@ test('signup happy path registers the account and continues into OAuth sign-in',
 	await expect(page.getByText(`Redirecting to ${origin}`)).toBeVisible();
 	const authorizationLink = page.getByRole('link', { name: /Open .*authorization/ });
 	await expect(authorizationLink).toHaveAttribute('href', /\/oauth\/authorize\?/);
+});
+
+test('desktop signup waits for the rotated code and continues without terminal input', async ({ page }) => {
+	await setViewport(page, 'desktop');
+	await mockDesktopEnrollment(page);
+	await mockHeadwaterStatus(page, { configured: false, address: null });
+	await page.goto('/');
+	const origin = new URL(page.url()).origin;
+	let browserRegistrations = 0;
+	await page.route(`${origin}/api/v1/apps`, async (route) => {
+		browserRegistrations += 1;
+		await route.abort();
+	});
+	await page.route('**/api/headwater/signup', async (route) => {
+		await fulfillJson(route, { account: { acct: 'desktop@nine.testrun.org' } });
+	});
+
+	await page.getByRole('textbox', { name: 'Display name' }).fill('Desktop Fox');
+	await page.getByRole('button', { name: 'Create account' }).click();
+
+	await expect(page.getByText(`Redirecting to ${origin}`)).toBeVisible();
+	await expect(page.getByRole('link', { name: /Open .*authorization/ })).toHaveAttribute('href', /client_id=desktop-client/);
+	expect(browserRegistrations).toBe(0);
+	await expect(page.getByRole('textbox', { name: 'One-time enrollment code' })).toHaveCount(0);
+	expect(await page.evaluate(() => (window as unknown as { __headwaterEnrollmentCalls: unknown }).__headwaterEnrollmentCalls)).toEqual({ revisions: 1, registrations: [1], acknowledgements: ['desktop-client'] });
+});
+
+test('desktop signup remains bound to its original home server while pending', async ({ page }) => {
+	await setViewport(page, 'desktop');
+	await mockDesktopEnrollment(page, { revisionDelayMs: 100 });
+	await mockHeadwaterStatus(page, { configured: false, address: null });
+	await page.goto('/');
+	const origin = new URL(page.url()).origin;
+	let releaseSignup!: () => void;
+	const signupReleased = new Promise<void>((resolve) => { releaseSignup = resolve; });
+	let signupStarted!: () => void;
+	const signupRequest = new Promise<void>((resolve) => { signupStarted = resolve; });
+	await page.route('**/api/headwater/signup', async (route) => {
+		expect(new URL(route.request().url()).origin).toBe(origin);
+		signupStarted();
+		await signupReleased;
+		await fulfillJson(route, { account: { acct: 'desktop@nine.testrun.org' } });
+	});
+
+	await page.getByRole('button', { name: /advanced/i }).click();
+	await page.getByRole('textbox', { name: 'Display name' }).fill('Desktop Fox');
+	await page.getByRole('button', { name: 'Create account' }).click();
+	await page.getByRole('textbox', { name: 'Your home server' }).fill('https://remote.example');
+	await signupRequest;
+	releaseSignup();
+
+	await expect(page.getByText(`Redirecting to ${origin}`)).toBeVisible();
+	await expect(page.getByRole('link', { name: /Open .*authorization/ })).toHaveAttribute('href', /client_id=desktop-client/);
 });
 
 test('signup lets the relay be changed behind an advanced affordance, defaulting to nine.testrun.org', async ({ page }) => {
@@ -279,6 +405,30 @@ test('restore happy path uploads the backup and continues into OAuth sign-in', a
 	await page.getByRole('textbox', { name: 'One-time enrollment code' }).fill('post-restore-code');
 	await page.getByRole('button', { name: 'Continue to sign in' }).click();
 	await expect(page.getByText(`Redirecting to ${origin}`)).toBeVisible();
+});
+
+test('desktop restore waits for the rotated code and continues without terminal input', async ({ page }) => {
+	await setViewport(page, 'desktop');
+	await mockDesktopEnrollment(page);
+	await mockHeadwaterStatus(page, { configured: false, address: null });
+	await page.goto('/');
+	const origin = new URL(page.url()).origin;
+	await page.route('**/api/headwater/restore', async (route) => {
+		await fulfillJson(route, { account: { acct: 'restored-desktop@nine.testrun.org' } });
+	});
+
+	await page.getByRole('button', { name: 'Restore from a backup instead' }).click();
+	await page.getByLabel('Backup file').setInputFiles({
+		name: 'headwater-backup.dnbk',
+		mimeType: 'application/octet-stream',
+		buffer: Buffer.from('DNBK1\nfake')
+	});
+	await page.getByLabel('Backup passphrase').fill('correct horse');
+	await page.getByRole('button', { name: 'Restore this node' }).click();
+
+	await expect(page.getByText(`Redirecting to ${origin}`)).toBeVisible();
+	await expect(page.getByRole('link', { name: /Open .*authorization/ })).toHaveAttribute('href', /client_id=desktop-client/);
+	expect(await page.evaluate(() => (window as unknown as { __headwaterEnrollmentCalls: unknown }).__headwaterEnrollmentCalls)).toEqual({ revisions: 1, registrations: [1], acknowledgements: ['desktop-client'] });
 });
 
 test('restore surfaces a wrong-passphrase error and stays on the form', async ({ page }) => {

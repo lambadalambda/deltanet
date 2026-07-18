@@ -174,8 +174,11 @@ const daemonEvent = (value: unknown): DaemonEventWire => {
   }
   if (type === 'enrollment-code') {
     exact(event, ['type', 'code', 'expiresAt']);
-    if (!Number.isFinite(event['expiresAt'])) fail();
-    return { type, code: string(event['code'], 256), expiresAt: event['expiresAt'] as number };
+    const code = event['code'];
+    const expiresAt = event['expiresAt'];
+    if (typeof code !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(code)
+      || !Number.isSafeInteger(expiresAt) || (expiresAt as number) < 1) fail();
+    return { type, code: code as string, expiresAt: expiresAt as number };
   }
   if (type === 'configuring') {
     exact(event, ['type', 'address', 'dataDir']);
