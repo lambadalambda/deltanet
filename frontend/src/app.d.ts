@@ -3,6 +3,7 @@
 declare global {
 	interface Window {
 		readonly headwaterDesktop?: Readonly<{
+			writeClipboardText(text: string): Promise<void>;
 			getStatus(): Promise<Readonly<{
 				state: 'ready';
 				origin: string;

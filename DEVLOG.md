@@ -4,6 +4,29 @@ DeltaNet-era entries retained after the current entry preserve the former name
 and deployed identifiers as written. They document implementation history, not
 current naming.
 
+## 2026-07-19 - reliable app clipboard writes
+
+Share and invite links no longer report `Copy failed` when the packaged desktop
+denies Chromium's asynchronous clipboard permission
+(`meta/issues/share-link-copy.md`):
+
+- All frontend copy actions now share one clipboard writer. The desktop uses a
+  user-activation-gated preload method and authenticated main-frame IPC; browser
+  contexts use a synchronous copy path before the asynchronous API and restore
+  keyboard focus after the temporary selection.
+- Main validates the exact trusted renderer, argument count, type, and a 1 MiB
+  bound before writing through Electron's native clipboard. The renderer keeps
+  accurate success/failure feedback for invite links, post links, and raw post
+  JSON.
+- Regression coverage reproduced the denied Clipboard API path before the fix,
+  exercises the real browser copy command and focus restoration, and verifies
+  desktop-bridge selection. The desktop two-launch smoke writes and reads the
+  real native clipboard only when the isolated clipboard starts empty, then
+  clears only its own marker.
+- Verification passed root typechecks, all 360 frontend browser tests, all 55
+  desktop tests, focused review with no high or medium findings, and the
+  sandboxed two-launch Linux Electron smoke on the NAS worker.
+
 ## 2026-07-19 - licensed container distribution
 
 Headwater now has an explicit public-domain dedication and a production

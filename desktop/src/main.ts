@@ -5,6 +5,7 @@ import { randomBytes } from 'node:crypto';
 import {
   app,
   BrowserWindow,
+  clipboard,
   dialog,
   ipcMain,
   session,
@@ -279,6 +280,15 @@ const run = async (): Promise<void> => {
         backupRequired: desktopSettings.backupRequired,
       });
     });
+    ipcMain.handle('headwater:write-clipboard', (event: IpcMainInvokeEvent, ...args: unknown[]) => {
+      const text = args[0];
+      if (args.length !== 1 || typeof text !== 'string' || text.length > 1_048_576
+        || !window || !isExpectedStatusSender(event, contents, status.origin)) {
+        throw new Error('unauthorized desktop clipboard request');
+      }
+      clipboard.writeText(text);
+      return true;
+    });
     ipcMain.handle('headwater:enrollment-revision', (event: IpcMainInvokeEvent, ...args: unknown[]) => {
       if (args.length !== 0 || !window || !isExpectedEnrollmentSender(event, contents, status.origin)) {
         throw new Error('unauthorized desktop enrollment request');
@@ -398,31 +408,43 @@ const run = async (): Promise<void> => {
     if (smokeMarker) {
       const response = await fetch(status.origin);
       if (!response.ok) throw new Error(`desktop smoke status failed (${response.status})`);
-      const enrollmentBridgeResult: unknown = await contents.executeJavaScript(`
-        (async () => {
-          try {
-            const revision = await globalThis.headwaterDesktop.getEnrollmentRevision();
-            const client = await globalThis.headwaterDesktop.registerOAuthClient();
-            if (client !== null) await globalThis.headwaterDesktop.acknowledgeOAuthClient(client.clientId);
-            const second = await globalThis.headwaterDesktop.registerOAuthClient();
-            return { ready: Number.isSafeInteger(revision)
-              && revision > 0
-              && client !== null
-              && client.origin === ${JSON.stringify(status.origin)}
-              && typeof client.clientId === 'string'
-              && client.clientId.length > 0
-              && typeof client.clientSecret === 'string'
-              && client.clientSecret.length > 0
-              && second === null };
-          } catch (error) {
-            return { ready: false, detail: error instanceof Error ? error.message : String(error) };
-          }
-        })()
-      `, true);
-      const smokeResult = enrollmentBridgeResult as { ready?: unknown; detail?: unknown } | null;
-      if (smokeResult?.ready !== true) {
-        const detail = typeof smokeResult?.detail === 'string' ? `: ${smokeResult.detail.slice(0, 512)}` : '';
-        throw new Error(`desktop smoke enrollment bridge failed${detail}`);
+      const clipboardSmokeEnabled = clipboard.availableFormats().length === 0;
+      const smokeClipboard = `Headwater desktop smoke ${process.pid}`;
+      try {
+        const enrollmentBridgeResult: unknown = await contents.executeJavaScript(`
+          (async () => {
+            try {
+              if (${JSON.stringify(clipboardSmokeEnabled)}) {
+                await globalThis.headwaterDesktop.writeClipboardText(${JSON.stringify(smokeClipboard)});
+              }
+              const revision = await globalThis.headwaterDesktop.getEnrollmentRevision();
+              const client = await globalThis.headwaterDesktop.registerOAuthClient();
+              if (client !== null) await globalThis.headwaterDesktop.acknowledgeOAuthClient(client.clientId);
+              const second = await globalThis.headwaterDesktop.registerOAuthClient();
+              return { ready: Number.isSafeInteger(revision)
+                && revision > 0
+                && client !== null
+                && client.origin === ${JSON.stringify(status.origin)}
+                && typeof client.clientId === 'string'
+                && client.clientId.length > 0
+                && typeof client.clientSecret === 'string'
+                && client.clientSecret.length > 0
+                && second === null };
+            } catch (error) {
+              return { ready: false, detail: error instanceof Error ? error.message : String(error) };
+            }
+          })()
+        `, true);
+        const smokeResult = enrollmentBridgeResult as { ready?: unknown; detail?: unknown } | null;
+        if (smokeResult?.ready !== true) {
+          const detail = typeof smokeResult?.detail === 'string' ? `: ${smokeResult.detail.slice(0, 512)}` : '';
+          throw new Error(`desktop smoke enrollment bridge failed${detail}`);
+        }
+        if (clipboardSmokeEnabled && clipboard.readText() !== smokeClipboard) {
+          throw new Error('desktop smoke clipboard bridge failed');
+        }
+      } finally {
+        if (clipboardSmokeEnabled && clipboard.readText() === smokeClipboard) clipboard.clear();
       }
       reportSmoke('ready');
       app.quit();

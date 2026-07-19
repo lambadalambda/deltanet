@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
+	import { writeClipboardText } from '$lib/clipboard';
 	import AncestorPost from '$lib/rebuild/AncestorPost.svelte';
 	import AttachmentLightboxHost from '$lib/rebuild/AttachmentLightboxHost.svelte';
 	import Avatar from '$lib/rebuild/Avatar.svelte';
@@ -1152,22 +1153,6 @@
 				if (postControlMessageId === id) postControlMessage = '';
 			}, 2600);
 		}
-	};
-	const writeClipboardText = async (text: string) => {
-		if (navigator.clipboard?.writeText) {
-			await navigator.clipboard.writeText(text);
-			return;
-		}
-		const textarea = document.createElement('textarea');
-		textarea.value = text;
-		textarea.setAttribute('readonly', '');
-		textarea.style.position = 'fixed';
-		textarea.style.left = '-9999px';
-		document.body.appendChild(textarea);
-		textarea.select();
-		const copied = document.execCommand('copy');
-		textarea.remove();
-		if (!copied) throw new Error('copy failed');
 	};
 	const copyPostLink = async (post: { statusUrl?: string; copyJson?: unknown }) => {
 		const url = post.statusUrl || (isRecord(post.copyJson) && typeof post.copyJson.url === 'string' ? post.copyJson.url : '');

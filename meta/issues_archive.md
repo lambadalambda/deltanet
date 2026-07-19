@@ -58,3 +58,4 @@
 - [x] [Publish unsigned nightly desktop builds](issues/nightly-desktop-releases.md)
 - [x] [Add an explicit project license](issues/add-unlicense.md)
 - [x] [Add Docker and Podman runtime support](issues/container-runtime-image.md)
+- [x] [Fix share-link copying in the app](issues/share-link-copy.md)

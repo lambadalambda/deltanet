@@ -53,6 +53,68 @@ test('share-your-feed card shows the invite link and copies it to the clipboard'
 	await expect(page.getByTestId('post-control-toast')).toContainText(/copied/i);
 });
 
+test('share-your-feed copy falls back when the Clipboard API rejects', async ({ page }) => {
+	await authenticate(page);
+	await page.addInitScript(() => {
+		Object.defineProperty(navigator, 'clipboard', {
+			configurable: true,
+			value: { writeText: async () => { throw new DOMException('denied', 'NotAllowedError'); } }
+		});
+		document.addEventListener('copy', () => {
+			const active = document.activeElement;
+			if (active instanceof HTMLTextAreaElement) {
+				window.localStorage.setItem('headwater.fallback-copy', active.value);
+			}
+		});
+	});
+	await mockHomeTimeline(page);
+	await mockInvite(page);
+	await setViewport(page, 'desktop');
+	await page.goto('/app/home');
+
+	const copyButton = page.getByTestId('invite-card').getByRole('button', { name: /copy/i });
+	await copyButton.click();
+
+	await expect(page.getByTestId('post-control-toast')).toContainText('Invite link copied');
+	await expect(copyButton).toBeFocused();
+	await expect.poll(() => page.evaluate(() => window.localStorage.getItem('headwater.fallback-copy')))
+		.toBe('https://i.delta.chat/#abc123');
+});
+
+test('share-your-feed copy uses the native desktop bridge', async ({ page }) => {
+	await authenticate(page);
+	await page.addInitScript(() => {
+		Object.defineProperty(window, 'headwaterDesktop', {
+			configurable: true,
+			value: Object.freeze({
+				getStatus: async () => ({
+					state: 'ready' as const,
+					origin: 'https://pleroma.example',
+					configured: true,
+					backupRequired: false
+				}),
+				writeClipboardText: async (text: string) => {
+					window.localStorage.setItem('headwater.desktop-copy', text);
+				}
+			})
+		});
+		Object.defineProperty(navigator, 'clipboard', {
+			configurable: true,
+			value: { writeText: async () => { throw new Error('browser clipboard should not be used'); } }
+		});
+	});
+	await mockHomeTimeline(page);
+	await mockInvite(page);
+	await setViewport(page, 'desktop');
+	await page.goto('/app/home');
+
+	await page.getByTestId('invite-card').getByRole('button', { name: /copy/i }).click();
+
+	await expect(page.getByTestId('post-control-toast')).toContainText('Invite link copied');
+	await expect.poll(() => page.evaluate(() => window.localStorage.getItem('headwater.desktop-copy')))
+		.toBe('https://i.delta.chat/#abc123');
+});
+
 test('share-your-feed card surfaces a failure state when the invite cannot be loaded', async ({ page }) => {
 	await authenticate(page);
 	await mockHomeTimeline(page);

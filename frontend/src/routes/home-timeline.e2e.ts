@@ -1921,6 +1921,7 @@ test('home timeline shows reply pill from in_reply_to_account_id and mentions al
 test('home timeline post menu copies raw post JSON for bug reports', async ({ page }) => {
 	await authenticate(page);
 	await page.addInitScript(() => {
+		Object.defineProperty(Document.prototype, 'execCommand', { configurable: true, value: () => false });
 		Object.defineProperty(navigator, 'clipboard', {
 			configurable: true,
 			value: {
@@ -3263,6 +3264,7 @@ test('home timeline bookmark button toggles and reconciles with the API', async 
 test('home timeline post menu copies the status link', async ({ page }) => {
 	await authenticate(page);
 	await page.addInitScript(() => {
+		Object.defineProperty(Document.prototype, 'execCommand', { configurable: true, value: () => false });
 		Object.defineProperty(navigator, 'clipboard', {
 			configurable: true,
 			value: { writeText: async (text: string) => { window.localStorage.setItem('headwater.copied-link', text); } }

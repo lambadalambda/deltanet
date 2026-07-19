@@ -75,6 +75,12 @@ const parseDesktopOAuthClient = (value: unknown): DesktopOAuthClient | null => {
 };
 
 contextBridge.exposeInMainWorld('headwaterDesktop', Object.freeze({
+  writeClipboardText: async (text: string) => {
+    if (typeof text !== 'string' || text.length > 1_048_576) throw new Error('invalid desktop clipboard text');
+    if (navigator.userActivation?.isActive !== true) throw new Error('desktop clipboard write requires user activation');
+    const written: unknown = await ipcRenderer.invoke('headwater:write-clipboard', text);
+    if (written !== true) throw new Error('invalid desktop clipboard response');
+  },
   getStatus: async () => parseStatus(await ipcRenderer.invoke('headwater:desktop-status')),
   getEnrollmentRevision: async () => {
     const revision: unknown = await ipcRenderer.invoke('headwater:enrollment-revision');
