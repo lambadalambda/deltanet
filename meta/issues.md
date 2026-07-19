@@ -20,5 +20,3 @@
 - [ ] [Implement signed desktop updates and data migrations](issues/desktop-updates-migrations.md)
 - [ ] [Add desktop diagnostics and operational resilience](issues/desktop-diagnostics-resilience.md)
 - [ ] [Include daemon-local profile assets in backups](issues/backup-profile-assets.md)
-- [ ] [Add an explicit project license](issues/add-unlicense.md)
-- [ ] [Add Docker and Podman runtime support](issues/container-runtime-image.md)

@@ -28,6 +28,10 @@ Docker/Podman distribution path (`meta/issues/add-unlicense.md`,
   parsing, all 21 affected design-system browser tests, and a final NAS Podman
   build/runtime smoke including UID 1000 writes, Delta Chat 2.53.0 execution,
   graceful shutdown, and named-volume persistence.
+- GitHub CI run `29680598343` passed the daemon, frontend, artifact, and relay
+  integration suites. Container run `29680916101` then passed native amd64 and
+  arm64 runtime smokes, published the full-SHA and `latest` manifests, and the
+  anonymous GHCR image passed a final arm64 pull and runtime smoke.
 
 ## 2026-07-18 - focused desktop first run and recovery gate
 
