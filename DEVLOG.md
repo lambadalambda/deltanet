@@ -4,6 +4,40 @@ DeltaNet-era entries retained after the current entry preserve the former name
 and deployed identifiers as written. They document implementation history, not
 current naming.
 
+## 2026-07-19 - selected PleromaNet frontend improvements
+
+Headwater now carries the useful post-fork PleromaNet interface work without
+importing behavior that conflicts with its daemon or encrypted recipient model
+(`meta/issues/integrate-pleromanet-frontend-improvements.md`):
+
+- Explore and Search now describe their actual known-content scope and omit
+  fictional discovery feeds, preview-only filters, and unrelated route rails.
+  The mobile shell uses a focus-contained navigation drawer, full-bleed Home,
+  contained post actions and overlays, touch-safe controls, and no redundant
+  bottom navigation.
+- Home retains loaded pages, cursors, queued posts, and scroll position through
+  thread navigation. An optional persisted setting inserts incoming posts only
+  while the reader is at the top, while failed initial loads retry after route
+  navigation instead of becoming a dead cache entry.
+- Home and inline-reply image uploads render local object-URL previews even when
+  daemon media URLs are empty. Preview URLs and staged daemon media are cleaned
+  up across removal, failures, submission, session/route changes, and app
+  teardown. Incoming sensitive attachments retain readable post text and expose
+  an explicit attachment-only reveal.
+- Appearance settings now provide a custom eight-color palette, contrast
+  feedback, complete semantic tokens and duotone media treatment, fixed or live
+  system light/dark modes, cross-tab synchronization, and versioned Headwater
+  storage. `HW1` share codes import and export through the shared clipboard
+  boundary, with legacy `PN1` import support and migration from `pn-theme`.
+- Authenticated reply context lazily previews parent posts on hover, focus, and
+  touch. The cache is isolated by session, rejects stale responses, briefly
+  negative-caches missing parents for daemon backfill, hides content-warning
+  bodies, remains viewport-contained, and preserves chosen names and petnames.
+- Focused review found and drove fixes for thread-upload teardown, stale preview
+  races, retained Home errors, mobile reaction-picker zoom, Search wording,
+  danger-color contrast, and duplicate feed submission. Final verification
+  passed `pnpm check`, `git diff --check`, and all 383 frontend Playwright tests.
+
 ## 2026-07-19 - reliable app clipboard writes
 
 Share and invite links no longer report `Copy failed` when the packaged desktop
