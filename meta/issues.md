@@ -1,5 +1,6 @@
 # Open Issues
 
+- [ ] [Keep blob URLs stable when downloads replace messages](issues/stable-blob-aliases-after-download-replacement.md)
 - [ ] [Key-derived identity badge (color/glyph) next to names](issues/key-identity-badge.md)
 - [ ] [Verifiable reaction receipts](issues/reaction-receipts.md)
 - [ ] [Expanding the new-follower backfill (10 → N)](issues/join-backfill-expansion.md)

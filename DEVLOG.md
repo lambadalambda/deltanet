@@ -4,6 +4,30 @@ DeltaNet-era entries retained after the current entry preserve the former name
 and deployed identifiers as written. They document implementation history, not
 current naming.
 
+## 2026-07-19 - pending attachment placeholders and reload
+
+Incoming image pre-messages now render honestly while Delta Chat fetches their
+bytes (`meta/issues/pending-attachment-placeholder-reload.md`):
+
+- Status media carries the core filename, byte count, and closed download-state
+  union even before a local file exists. MIME-less image pre-messages fall back
+  to Delta Chat's view type instead of disappearing from the timeline.
+- Authenticated blob requests start `downloadFullMessage` and return private,
+  no-store `202` responses while work is pending. Initiation is single-flight
+  per message/state, transient RPC failures use a cooldown before retrying, and
+  terminal undecipherable messages return an honest non-retryable response.
+- Pending photos show their filename and formatted size without placing a broken
+  image in the DOM. A bounded backoff probe replaces the placeholder as soon as
+  bytes load, and timers and handlers are cleaned up when the post unmounts.
+- Focused review drove explicit terminal-state behavior, concurrent request
+  deduplication, rejected-RPC recovery, content-warning reveal correctness, and
+  cleanup coverage. Delta Chat's separate one-to-many message-ID replacement
+  case remains tracked in
+  `meta/issues/stable-blob-aliases-after-download-replacement.md` because a safe
+  alias cannot be inferred from filenames or nearby chat messages.
+- Verification passed all 1,552 daemon tests, 385 frontend Playwright tests, 55
+  desktop tests, workspace typechecks, and `git diff --check`.
+
 ## 2026-07-19 - selected PleromaNet frontend improvements
 
 Headwater now carries the useful post-fork PleromaNet interface work without
