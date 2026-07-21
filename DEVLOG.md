@@ -4,6 +4,22 @@ DeltaNet-era entries retained after the current entry preserve the former name
 and deployed identifiers as written. They document implementation history, not
 current naming.
 
+## 2026-07-21 - user-facing README and nightly downloads
+
+The repository landing page now introduces Headwater as a product instead of
+opening with contributor operations (`meta/issues/refresh-readme-for-users.md`):
+
+- The rolling desktop nightly prerelease is linked near the top with its Linux
+  x64 Flatpak/AppImage, Windows x64 installer, and macOS Apple-silicon options.
+  Unsigned-alpha, disposable-identity, manual-update, checksum, persistent-data,
+  and backup warnings remain prominent.
+- A real two-node Headwater screenshot shows the browser and desktop app, and a
+  public example feed invite lets a new user try the follow flow immediately.
+- The concise root guide covers the user-visible federation model, first run,
+  container alternative, current scope, and backup basics. The former source,
+  deployment, security, integration, CI, layout, and migration reference now
+  lives intact in `docs/development.md` and is indexed from `docs/README.md`.
+
 ## 2026-07-19 - pending attachment placeholders and reload
 
 Incoming image pre-messages now render honestly while Delta Chat fetches their

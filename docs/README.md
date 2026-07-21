@@ -1,5 +1,9 @@
 # Headwater docs
 
+- [development.md](development.md) - source setup, production containers, local
+  API security, multi-node testing, backup/restore, CI, repository layout, and
+  DeltaNet migration compatibility.
+
 - [decisions.md](decisions.md) — standing design decisions (0001: hard cut from vanilla
   Delta Chat compatibility, wire v2 = JSON bodies; 0002: no synthesized
   statuses — rendered content must verify).

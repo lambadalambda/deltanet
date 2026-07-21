@@ -69,3 +69,4 @@
 - [x] [Add custom and automatic system themes](issues/custom-system-themes.md)
 - [x] [Preview replied-to posts](issues/replied-to-post-previews.md)
 - [x] [Show and reload pending attachment placeholders](issues/pending-attachment-placeholder-reload.md)
+- [x] [Refresh the README for users](issues/refresh-readme-for-users.md)

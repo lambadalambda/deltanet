@@ -216,7 +216,7 @@ jobs:
 
             ## Security status
 
-            Desktop signup and restore privately redeem the daemon's rotated one-time enrollment code and continue into sign-in without terminal input; the raw code is never exposed to the renderer, logs, command-line arguments, or files. The main-generated bootstrap proof that prevents another local process from racing unconfigured signup, restore, or initial client registration is not implemented yet. Treat identities created with these alpha builds as disposable until that security work is complete.
+            Desktop signup and restore privately redeem the daemon's rotated one-time enrollment code and continue into sign-in without terminal input; the raw code is never exposed to the renderer, logs, command-line arguments, or files. Main-generated, operation-bound, short-lived bootstrap proofs protect signup, restore, and initial OAuth registration. Broader tray/background policy, abrupt-process recovery, failure UX, and full packaged create/restore acceptance scenarios remain unfinished. Treat identities created with these alpha builds as disposable while that work remains incomplete.
 
             ## Choose a download
 
